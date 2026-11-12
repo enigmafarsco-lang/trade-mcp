@@ -76,6 +76,23 @@ opencode mcp list
 
 فایل پروژه‌ای: `opencode.json` کنار پروژه. سراسری: `~/.config/opencode/opencode.json`.
 
+## ۲.۵ دو هشدار عملی
+
+**الف) سرور را دو بار اجرا نکن.** OpenCode خودش `trade-mcp serve` را اجرا می‌کند. اگر در
+ترمینال دیگری هم `trade-mcp serve` (بک‌اند `bridge`) اجرا کنی، هر دو می‌خواهند روی
+`127.0.0.1:8787` گوش بدهند و دومی با `cannot listen ... Address already in use` بالا
+نمی‌آید. برای تست دستی از این‌ها استفاده کن:
+
+```bash
+.venv/bin/trade-mcp --mock doctor     # داده‌ی ساختگی، بدون پورت
+.venv/bin/trade-mcp doctor --wait 30  # تست اتصال واقعی (تا وقتی سرور OpenCode بسته است)
+.venv/bin/trade-mcp bridge            # فقط سوکت، برای دیدن اتصال EA (پورت می‌گیرد)
+```
+
+**ب) اول با mock شروع کن.** در ثبت سرور، `TRADE_MCP_BACKEND=mock` بگذار تا بدون
+متاتریدر همه‌چیز را ببینی؛ بعد که اکسپرت وصل شد، همین متغیر را به `bridge` عوض کن (یا
+حذفش کن، چون پیش‌فرض `bridge` است).
+
 ## ۳. بررسی اتصال
 
 داخل OpenCode:
@@ -96,6 +113,7 @@ opencode mcp list
 | نشانه | علت | راه‌حل |
 |---|---|---|
 | `ENOENT` / `spawn ... ENOENT` | مسیر `command` غلط یا venv جابه‌جا شده | مسیر مطلق `.venv/bin/trade-mcp` را چک کن |
+| `pip install -e .` می‌گوید `pyproject.toml` نیست | کلون قدیمی یا برنچ اشتباه | `git pull` روی `main` و مطمئن شو `pyproject.toml` و `src/` را می‌بینی |
 | سرور وصل می‌شود ولی ابزاری نیست | نسخه‌ی mcp ناسازگار | `.venv/bin/pip install "mcp>=1.2,<2"` |
 | ابزارها زیر `trade_*` دیده نمی‌شوند | Code Mode فعال است | پایین‌تر را ببین |
 | `tools: 0` | سرویس با `--mock` بالا نیامده / کانفیگ ناقص | `trade-mcp tools` و لاگ stderr |

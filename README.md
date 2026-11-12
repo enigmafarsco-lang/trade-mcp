@@ -56,6 +56,7 @@ trade-mcp/
 ```bash
 git clone https://github.com/enigmafarsco-lang/trade-mcp.git
 cd trade-mcp
+ls pyproject.toml        # باید وجود داشته باشد؛ اگر نبود: git pull origin main
 
 python3 -m venv .venv
 .venv/bin/pip install -e .
@@ -68,6 +69,9 @@ python3 -m venv .venv
 cp .env.example .env                    # و مقادیر را تنظیم کن
 .venv/bin/trade-mcp doctor              # منتظر اتصال EA می‌ماند
 ```
+
+> اگر `pip install -e .` گفت *"does not appear to be a Python project"* یعنی کلون قدیمی
+> است: `git checkout main && git pull` و دوباره نصب کن.
 
 اگر `doctor` همه‌چیز را `[ OK ]` داد، آماده‌ای. اگر نه، بخش
 [عیب‌یابی](docs/SETUP-LINUX-MT5.md#عیبیابی) را ببین.
