@@ -1,0 +1,64 @@
+{
+  // ---------------------------------------------------------------------------
+  //  OpenCode config for trade-mcp
+  //  Copy the block that matches your OpenCode version into opencode.json
+  //  (project) or ~/.config/opencode/opencode.json (global).
+  //  Paths must be ABSOLUTE - OpenCode does not activate your venv for you.
+  // ---------------------------------------------------------------------------
+
+  "$schema": "https://opencode.ai/config.json",
+
+  // ---- OpenCode V2 (server names live under mcp.servers) --------------------
+  "mcp": {
+    "servers": {
+      "trade": {
+        "type": "local",
+        "command": ["/home/joshua/trade-mcp/.venv/bin/trade-mcp", "serve"],
+        "cwd": "/home/joshua/trade-mcp",
+        // Code Mode hides tools behind a generic executor; false keeps
+        // trade_mt5_status, trade_analyze_market, ... as native tools.
+        "codemode": false,
+        "environment": {
+          "TRADE_MCP_ALLOW_TRADING": "false",
+          "TRADE_MCP_SYMBOL": "XAUUSD",
+          "TRADE_MCP_TIMEFRAMES": "M15,H1,H4",
+          "TRADE_MCP_MAX_LOT": "0.10",
+          "TRADE_MCP_MAX_RISK_PERCENT": "1.0",
+          "TRADE_MCP_MAX_OPEN_POSITIONS": "3",
+          "TRADE_MCP_MAX_SPREAD_POINTS": "60",
+          "TRADE_MCP_ALLOWED_SYMBOLS": "XAUUSD,GOLD,XAU",
+          "TRADE_MCP_JOURNAL": "{env:HOME}/.local/share/trade-mcp/journal.sqlite3"
+        }
+      }
+    }
+  },
+
+  // Second profile that CAN trade: keep it disabled until you really need it.
+  // "trade-live": {
+  //   "type": "local",
+  //   "command": ["/home/joshua/trade-mcp/.venv/bin/trade-mcp", "serve"],
+  //   "codemode": false,
+  //   "environment": {
+  //     "TRADE_MCP_ALLOW_TRADING": "true",
+  //     "TRADE_MCP_MAX_LOT": "0.05",
+  //     "TRADE_MCP_MAX_RISK_PERCENT": "0.5",
+  //     "TRADE_MCP_SYMBOL": "XAUUSD"
+  //   }
+  // }
+
+  // ---- OpenCode V1 (server names directly under mcp) ------------------------
+  // "mcp": {
+  //   "trade": {
+  //     "type": "local",
+  //     "command": ["/home/joshua/trade-mcp/.venv/bin/trade-mcp", "serve"],
+  //     "environment": { "TRADE_MCP_ALLOW_TRADING": "false" }
+  //   }
+  // },
+
+  // ---- Permissions: ask before anything that can move money ---------------
+  "permissions": [
+    { "action": "trade_*", "resource": "*", "effect": "allow" },
+    { "action": "trade_confirm_proposal", "resource": "*", "effect": "ask" },
+    { "action": "trade_propose_manage_position", "resource": "*", "effect": "ask" }
+  ]
+}
