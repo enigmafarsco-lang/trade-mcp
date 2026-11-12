@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Environments
+.venv/
+venv/
+.env
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Local runtime data (journal, logs)
+journal.sqlite3
+journal.sqlite3-*
+data/
+logs/
+*.log
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
