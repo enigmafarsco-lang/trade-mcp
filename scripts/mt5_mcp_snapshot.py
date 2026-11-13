@@ -111,7 +111,12 @@ def main(argv: list[str] | None = None) -> int:
 
     def token_for(label: str) -> str:
         env_name = "MT5_MCP_TOKEN_" + label.upper().replace("-", "_").replace(" ", "_")
-        return named_tokens.get(label) or os.environ.get(env_name, "") or bare_token
+        return (
+            named_tokens.get(label)
+            or os.environ.get(env_name, "")
+            or bare_token
+            or os.environ.get("TRADE_MCP_MCP_TOKEN" if label == "terminal" else "", "")
+        )
 
     token = token_for(name)
     if not token:
