@@ -202,8 +202,11 @@ ALLOW_TRADING=false هیچ ثبت سفارشی صورت نمی‌گیرد. بر�
 دکمه‌های BUY/SELL همراه قیمت روی نوار هر نمودار هم وجود دارند؛ کلیک،
 پنجرهٔ سفارش همان نماد و جهت را باز می‌کند، نه معاملهٔ یک‌کلیکی. پنجره
 مجوز برنامه و mcp_trade_allowed ترمینال را جدا نشان می‌دهد. خطای
-`trading is not permitted` از خود MT5 است: تنظیمات Tools → Options → MCP
-و مجوز معاملهٔ سرور terminal را بررسی کنید؛ ALLOW_TRADING برنامه جای آن
+`trading is not permitted` از خود MT5 است: تنظیمات Tools → Options → AI Assistant → Trading را بررسی کنید؛
+در تب MCP تصویر این نسخه فقط اتصال، آدرس و کلید دیده می‌شود؛ ALLOW_TRADING برنامه جای آن
 را نمی‌گیرد و روشن‌بودن Algo Trading نیز به‌تنهایی اثبات مجوز MCP نیست.
 بعد از اصلاح مجوز، پیشنهاد جدید بسازید؛ درخواست شکست‌خورده خودکار تکرار
 نمی‌شود. این مجوز توسط برنامه دور زده یا از راه دور فعال نمی‌شود.
+
+مرجع تنظیم Trading در تب AI Assistant:
+https://www.metatrader5.com/en/terminal/help/mcp_and_ai/configuration#ai_assistant_settings
