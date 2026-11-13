@@ -12,19 +12,13 @@
 //+------------------------------------------------------------------+
 #property copyright "trade-mcp"
 #property link      "https://github.com/enigmafarsco-lang/trade-mcp"
-#property version   "1.21"
+#property version   "1.11"
 #property description "MetaTrader 5 <-> trade-mcp bridge (TCP, newline-delimited JSON)"
 
 #include <Trade\Trade.mqh>
 
 //--- inputs ---------------------------------------------------------
-input group             "Transport"
-input bool   InpUseFiles        = true;         // true = MQL5\Files folder, false = TCP socket
-input string InpFileDir         = "trade-mcp";  // folder inside MQL5\Files
-input int    InpFilePollMs      = 150;          // inbox poll interval (ms)
-input int    InpStatusMs        = 1000;         // heartbeat interval (ms)
-
-input group             "Socket (only when InpUseFiles = false)"
+input group             "Connection"
 input string InpHost            = "127.0.0.1"; // Python host
 input int    InpPort            = 8787;        // Python port
 input int    InpConnectTimeout  = 1500;        // connect timeout (ms)
@@ -43,14 +37,12 @@ input int    InpMaxRatesCount   = 5000;        // hard cap on bars per request
 input int    InpMaxSymbols      = 2000;        // hard cap on symbols per request
 
 //--- globals --------------------------------------------------------
-#define EA_VERSION "1.21"
+#define EA_VERSION "1.11"
 #define SOCK_NONE  INVALID_HANDLE
 
 int      g_socket        = SOCK_NONE;
 string   g_rx            = "";
 uint     g_lastAttempt   = 0;
-uint     g_lastStatus    = 0;
-bool     g_fileMode      = false;
 long     g_requests      = 0;
 long     g_errors        = 0;
 datetime g_connectedAt   = 0;
@@ -320,7 +312,7 @@ void ProcessLines()
 //+------------------------------------------------------------------+
 //| Request dispatch                                                 |
 //+------------------------------------------------------------------+
-string HandleLineToString(const string line)
+void HandleLine(const string line)
 {
    string id  = JGetStr(line, "id");
    string cmd = JGetStr(line, "cmd");
@@ -364,12 +356,7 @@ string HandleLineToString(const string line)
       resp = "{\"id\":\"" + JEsc(id) + "\",\"ok\":false,\"error\":{\"code\":\"" +
              JEsc(g_errCode) + "\",\"message\":\"" + JEsc(g_errMsg) + "\"}}";
    }
-   return resp;
-}
-
-void HandleLine(const string line)
-{
-   SendRaw(HandleLineToString(line) + "\n");
+   SendRaw(resp + "\n");
 }
 
 //+------------------------------------------------------------------+
@@ -979,169 +966,6 @@ string CmdTradeCloseAll(const string line)
 }
 
 //+------------------------------------------------------------------+
-//| File transport (InpUseFiles = true)                              |
-//+------------------------------------------------------------------+
-string InDirPath()
-{
-   return InpFileDir + "\\in";
-}
-
-string OutDirPath()
-{
-   return InpFileDir + "\\out";
-}
-
-void FileEnsureDirs()
-{
-   FolderCreate(InpFileDir);
-   FolderCreate(InpFileDir + "\\in");
-   FolderCreate(InpFileDir + "\\out");
-}
-
-string FileBaseName(const string filePath)
-{
-   string work = filePath;
-   StringReplace(work, "/", "\\");
-   int pos    = 0;
-   int last   = -1;
-   for(;;)
-   {
-      int hit = StringFind(work, "\\", pos);
-      if(hit < 0) break;
-      last = hit;
-      pos  = hit + 1;
-   }
-   if(last < 0) return work;
-   return StringSubstr(work, last + 1);
-}
-
-string FileReadUtf8(const string name)
-{
-   int h = FileOpen(name, FILE_READ|FILE_BIN);
-   if(h == INVALID_HANDLE) return "";
-   ulong size = FileSize(h);
-   if(size == 0 || size > 8 * 1024 * 1024)
-   {
-      FileClose(h);
-      return "";
-   }
-   uchar buf[];
-   ArrayResize(buf, (int)size);
-   int got = (int)FileReadArray(h, buf);
-   FileClose(h);
-   if(got <= 0) return "";
-   string text = CharArrayToString(buf, 0, got, CP_UTF8);
-   StringTrimLeft(text);
-   StringTrimRight(text);
-   return text;
-}
-
-bool FileWriteUtf8(const string name, const string text)
-{
-   int h = FileOpen(name, FILE_WRITE|FILE_BIN);
-   if(h == INVALID_HANDLE) return false;
-   uchar buf[];
-   int n = StringToCharArray(text, buf, 0, WHOLE_ARRAY, CP_UTF8);
-   if(n > 0) n--;                                   // drop the terminating null
-   bool ok = true;
-   if(n > 0)
-   {
-      int written = (int)FileWriteArray(h, buf, 0, n);
-      ok = (written == n);
-   }
-   FileClose(h);
-   return ok;
-}
-
-void FileDeleteQuiet(const string name)
-{
-   ResetLastError();
-   FileDelete(name);
-}
-
-void ProcessFileInbox()
-{
-   string found = "";
-   long handle = FileFindFirst(InDirPath() + "\\*.json", found);
-   if(handle == INVALID_HANDLE) return;
-
-   string batch[16];
-   int count = 0;
-   for(;;)
-   {
-      string base = FileBaseName(found);
-      int len = StringLen(base);
-      if(len > 5 && StringSubstr(base, len - 5) == ".json")
-      {
-         if(count < 16)
-         {
-            batch[count] = base;
-            count++;
-         }
-      }
-      if(count >= 16) break;
-      if(!FileFindNext(handle, found)) break;
-   }
-   FileFindClose(handle);
-
-   for(int i = 0; i < count; i++)
-   {
-      string reqPath = InDirPath() + "\\" + batch[i];
-      string body = FileReadUtf8(reqPath);
-      if(StringLen(body) == 0)
-      {
-         FileDeleteQuiet(reqPath);
-         continue;
-      }
-      if(InpVerbose) PrintFormat("[trade-mcp] file request %s", batch[i]);
-      string resp = HandleLineToString(body);
-      string resPath = OutDirPath() + "\\" + batch[i];
-      if(!FileWriteUtf8(resPath, resp))
-      {
-         g_errors++;
-         PrintFormat("[trade-mcp] cannot write %s err=%d", resPath, GetLastError());
-      }
-      FileDeleteQuiet(reqPath);
-   }
-}
-
-void WriteStatusFileEx(const bool alive)
-{
-   CJson o;
-   o.Bool("alive", alive);
-   o.Int("updated_at", (long)TimeLocal());
-   o.Str("ea", "TradeMCPConnector");
-   o.Str("version", EA_VERSION);
-   o.Str("transport", g_fileMode ? "file" : "socket");
-   o.Str("symbol", _Symbol);
-   o.Str("timeframe", EnumToString((ENUM_TIMEFRAMES)Period()));
-   o.Int("login", (long)AccountInfoInteger(ACCOUNT_LOGIN));
-   o.Str("server", AccountInfoString(ACCOUNT_SERVER));
-   o.Str("company", AccountInfoString(ACCOUNT_COMPANY));
-   o.Str("currency", AccountInfoString(ACCOUNT_CURRENCY));
-   o.Int("leverage", (long)AccountInfoInteger(ACCOUNT_LEVERAGE));
-   o.Bool("terminal_connected", (bool)TerminalInfoInteger(TERMINAL_CONNECTED));
-   o.Bool("trade_allowed", (bool)TerminalInfoInteger(TERMINAL_TRADE_ALLOWED));
-   o.Bool("ea_trading_allowed", (bool)MQLInfoInteger(MQL_TRADE_ALLOWED));
-   o.Bool("ea_allow_trading_input", InpAllowTrading);
-   o.Int("build", (long)TerminalInfoInteger(TERMINAL_BUILD));
-   o.Str("data_path", TerminalInfoString(TERMINAL_DATA_PATH));
-   o.Int("requests", g_requests);
-   o.Int("errors", g_errors);
-   FileWriteUtf8(InpFileDir + "\\status.json", o.ToString());
-}
-
-void WriteStatusFile()
-{
-   WriteStatusFileEx(true);
-}
-
-void WriteStatusFileStopped()
-{
-   WriteStatusFileEx(false);
-}
-
-//+------------------------------------------------------------------+
 //| Lifecycle                                                        |
 //+------------------------------------------------------------------+
 int OnInit()
@@ -1149,20 +973,6 @@ int OnInit()
    trade.SetExpertMagicNumber(InpMagic);
    trade.SetDeviationInPoints(InpDeviation);
    trade.SetTypeFillingBySymbol(_Symbol);
-
-   g_fileMode = InpUseFiles;
-
-   if(g_fileMode)
-   {
-      FileEnsureDirs();
-      g_lastStatus = GetTickCount();
-      WriteStatusFile();
-      EventSetMillisecondTimer((int)MathMax(InpFilePollMs, 20));
-      PrintFormat("[trade-mcp] %s file transport | folder=MQL5\\Files\\%s | trading=%s | chart=%s %s",
-                  EA_VERSION, InpFileDir, InpAllowTrading ? "ENABLED" : "disabled",
-                  _Symbol, EnumToString((ENUM_TIMEFRAMES)Period()));
-      return INIT_SUCCEEDED;
-   }
 
    if(InpTimerMs < 20) Print("[trade-mcp] warning: InpTimerMs is very small, CPU load may rise");
    EventSetMillisecondTimer((int)MathMax(InpTimerMs, 20));
@@ -1178,13 +988,6 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
-   if(g_fileMode)
-   {
-      WriteStatusFileStopped();
-      PrintFormat("[trade-mcp] file transport stopped (reason=%d, requests=%d, errors=%d)",
-                  reason, g_requests, g_errors);
-      return;
-   }
    if(g_socket != SOCK_NONE)
    {
       SendRaw("{\"type\":\"bye\",\"reason\":\"ea_stopped\"}\n");
@@ -1196,18 +999,6 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
-   if(g_fileMode)
-   {
-      ProcessFileInbox();
-      uint stamp = GetTickCount();
-      if(stamp - g_lastStatus >= (uint)MathMax(200, InpStatusMs))
-      {
-         WriteStatusFile();
-         g_lastStatus = stamp;
-      }
-      return;
-   }
-
    if(g_socket == SOCK_NONE)
    {
       uint now = GetTickCount();

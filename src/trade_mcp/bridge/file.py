@@ -165,11 +165,20 @@ class FileBridge:
             "errors": self._errors,
         }
         if not data:
-            base["reason"] = "no status.json yet - is TradeMCPConnector (transport=file) on a chart?"
+            base["reason"] = "no status.json yet - is TradeMCPFile.mq5 attached to a chart?"
             return base
 
         updated = float(data.get("updated_at") or 0)
-        age = max(0.0, time.time() - updated) if updated else None
+        age = None
+        if updated:
+            age = time.time() - updated
+            if age < -5.0:
+                age = None  # EA clock is ahead of ours: trust the file mtime
+            else:
+                age = max(0.0, age)
+        # The EA stamps ``updated_at`` with its own clock.  When that stamp is
+        # not plausible (see above) fall back to the file's mtime, which the
+        # host kernel writes.
         if age is None:
             with_status: dict[str, Any] = {}
             try:
@@ -250,7 +259,7 @@ class FileBridge:
                 extra = " (the EA heartbeat is alive but it is not draining the inbox)"
             raise BridgeError(
                 f"no answer for '{cmd}' within {self.timeout:.0f}s{extra}. "
-                "Is TradeMCPConnector attached to a chart with algorithmic trading on?",
+                "Is TradeMCPFile.mq5 attached to a chart with algorithmic trading on?",
                 code="ea_timeout",
             )
 

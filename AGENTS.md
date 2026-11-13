@@ -45,7 +45,8 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 | `src/trade_mcp/risk.py` | حجم، اعتبارسنجی سفارش (منبع حقیقت گاردها) |
 | `src/trade_mcp/execution.py` | جریان دو مرحله‌ای و چک‌های قبل از ارسال |
 | `src/trade_mcp/bridge/` | `server.py` (TCP)، `client.py` (کش + resolve نماد)، `mock.py` |
-| `mt5-connector/TradeMCPConnector.mq5` | کلاینت MQL5 + پارسر JSON ساده |
+| `mt5-connector/TradeMCPFile.mq5` | اکسپرت پل فایلی (بدون include، بدون سوکت) |
+| `mt5-connector/TradeMCPConnector.mq5` | اکسپرت قدیمی TCP |
 
 ## سبک
 

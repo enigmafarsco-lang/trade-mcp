@@ -85,14 +85,15 @@ cp .env.example .env                    # و مقادیر را تنظیم کن
 
 ## اکسپرت را در متاتریدر نصب کن
 
-1. فایل `mt5-connector/TradeMCPConnector.mq5` را در
+1. فایل `mt5-connector/TradeMCPFile.mq5` را در
    `MQL5/Experts/` ترمینال (از منوی MT5: `File → Open Data Folder`) کپی کن.
 2. در MetaEditor کلید `F7` (Compile) — باید بدون خطا کامپایل شود.
-3. در MT5 یک چارت باز کن و از پنجره‌ی Navigator اکسپرت را روی چارت بکش.
+3. در MT5 یک چارت باز کن و از پنجره‌ی Navigator اکسپرت را روی چارت بکش
+   (یک چارت کافی است؛ همان پل همه‌ی نمادها را می‌بیند).
 4. تیک **Allow Algo Trading** را بزن (در تنظیمات اکسپرت و دکمه‌ی AutoTrading در نوار ابزار).
-5. در تب **Inputs** تیک `InpUseFiles` را روشن بگذار (مسیر پیشنهادی). برای سوکت آن را
-   خاموش کن و `InpHost`/`InpPort` را بده — سوکت به فهرست مجاز MT5 نیاز دارد.
-6. تب **Experts** باید بنویسد: `[trade-mcp] 1.21 file transport | folder=MQL5\Files\trade-mcp`.
+5. در تب **Inputs** فقط `InpDir` را چک کن (`trade-mcp`); برای فاز مشورتی
+   `InpAllowTrading=false` بگذار (توصیه‌ی مستندات).
+6. تب **Experts** باید بنویسد: `[trade-mcp] 1.00 started | folder=MQL5\\Files\\trade-mcp`.
 
 جزئیات و مشکلات رایج: [docs/SETUP-LINUX-MT5.md](docs/SETUP-LINUX-MT5.md).
 

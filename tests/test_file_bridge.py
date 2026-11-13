@@ -77,6 +77,20 @@ def test_status_fresh_and_stale(tmp_path):
     assert "stale" in stale["reason"]
 
 
+def test_status_with_ea_clock_ahead_falls_back_to_mtime(tmp_path):
+    """A terminal whose clock runs ahead must not look like a dead EA."""
+    bridge = make_bridge(tmp_path, stale_after=5.0)
+    bridge.ensure_dirs()
+    bridge.status_file.write_text(
+        json.dumps({"alive": True, "updated_at": time.time() + 3600, "ea": "TradeMCPFile"}),
+        encoding="utf-8",
+    )
+    status = bridge.status()
+    assert status["ea_connected"] is True
+    assert status["ea_hello"]["ea"] == "TradeMCPFile"
+    assert status["age_seconds"] < 5
+
+
 def test_request_roundtrip(tmp_path):
     bridge = make_bridge(tmp_path)
     bridge.ensure_dirs()

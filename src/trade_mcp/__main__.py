@@ -105,9 +105,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             if not status.get("ea_connected"):
                 print("  [FAIL] no EA connected")
                 print("         - is MetaTrader 5 running (Wine or Windows)?")
-                print("         - is TradeMCPConnector attached to a chart and AutoTrading on?")
+                print("         - is the trade-mcp EA on a chart and AutoTrading on?")
                 if backend == "file":
-                    print(f"         - is the EA's InpTransport = FILE, and files dir {status.get('ea_dir')}?")
+                    print(f"         - is TradeMCPFile.mq5 on a chart? files dir {status.get('ea_dir')}")
                     print("         - mt5_status/json shows the last heartbeat it wrote")
                 else:
                     print(f"         - does the EA point at {cfg.host}:{cfg.port}?")
