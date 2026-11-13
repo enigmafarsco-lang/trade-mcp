@@ -255,6 +255,7 @@ class Handler(BaseHTTPRequestHandler):
                     result = {"ok": True, "symbol": symbol, "spec": mt5.symbol_info(symbol, fresh=True),
                               "quote": mt5.tick(symbol), "account": mt5.account_info(fresh=True),
                               "trading_enabled": self.state.cfg.allow_trading,
+                              "terminal": mt5.terminal_info(),
                               "training_budget": self.state.cfg.training_budget,
                               "max_risk_percent": self.state.cfg.max_risk_percent}
                 return self._json(result)

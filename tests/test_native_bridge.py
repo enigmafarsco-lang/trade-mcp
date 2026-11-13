@@ -551,3 +551,26 @@ def test_forward_limited_history_covers_latest_bars(monkeypatch):
     assert abs(end-datetime.now(timezone.utc).timestamp()-(7200+900)) < 3
     native._cmd_rates(symbol='XAUUSD', timeframe='M15', count=3)
     assert len([c for c in calls if c[0] == 'get_time_information']) == 1
+
+
+def test_trading_permission_error_is_distinct(monkeypatch):
+    from types import SimpleNamespace
+
+    from trade_mcp.bridge.base import BridgeError
+
+    native = NativeBridge('http://unused', 'test')
+    client = SimpleNamespace(call_tool=lambda *args: {
+        'isError': True, 'content': [{'type':'text','text':'trading is not permitted'}]})
+    monkeypatch.setattr(native, '_connect', lambda: client)
+    with pytest.raises(BridgeError) as exc:
+        native.call('trade_send_market_order', {})
+    assert exc.value.code == 'mcp_trading_not_permitted'
+
+
+def test_terminal_permission_uses_mcp_flag(monkeypatch):
+    native = NativeBridge('http://unused', 'test')
+    monkeypatch.setattr(native, 'call', lambda *args: {'terminal': {
+        'mcp_trade_allowed': False, 'experts_trade_allowed': True}})
+    data = native._cmd_terminal_info()
+    assert data['mcp_trade_allowed'] is False
+    assert data['trade_allowed'] is False

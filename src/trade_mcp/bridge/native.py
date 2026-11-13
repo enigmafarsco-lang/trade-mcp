@@ -242,7 +242,8 @@ class NativeBridge:
                 message = McpHttpClient.text_content(result) or "the tool reported an error"
                 self._errors += 1
                 self._last_error = message
-                raise BridgeError(f"{tool}: {message}", code="mcp_tool_error")
+                code = "mcp_trading_not_permitted" if "trading is not permitted" in message.lower() else "mcp_tool_error"
+                raise BridgeError(f"{tool}: {message}", code=code)
             body = McpHttpClient.structured_content(result)
             if isinstance(body, str):
                 return {"text": body}
@@ -275,7 +276,9 @@ class NativeBridge:
             "company": as_text(find(raw, "company", "name")),
             "data_path": as_text(find(raw, "data_path", "data_folder")),
             "terminal_connected": as_bool(find(raw, "connected", "connection_established"), True),
-            "trade_allowed": as_bool(find(raw, "trade_allowed"), True),
+            "trade_allowed": as_bool(find(raw, "mcp_trade_allowed", "trade_allowed"), True),
+            "mcp_trade_allowed": (as_bool(find(raw, "mcp_trade_allowed"))
+                                  if find(raw, "mcp_trade_allowed") is not None else None),
             "ea_trading_allowed": as_bool(find(raw, "trade_allowed", "algo_trading"), True),
             "ping_ms": round(elapsed, 1),
             "requests": self._requests,
@@ -317,7 +320,9 @@ class NativeBridge:
         self.last_raw["terminal_get_info"] = raw
         return {
             "connected": as_bool(find(raw, "connected", "connection"), True),
-            "trade_allowed": as_bool(find(raw, "trade_allowed"), True),
+            "trade_allowed": as_bool(find(raw, "mcp_trade_allowed", "trade_allowed"), True),
+            "mcp_trade_allowed": (as_bool(find(raw, "mcp_trade_allowed"))
+                                  if find(raw, "mcp_trade_allowed") is not None else None),
             "dll_allowed": as_bool(find(raw, "dll_allowed"), False),
             "community": as_bool(find(raw, "community_connected"), False),
             "build": as_int(find(raw, "build"), 0),

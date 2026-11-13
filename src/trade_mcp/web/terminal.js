@@ -29,6 +29,9 @@ class Chart {
   this.tool=make('select');for(const [v,t] of [['pan','جابه‌جایی / نشانگر'],['horizontal','خط افقی'],['trend','خط روند؛ دو کلیک']]){const op=make('option',t);op.value=v;this.tool.append(op);}
   const undo=make('button','حذف آخرین خط','ghost'),close=make('button','×','ghost');close.setAttribute('aria-label','بستن نمودار');
   bar.append(this.input,tf,this.tool,undo,close);
+  const sell=make('button','SELL / فروش','chart-sell'),buy=make('button','BUY / خرید','chart-buy');
+  sell.onclick=()=>{this.activate();openOrder(this.symbol,'sell');};buy.onclick=()=>{this.activate();openOrder(this.symbol,'buy');};
+  this.sell=sell;this.buy=buy;bar.append(sell,buy);
   const indicators=make('div',undefined,'desk-indicators');
   for(const [id,title] of [['ema','EMA'],['bollinger','BB'],['rsi','RSI'],['macd','MACD'],['atr','ATR'],['adx','ADX'],['stochastic','Stoch']]){const label=make('label'),box=make('input');box.type='checkbox';box.checked=this.selected.has(id);box.onchange=()=>{if(box.checked)this.selected.add(id);else this.selected.delete(id);persist();this.load();};label.append(box,make('span',title));indicators.append(label);}
   this.cv=make('canvas');this.cv.setAttribute('aria-label','نمودار کندلی با ابزار رسم و اندیکاتورها');this.quote=make('div','در حال بارگذاری…','desk-quote');
@@ -67,6 +70,7 @@ class Chart {
  }
  updateQuote(q){
   if(!this.data)return;const prev=this.data.quote?.bid;this.data.quote=q;
+  this.sell.textContent='SELL '+fmt(q.bid);this.buy.textContent='BUY '+fmt(q.ask);
   this.lastQuote=Date.now();this.quote.classList.remove('chart-error');this.quote.title='زمان نمایش‌داده‌شده زمان دریافت است؛ نه تضمین زمان تیک بروکر.';
   this.quote.classList.toggle('quote-up',Number(q.bid)>Number(prev));this.quote.classList.toggle('quote-down',Number(q.bid)<Number(prev));
   this.quote.textContent=`${this.data.account.server?.includes('Mock')?'[SIMULATED] ':''}${this.symbol} ${this.tf} | Bid ${fmt(q.bid)} | Ask ${fmt(q.ask)} | spread ${fmt(q.spread_points)} pt | دریافت ${new Date(q.received_at_ms||Date.now()).toLocaleTimeString('fa-IR')}`;
@@ -114,10 +118,11 @@ function renderAccount(d){
 function openManualPanel(){const dialog=el('order-dialog');el('order-dialog-body').append(el('manual-panel'));if(!dialog.open)dialog.showModal();}
 el('order-dialog-close').onclick=()=>el('order-dialog').close();
 el('order-dialog').addEventListener('close',()=>el('manual-slot').append(el('manual-panel')));
-async function openOrder(symbol){
+async function openOrder(symbol,side='buy'){
+ el('manual-side').value=side;
  manualReset();el('manual-action').value='open';el('manual-symbol').value=symbol;el('manual-ticket').value='';el('manual-sl').value='';el('manual-tp').value='';el('manual-result').textContent='پیش‌نمایش سفارش هنوز ساخته نشده است.';openManualPanel();el('manual-ticket-info').textContent='دریافت قیمت و مشخصات…';
  try{const d=await get('/api/order-ticket?'+new URLSearchParams({symbol}));if(el('manual-symbol').value!==symbol)return;el('manual-symbol').value=d.symbol;el('manual-volume').value=d.spec.volume_min;el('manual-volume').step=d.spec.volume_step;el('manual-volume').min=d.spec.volume_min;el('manual-volume').max=d.spec.volume_max;
- el('manual-ticket-info').textContent=`${d.symbol} | ${d.account.server} | ${d.account.trade_mode} | Bid ${fmt(d.quote.bid)} / Ask ${fmt(d.quote.ask)} | حداقل حجم ${fmt(d.spec.volume_min)} | گام ${fmt(d.spec.volume_step)} | اجرای سفارش: ${d.trading_enabled?'فعال، نیازمند تأیید':'خاموش؛ فقط پیش‌نمایش'}`;
+ el('manual-ticket-info').textContent=`${d.symbol} | ${d.account.server} | ${d.account.trade_mode} | Bid ${fmt(d.quote.bid)} / Ask ${fmt(d.quote.ask)} | حداقل حجم ${fmt(d.spec.volume_min)} | گام ${fmt(d.spec.volume_step)} | مجوز برنامه: ${d.trading_enabled?'روشن؛ نیازمند تأیید':'خاموش؛ فقط پیش‌نمایش'} | مجوز MCP در MT5: ${d.terminal.mcp_trade_allowed==null?'نامشخص':d.terminal.mcp_trade_allowed?'روشن':'خاموش؛ اجرای سفارش رد می‌شود'}`;
  }catch(e){el('manual-ticket-info').textContent=e.message;}
 }
 function drawWatch(){const box=el('desk-symbols');box.replaceChildren();const q=el('desk-search').value.trim().toUpperCase();for(const r of rows.filter(r=>((r.name||r.symbol||'')+' '+(r.description||'')).toUpperCase().includes(q)).slice(0,200)){const symbol=r.name||r.symbol,entry=make('div'),b=make('button',`${symbol}  ${fmt(r.bid)} / ${fmt(r.ask)}${r.visible===false?' • مخفی':''}`),chart=make('button','چارت');
@@ -186,7 +191,7 @@ el('manual-preview').onclick=async()=>{
 };
 el('manual-confirm').onclick=async()=>{
  if(!manualProposal||!confirm('همین پیشنهاد روی حساب دمو اجرا شود؟ این عملیات واقعاً پوزیشن را باز/بسته یا تغییر می‌دهد.'))return;
- const id=manualProposal;manualReset();try{const r=await fetch('/api/proposals/'+encodeURIComponent(id)+'/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}),d=await r.json();el('manual-result').textContent=(d.executed?'MT5 اجرای سفارش را پذیرفت؛ نتیجهٔ ترمینال:\n':'اجرا نشد؛ علت:\n')+JSON.stringify(d,null,2);lastDetail=0;await refresh();}catch(e){el('manual-result').textContent=e.message;}
+ const id=manualProposal;manualReset();try{const r=await fetch('/api/proposals/'+encodeURIComponent(id)+'/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}),d=await r.json();el('manual-result').textContent=(d.executed?'MT5 اجرای سفارش را پذیرفت؛ نتیجهٔ ترمینال:\n':d.error==='mcp_trading_not_permitted'?'MT5 معامله از طریق MCP را مجاز نکرده است. Tools → Options → MCP و مجوز معاملهٔ سرور terminal را بررسی کنید. پیشنهاد ناموفق را دوباره تأیید نکنید؛ پس از اصلاح مجوز، پیش‌نمایش جدید بگیرید.\n':'اجرا نشد؛ علت:\n')+JSON.stringify(d,null,2);lastDetail=0;await refresh();}catch(e){el('manual-result').textContent=e.message;}
 };
 el('desk-analyze').onclick=async()=>{if(!active)return;const symbol=active.symbol,button=el('desk-analyze');button.disabled=true;el('desk-analysis').textContent='در حال تحلیل…';try{const d=await get('/api/analysis?symbol='+encodeURIComponent(symbol));const s=d.scenario||{},z=s.sizing||{};el('desk-analysis').textContent=(d.summary_fa||'')+'\n'+`ورود: ${fmt(s.entry_reference)} | SL: ${fmt(s.stop_loss)} | TP1: ${fmt(s.take_profit_1)}\nحجم: ${fmt(z.volume)} | بودجهٔ زیان: ${fmt(z.risk_amount)} | زیان تخمینی: ${fmt(z.actual_risk)}\n${z.error||''}\n${(z.warnings||[]).join('\n')}\n${(d.warnings||[]).join('\n')}\nتحلیل قاعده‌محور است، احتمال برد تضمین‌شده نیست.`;}catch(e){el('desk-analysis').textContent=e.message;}finally{button.disabled=false;}};
 el('desk-llm').onclick=async()=>{
