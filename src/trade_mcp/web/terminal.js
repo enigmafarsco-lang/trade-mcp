@@ -115,9 +115,27 @@ function renderAccount(d){
  const actions=make('td');if(type==='پوزیشن')for(const [action,title] of [['modify','SL/TP'],['close','بستن کامل']]){const b=make('button',title,'ghost');b.onclick=async()=>{openManualPanel();el('manual-action').value=action;await loadManualPositions(p.ticket);manualMode();el('manual-result').textContent='پوزیشن انتخاب شد؛ ابتدا پیش‌نمایش بگیرید.';};actions.append(b);}tr.append(actions);table.append(tr);}
  target.append(table);if(!d.positions.length&&!d.orders.length)target.append(make('p','پوزیشن یا سفارش بازی وجود ندارد.'));
 }
-function openManualPanel(){const dialog=el('order-dialog');el('order-dialog-body').append(el('manual-panel'));if(!dialog.open)dialog.showModal();}
+let orderQuoteTimer=null,orderQuoteSequence=0;
+async function refreshOrderQuote(){
+ const symbol=el('manual-symbol').value.trim(),sequence=++orderQuoteSequence;
+ try{const d=await get('/api/order-ticket?'+new URLSearchParams({symbol}));
+ if(sequence!==orderQuoteSequence||symbol!==el('manual-symbol').value.trim())return;
+ el('order-bid').textContent=fmt(d.quote.bid);el('order-ask').textContent=fmt(d.quote.ask);
+ el('order-title').textContent='Order: '+d.symbol+' • '+d.account.trade_mode;
+ el('order-quote-status').textContent='MT5 quote • '+new Date().toLocaleTimeString()+' • polling 2s, not tick streaming';
+ }catch(e){if(sequence!==orderQuoteSequence)return;el('order-bid').textContent='—';el('order-ask').textContent='—';el('order-quote-status').textContent=e.message;}
+}
+for(const button of document.querySelectorAll('[data-order-mode]'))button.onclick=()=>{
+ el('manual-action').value=button.dataset.orderMode;el('manual-action').dispatchEvent(new Event('change'));
+};
+for(const side of ['buy','sell'])el('order-'+side).onclick=()=>{
+ el('manual-action').value='open';el('manual-side').value=side;manualReset();manualMode();
+};
+el('manual-side').addEventListener('change',()=>manualMode());
+el('manual-symbol').addEventListener('change',()=>openOrder(el('manual-symbol').value.trim(),el('manual-side').value));
+function openManualPanel(){const dialog=el('order-dialog');el('order-dialog-body').append(el('manual-panel'));if(!dialog.open)dialog.showModal();manualMode();refreshOrderQuote();clearInterval(orderQuoteTimer);orderQuoteTimer=setInterval(refreshOrderQuote,2000);}
 el('order-dialog-close').onclick=()=>el('order-dialog').close();
-el('order-dialog').addEventListener('close',()=>el('manual-slot').append(el('manual-panel')));
+el('order-dialog').addEventListener('close',()=>{clearInterval(orderQuoteTimer);orderQuoteSequence++;el('manual-slot').append(el('manual-panel'));});
 async function openOrder(symbol,side='buy'){
  el('manual-side').value=side;
  manualReset();el('manual-action').value='open';el('manual-symbol').value=symbol;el('manual-ticket').value='';el('manual-sl').value='';el('manual-tp').value='';el('manual-result').textContent='پیش‌نمایش سفارش هنوز ساخته نشده است.';openManualPanel();el('manual-ticket-info').textContent='دریافت قیمت و مشخصات…';
@@ -191,6 +209,8 @@ function applyPosition(){
 }
 function manualMode(){
  const action=el('manual-action').value,open=action==='open',close=action==='close';
+ for(const b of document.querySelectorAll('[data-order-mode]'))b.classList.toggle('active',b.dataset.orderMode===action);
+ for(const side of ['buy','sell']){el('order-'+side).hidden=!open;el('order-'+side).setAttribute('aria-pressed',String(el('manual-side').value===side));}
  for(const key of ['ticket','side','risk','sl','tp','volume'])el('manual-'+key).parentElement.hidden=(key==='ticket'?open:key==='side'||key==='risk'?!open:(key==='sl'||key==='tp')?close:false);
  el('manual-position').parentElement.hidden=open;
  el('manual-volume').readOnly=close;el('manual-symbol').readOnly=!open;
