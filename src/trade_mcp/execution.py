@@ -385,16 +385,34 @@ def confirm(
             result = mt5.close_position(
                 ticket=int(payload["ticket"]), volume=float(payload.get("volume") or 0), deviation=dev
             )
+            if int(result.get("retcode") or 0) not in {10008, 10009, 10010}:
+                store.mark_proposal(proposal_id, "failed", result)
+                return {"ok": False, "error": "broker_rejected", "executed": False, "result": result}
             store.mark_proposal(proposal_id, "executed", result)
             store.record_trade(proposal_id, payload, result)
             return {"ok": True, "proposal_id": proposal_id, "executed": True, "result": result}
 
         if kind == "modify":
+            target = next((p for p in mt5.positions()
+                           if int(p.get("ticket") or 0) == int(payload["ticket"])), None)
+            if target is None:
+                return {"ok": False, "error": "position_not_found", "executed": False}
+            old_sl = float(target.get("sl") or 0)
+            new_sl = float(payload.get("sl") or 0)
+            current = float(target.get("price_current") or 0)
+            buy = str(target.get("type", "")).lower() in {"buy", "0"}
+            if old_sl and (not new_sl or (new_sl < old_sl if buy else new_sl > old_sl)):
+                return {"ok": False, "error": "stop_widening", "executed": False}
+            if new_sl and ((new_sl >= current) if buy else (new_sl <= current)):
+                return {"ok": False, "error": "stop_wrong_side", "executed": False}
             result = mt5.modify_position(
                 ticket=int(payload["ticket"]),
                 sl=float(payload.get("sl") or 0),
                 tp=float(payload.get("tp") or 0),
             )
+            if int(result.get("retcode") or 0) not in {10008, 10009, 10010}:
+                store.mark_proposal(proposal_id, "failed", result)
+                return {"ok": False, "error": "broker_rejected", "executed": False, "result": result}
             store.mark_proposal(proposal_id, "executed", result)
             store.record_trade(proposal_id, payload, result)
             return {"ok": True, "proposal_id": proposal_id, "executed": True, "result": result}

@@ -203,6 +203,7 @@ class NativeBridge:
         self._errors = 0
         self._last_error = ""
         self.last_raw: dict[str, Any] = {}
+        self._history_clock: tuple[float, int] | None = None
 
     # ------------------------------------------------------------- plumbing
     @property
@@ -466,7 +467,15 @@ class NativeBridge:
         bars = max(1, min(int(count or 200), 5000))
         step = TF_SECONDS.get(period, 900)
         # Ask for a generous window so weekends/holidays cannot starve the response.
-        now = datetime.now(timezone.utc)
+        # History timestamps are broker wall-clock time, not the host's UTC.
+        # Cache only the clock offset, not the last market price/tick.
+        clock = self._history_clock
+        if clock is None or time.monotonic() - clock[0] > 60:
+            clock_raw = self.call("get_time_information")
+            server = to_epoch(find(clock_raw, "trade_server_last_known_time", "trade_server_time"))
+            utc = to_epoch(find(clock_raw, "utc_time"))
+            self._history_clock = (time.monotonic(), server - utc if server and utc else 0)
+        now = datetime.now(timezone.utc) + timedelta(seconds=self._history_clock[1])
         start = now - timedelta(seconds=step * (bars + 5) * 3)
         raw = self.call(
             "get_chart_history",
@@ -475,7 +484,9 @@ class NativeBridge:
                 "datetime_to": iso(now + timedelta(seconds=step)),
                 "symbol": wanted,
                 "period": period,
-                "limit": min(bars * 3, 20000),
+                # The tool may return the FIRST N records in the interval.
+                # Cover the WHOLE requested interval before selecting the last N.
+                "limit": min((bars + 5) * 3 + 3, 20000),
             },
         )
         self.last_raw["get_chart_history"] = raw
@@ -498,8 +509,8 @@ class NativeBridge:
                     "spread": as_int(find(row, "spread"), 0),
                 }
             )
-        out.sort(key=lambda bar: bar["time"])
-        out = out[-bars:]
+        out = sorted({bar["time"]: bar for bar in out if bar["time"] > 0}.values(),
+                     key=lambda bar: bar["time"])[-bars:]
         if not out:
             raise BridgeError(
                 f"get_chart_history returned no candles for {wanted} {period}", code="rates_unavailable"

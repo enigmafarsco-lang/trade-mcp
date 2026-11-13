@@ -522,3 +522,32 @@ def test_build_6318_account_without_leverage(monkeypatch):
     account = native._cmd_account_info()
     assert account["trade_mode"] == "demo"
     assert account["leverage"] is None
+
+
+def test_forward_limited_history_covers_latest_bars(monkeypatch):
+    from datetime import datetime, timezone
+
+    native = NativeBridge('http://unused', 'test')
+    calls = []
+
+    def call(tool, args=None):
+        calls.append((tool, args))
+        if tool == 'get_time_information':
+            return {'utc_time': '2026-11-13T10:00:00Z',
+                    'trade_server_last_known_time': '2026-11-13T12:00:00'}
+        start = int(datetime.fromisoformat(args['datetime_from']).replace(tzinfo=timezone.utc).timestamp())
+        end = int(datetime.fromisoformat(args['datetime_to']).replace(tzinfo=timezone.utc).timestamp())
+        # Simulate a tool returning the FIRST `limit` records, not the last.
+        history = [dict(time=t, open=100, high=102, low=99, close=101)
+                   for t in range(start, end+1, 900)]
+        return {'history': history[:args['limit']]}
+
+    monkeypatch.setattr(native, 'call', call)
+    data = native._cmd_rates(symbol='XAUUSD', timeframe='M15', count=3)
+    args = calls[-1][1]
+    end = int(datetime.fromisoformat(args['datetime_to']).replace(tzinfo=timezone.utc).timestamp())
+    assert len(data['rates']) == 3
+    assert data['rates'][-1]['time'] >= end-900
+    assert abs(end-datetime.now(timezone.utc).timestamp()-(7200+900)) < 3
+    native._cmd_rates(symbol='XAUUSD', timeframe='M15', count=3)
+    assert len([c for c in calls if c[0] == 'get_time_information']) == 1

@@ -78,8 +78,7 @@ class Chart {
   const w=rect.width,h=rect.height,dpr=window.devicePixelRatio||1;this.cv.width=Math.round(w*dpr);this.cv.height=Math.round(h*dpr);
   const c=this.cv.getContext('2d');c.scale(dpr,dpr);c.direction='ltr';c.textAlign='left';c.fillStyle='#090e15';c.fillRect(0,0,w,h);c.font='10px monospace';
   const end=this.data.bars.length-this.offset,start=Math.max(0,end-this.count),bars=this.data.bars.slice(start,end);if(!bars.length)return;
-  const livePrices=this.offset===0?[this.data.quote?.bid,this.data.quote?.ask].filter(v=>Number.isFinite(v)&&v>0):[];
-  const lo=Math.min(...bars.map(b=>b.low),...livePrices),hi=Math.max(...bars.map(b=>b.high),...livePrices),pad=(hi-lo||1)*.08;
+  const lo=Math.min(...bars.map(b=>b.low)),hi=Math.max(...bars.map(b=>b.high)),pad=(hi-lo||1)*.08;
   const lowerKeys=['rsi','macd','atr','adx','stochastic'].filter(k=>this.selected.has(k)&&this.data.series[k]);
   const plotH=lowerKeys.length?Math.max(140,h-32-lowerKeys.length*45):h-35;
   const y=p=>plotH-10-(p-lo+pad)/(hi-lo+2*pad)*(plotH-30),dx=(w-85)/bars.length;
@@ -101,14 +100,15 @@ class Chart {
   for(const l of this.lines){if(!l.points.length||(l.symbol&&l.symbol!==this.symbol)||(l.tf&&l.tf!==this.tf))continue;c.strokeStyle='#e6cc76';c.beginPath();if(l.type==='horizontal'){c.moveTo(0,y(l.points[0].price));c.lineTo(w-85,y(l.points[0].price));}else if(l.points.length===2){c.moveTo(xFor(l.points[0].time),y(l.points[0].price));c.lineTo(xFor(l.points[1].time),y(l.points[1].price));}c.stroke();}c.restore();
   lowerKeys.forEach((key,idx)=>{const top=plotH+idx*45,series=this.data.series[key],values=Object.values(series).flatMap(v=>v.slice(start,end)).filter(v=>v!==null&&Number.isFinite(v));if(!values.length)return;const min=['rsi','stochastic'].includes(key)?0:Math.min(...values),max=['rsi','stochastic'].includes(key)?100:Math.max(...values);c.strokeStyle='#24354a';c.beginPath();c.moveTo(0,top);c.lineTo(w,top);c.stroke();Object.values(series).forEach((v,i)=>seriesLine(v,p=>top+40-(p-min)/(max-min||1)*32,colors[i]));c.fillStyle='#a5b9ce';c.fillText(key.toUpperCase()+' '+fmt(Object.values(series)[0][end-1]),w-115,top+12);});
   if(this.cross&&this.cross.x<w-85&&this.cross.y<plotH){c.strokeStyle='#59728b';c.setLineDash([2,3]);c.beginPath();c.moveTo(this.cross.x,20);c.lineTo(this.cross.x,plotH);c.moveTo(0,this.cross.y);c.lineTo(w-85,this.cross.y);c.stroke();c.setLineDash([]);const i=Math.max(0,Math.min(bars.length-1,Math.floor(this.cross.x/dx))),b=bars[i];c.fillStyle='#d7e3f1';c.fillText(`O ${fmt(b.open)} H ${fmt(b.high)} L ${fmt(b.low)} C ${fmt(b.close)} V ${fmt(b.tick_volume)}`,8,plotH-3);}
-  c.fillStyle='#7f96ad';c.fillText(new Date(bars[0].time*1000).toISOString().slice(0,16)+' → '+new Date(bars.at(-1).time*1000).toISOString().slice(0,16)+' UTC display',8,h-8);
+  c.fillStyle='#7f96ad';c.fillText(new Date(bars[0].time*1000).toISOString().slice(0,16)+' → '+new Date(bars.at(-1).time*1000).toISOString().slice(0,16)+' feed clock',8,h-8);
  }
 }
 function renderAccount(d){
  const box=el('desk-account');box.replaceChildren();for(const [label,v] of [['سرور',d.account.server],['حساب',d.account.trade_mode],['ارز',d.account.currency],['موجودی',d.account.balance],['اکوییتی',d.account.equity],['مارجین آزاد',d.account.margin_free],['بودجهٔ تمرین',d.training_budget]])box.append(make('span',label+': '+fmt(v)));
  const target=el('desk-positions');target.replaceChildren();
- const table=make('table'),head=make('tr');for(const title of ['نوع','تیکت','نماد','جهت','حجم','ورود','SL','TP','سود'])head.append(make('th',title));table.append(head);
- for(const [type,list] of [['پوزیشن',d.positions],['سفارش',d.orders]])for(const p of list){const tr=make('tr');for(const v of [type,p.ticket,p.symbol,p.type,p.volume,p.price_open,p.sl,p.tp,p.profit])tr.append(make('td',fmt(v)));table.append(tr);}
+ const table=make('table'),head=make('tr');for(const title of ['نوع','تیکت','نماد','جهت','حجم','ورود','SL','TP','سود','عملیات'])head.append(make('th',title));table.append(head);
+ for(const [type,list] of [['پوزیشن',d.positions],['سفارش',d.orders]])for(const p of list){const tr=make('tr');for(const v of [type,p.ticket,p.symbol,p.type,p.volume,p.price_open,p.sl,p.tp,p.profit])tr.append(make('td',fmt(v)));
+ const actions=make('td');if(type==='پوزیشن')for(const [action,title] of [['modify','SL/TP'],['close','بستن کامل']]){const b=make('button',title,'ghost');b.onclick=()=>{manualReset();el('manual-action').value=action;el('manual-ticket').value=String(p.ticket);el('manual-symbol').value=p.symbol;el('manual-sl').value=p.sl||'';el('manual-tp').value=p.tp||'';el('manual-volume').value='';el('manual-result').textContent='عملیات انتخاب شد؛ ابتدا پیش‌نمایش بگیرید.';el('manual-preview').scrollIntoView({behavior:'smooth',block:'center'});};actions.append(b);}tr.append(actions);table.append(tr);}
  target.append(table);if(!d.positions.length&&!d.orders.length)target.append(make('p','پوزیشن یا سفارش بازی وجود ندارد.'));
 }
 function drawWatch(){const box=el('desk-symbols');box.replaceChildren();const q=el('desk-search').value.trim().toUpperCase();for(const r of rows.filter(r=>(r.name||r.symbol||'').toUpperCase().includes(q)).slice(0,100)){const symbol=r.name||r.symbol,b=make('button',`${symbol}  ${fmt(r.bid)} / ${fmt(r.ask)}`);b.onclick=()=>{if(!active)return;active.symbol=symbol;active.offset=0;active.load();persist();};box.append(b);}}
@@ -148,6 +148,32 @@ el('desk-auto').onchange=restartLive;el('desk-rate').onchange=restartLive;
 document.addEventListener('visibilitychange',restartLive);
 new MutationObserver(restartLive).observe(el('tab-terminal'),{attributes:true,attributeFilter:['class']});
 el('desk-reset').onclick=()=>{if(!confirm('خطوط رسم‌شده و چیدمان مرورگر پاک شوند؟'))return;for(const c of charts){c.sequence++;c.observer.disconnect();c.root.remove();}charts=[];active=null;oneColumn=false;add({symbol:'XAUUSD',tf:'M15'});add({symbol:'XAUUSD',tf:'H1'});layout();persist();};
+el('desk-compare').onclick=async()=>{
+ if(!active)return;const chart=active,box=el('desk-candles');box.textContent='در حال بازخوانی مستقیم…';
+ try{const d=await get('/api/chart?'+new URLSearchParams({symbol:chart.symbol,tf:chart.tf,selected:[...chart.selected].join(',')||'ema',full:'1'}));if(chart.symbol!==d.symbol||chart.tf!==d.timeframe)return;
+ chart.data={...chart.data,...d};chart.draw();box.replaceChildren();box.append(make('p',d.symbol+' / '+d.timeframe+' • آخرین ردیف ممکن است کندل در حال تشکیل باشد.'));
+ const t=make('table'),head=make('tr');for(const title of ['زمان فید','Open','High','Low','Close','Tick volume'])head.append(make('th',title));t.append(head);
+ for(const b of d.bars.slice(-5)){const tr=make('tr');for(const v of [new Date(b.time*1000).toISOString().slice(0,19).replace('T',' '),b.open,b.high,b.low,b.close,b.tick_volume])tr.append(make('td',fmt(v)));t.append(tr);}box.append(t);
+ }catch(e){box.textContent=e.message;}
+};
+let manualProposal=null,manualRevision=0;
+const manualReset=()=>{manualRevision++;manualProposal=null;el('manual-confirm').disabled=true;};
+for(const n of document.querySelectorAll('[id^="manual-"]'))if(['INPUT','SELECT'].includes(n.tagName))n.addEventListener('input',manualReset);
+el('manual-preview').onclick=async()=>{
+ manualReset();const revision=manualRevision,button=el('manual-preview'),box=el('manual-result');button.disabled=true;box.textContent='در حال کنترل ریسک…';
+ try{const payload={};for(const key of ['action','symbol','side','ticket','volume','risk','sl','tp'])payload[key]=el('manual-'+key).value;
+ if(payload.action==='close')delete payload.volume; // this UI offers full close only
+ const r=await fetch('/api/manual/propose',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}),d=await r.json();
+ if(revision!==manualRevision){box.textContent='فرم تغییر کرد؛ دوباره پیش‌نمایش بگیرید.';return;}
+ if(!r.ok||!d.ok)throw new Error(d.message||d.error||'پیش‌نمایش ناموفق');
+ const p=d.preview||{};box.textContent=`نماد: ${p.symbol||payload.symbol} | جهت: ${p.side||payload.side} | عملیات: ${payload.action}\nشناسه: ${d.proposal_id}\nوضعیت: ${d.blocked?'مسدود؛ اجرا ممکن نیست':'در انتظار تأیید جداگانه'}\nحجم: ${fmt(p.volume)}\nورود تخمینی: ${fmt(p.estimated_entry)}\nSL: ${fmt(p.stop_loss??p.new_sl)}\nTP: ${fmt(p.take_profit??p.new_tp)}\nمارجین: ${fmt(p.estimated_margin)}\n${(d.blockers||[]).join('\n')}\n\nجزئیات:\n`+JSON.stringify(d,null,2);
+ if(!d.blocked){manualProposal=d.proposal_id;el('manual-confirm').disabled=false;}
+ }catch(e){box.textContent=e.message;}finally{button.disabled=false;}
+};
+el('manual-confirm').onclick=async()=>{
+ if(!manualProposal||!confirm('همین پیشنهاد روی حساب دمو اجرا شود؟ این عملیات واقعاً پوزیشن را باز/بسته یا تغییر می‌دهد.'))return;
+ const id=manualProposal;manualReset();try{const r=await fetch('/api/proposals/'+encodeURIComponent(id)+'/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}),d=await r.json();el('manual-result').textContent=JSON.stringify(d,null,2);await refresh();}catch(e){el('manual-result').textContent=e.message;}
+};
 el('desk-analyze').onclick=async()=>{if(!active)return;const symbol=active.symbol,button=el('desk-analyze');button.disabled=true;el('desk-analysis').textContent='در حال تحلیل…';try{const d=await get('/api/analysis?symbol='+encodeURIComponent(symbol));const s=d.scenario||{},z=s.sizing||{};el('desk-analysis').textContent=(d.summary_fa||'')+'\n'+`ورود: ${fmt(s.entry_reference)} | SL: ${fmt(s.stop_loss)} | TP1: ${fmt(s.take_profit_1)}\nحجم: ${fmt(z.volume)} | بودجهٔ زیان: ${fmt(z.risk_amount)} | زیان تخمینی: ${fmt(z.actual_risk)}\n${z.error||''}\n${(z.warnings||[]).join('\n')}\n${(d.warnings||[]).join('\n')}\nتحلیل قاعده‌محور است، احتمال برد تضمین‌شده نیست.`;}catch(e){el('desk-analysis').textContent=e.message;}finally{button.disabled=false;}};
 el('desk-llm').onclick=async()=>{
  if(!active||!confirm('خلاصهٔ نماد، قیمت، سناریو و هشدارها به سرویس مدل تنظیم‌شده ارسال می‌شود؛ شناسهٔ حساب و کلید ارسال نمی‌شود. ادامه؟'))return;

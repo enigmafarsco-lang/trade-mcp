@@ -85,7 +85,7 @@
 <main>
   <!-- overview -->
   <section id="tab-terminal" class="active">
-    <div class="desk-toolbar"><strong>TRADE DESK</strong><span>متصل به MT5 • نمایش و تحلیل، بدون ارسال سفارش از این تب</span>
+    <div class="desk-toolbar"><strong>TRADE DESK</strong><span>متصل به MT5 • معاملهٔ دستی فقط دمو و با تأیید جداگانه</span>
     <button id="desk-add" class="ghost">+ نمودار</button><button id="desk-layout" class="ghost">تغییر چیدمان</button><button id="desk-refresh" class="primary">به‌روزرسانی</button>
     <label><input type="checkbox" id="desk-auto" checked> زنده</label>
     <label>نرخ قیمت <select id="desk-rate"><option value="250">۲۵۰ ms</option><option value="500" selected>۵۰۰ ms</option><option value="1000">۱ ثانیه</option><option value="2000">۲ ثانیه</option></select></label>
@@ -95,6 +95,18 @@
     <div id="desk-charts" class="desk-charts"></div></div>
     <div class="desk-account" id="desk-account"></div>
     <div class="desk-bottom"><h2>پوزیشن‌ها و سفارش‌ها</h2><div id="desk-positions"></div></div>
+    <div class="desk-bottom"><h2>پنجرهٔ داده و مقایسهٔ کندل</h2><button id="desk-compare" class="ghost">بازخوانی مستقیم ۳۰۰ کندل و نمایش ۵ کندل آخر</button><p>برای مقایسه، حساب، نماد دقیق (با پسوند) و تایم‌فریم MT5 باید یکسان باشند. زمان‌های بدون منطقهٔ زمانی، ساعت دیواری فید هستند؛ نه تبدیل قطعی به UTC.</p><div id="desk-candles"></div></div>
+    <div class="desk-bottom"><h2>ترید دستی دمو • Market</h2><p>ابتدا پیش‌نمایش بگیرید؛ سپس جداگانه تأیید کنید. با ALLOW_TRADING=false هیچ معامله‌ای اجرا نمی‌شود. سفارش Limit/Stop و بستن جزئی در این پنل پشتیبانی نشده‌اند.</p>
+    <div class="row">
+    <div><label>عملیات</label><select id="manual-action"><option value="open">بازکردن Market</option><option value="modify">تغییر SL/TP</option><option value="close">بستن کامل پوزیشن</option></select></div>
+    <div><label>نماد</label><input id="manual-symbol" value="XAUUSD"></div>
+    <div><label>جهت</label><select id="manual-side"><option value="buy">Buy / خرید</option><option value="sell">Sell / فروش</option></select></div>
+    <div><label>تیکت (تغییر/بستن)</label><input id="manual-ticket" inputmode="numeric"></div>
+    <div><label>حجم (خالی = محاسبه با ریسک)</label><input id="manual-volume" type="number" min="0.01" step="0.01"></div>
+    <div><label>ریسک ٪ برای حجم خودکار</label><input id="manual-risk" type="number" min="0.01" value="1" step="0.1"></div>
+    <div><label>قیمت SL (برای بازکردن اجباری)</label><input id="manual-sl" type="number" step="any"></div>
+    <div><label>قیمت TP</label><input id="manual-tp" type="number" step="any"></div>
+    </div><p><button id="manual-preview" class="primary">پیش‌نمایش و کنترل ریسک</button> <button id="manual-confirm" class="ghost" disabled>تأیید و اجرای همین پیش‌نمایش</button></p><pre id="manual-result">هنوز پیشنهادی ایجاد نشده است.</pre></div>
     <div class="desk-bottom"><h2>تحلیل نمودار فعال</h2><button id="desk-analyze" class="primary">تحلیل و سناریوی توضیح‌پذیر</button><button id="desk-llm" class="ghost">توضیح هوش مصنوعی (نیازمند تنظیم مدل)</button><button id="desk-training" class="ghost">محاسبهٔ ریسک و بک‌تست</button><div id="desk-analysis"></div></div>
   </section>
   <section id="tab-overview">

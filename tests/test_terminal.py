@@ -110,3 +110,56 @@ def test_incremental_chart_and_fast_quotes(mock_app, monkeypatch):
             state = json.load(r)
         assert state['account']['trade_mode'] == 'demo'
         assert mock_app.mt5.positions() == []
+
+
+def test_manual_demo_preview_no_execution(mock_app):
+    mock_app.cfg.training_budget = 10000
+    quote = mock_app.mt5.tick('XAUUSD')
+    body = {'action': 'open', 'symbol': 'XAUUSD', 'side': 'buy',
+            'sl': quote['ask']-3, 'tp': quote['ask']+6, 'risk': .5}
+    with console(mock_app) as base:
+        request = Request(base+'/api/manual/propose', data=json.dumps(body).encode(),
+                          headers={'Content-Type': 'application/json'})
+        with urlopen(request) as r:
+            data = json.load(r)
+        assert data['ok'] and data['blocked']
+        assert data['proposal_id']
+        assert data['preview']['type'] == 'market'
+        assert mock_app.mt5.positions() == []
+        confirmation = Request(base+'/api/proposals/'+data['proposal_id']+'/confirm',
+                               data=b'{}', headers={'Content-Type': 'application/json'})
+        with urlopen(confirmation) as r:
+            assert json.load(r)['error'] == 'trading_disabled'
+        assert mock_app.mt5.positions() == []
+
+
+def test_manual_rejects_real_account(mock_app, monkeypatch):
+    monkeypatch.setattr(mock_app.mt5, 'account_info', lambda **kw: {'trade_mode': 'real'})
+    with console(mock_app) as base:
+        for path in ['/api/manual/propose', '/api/proposals/anything/confirm']:
+            with pytest.raises(HTTPError) as exc:
+                urlopen(Request(base+path, data=b'{}', headers={'Content-Type': 'application/json'}))
+            assert exc.value.code == 403
+
+
+def test_manual_demo_confirm_mock_only(mock_app):
+    mock_app.cfg.allow_trading = True
+    mock_app.cfg.training_budget = 10000
+    quote = mock_app.mt5.tick('XAUUSD')
+    with console(mock_app) as base:
+        def post(path, payload):
+            with urlopen(Request(base+path, data=json.dumps(payload).encode(),
+                                 headers={'Content-Type': 'application/json'})) as r:
+                return json.load(r)
+
+        proposal = post('/api/manual/propose', {'action':'open', 'symbol':'XAUUSD',
+                         'side':'buy', 'sl':quote['ask']-3, 'tp':quote['ask']+6, 'risk':.5})
+        assert not proposal['blocked']
+        result = post('/api/proposals/'+proposal['proposal_id']+'/confirm', {})
+        assert result['ok']
+        assert len(mock_app.mt5.positions()) == 1
+        position = mock_app.mt5.positions()[0]
+        modify = post('/api/manual/propose', {'action':'modify','ticket':str(position['ticket']),
+                                            'tp':quote['ask']+9})
+        assert modify['preview']['new_sl'] == position['sl']
+        assert len(mock_app.mt5.positions()) == 1

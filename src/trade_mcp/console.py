@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import sys
 import threading
 import time
@@ -31,7 +32,7 @@ from .agents import AgentEngine, LLMClient
 from .analysis import analyze_symbol
 from .bridge.base import BridgeError
 from .config import Config
-from .execution import confirm
+from .execution import confirm, propose_manage, propose_open
 from .live import QuoteFeed
 from .news import fetch_news
 from .plugins import CATALOG, calculate
@@ -232,7 +233,7 @@ class Handler(BaseHTTPRequestHandler):
                 with self.state.lock:
                     key = (symbol, tf)
                     saved = self.state.chart_cache.get(key)
-                    full = not saved or time.monotonic()-saved[0] >= 60
+                    full = query.get("full") == "1" or not saved or time.monotonic()-saved[0] >= 60
                     incoming = self.state.app.mt5.candles(symbol, tf, 300 if full else 3)
                     if not incoming:
                         raise BridgeError("empty chart response", code="rates_unavailable")
@@ -326,6 +327,55 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path.rstrip("/") or "/"
         payload = self._body()
         try:
+            if path == "/api/manual/propose":
+                def number(key, required=False):
+                    value = payload.get(key)
+                    if value in (None, ""):
+                        if required:
+                            raise ValueError(f"{key} is required")
+                        return None
+                    value = float(value)
+                    if not math.isfinite(value) or value < 0 or (key in {"volume", "risk"} and value == 0):
+                        raise ValueError(f"invalid {key}")
+                    return value
+
+                with self.state.lock:
+                    mt5 = self.state.app.mt5
+                    if mt5.account_info(fresh=True).get("trade_mode") != "demo":
+                        return self._json({"ok": False, "message": "ترید دستی وب فقط روی حساب دموی تأییدشده مجاز است."}, 403)
+                    action = payload.get("action", "open")
+                    if action == "open":
+                        stop = number("sl", True)
+                        if stop <= 0:
+                            raise ValueError("positive stop loss is required")
+                        result = propose_open(mt5=mt5, cfg=self.state.cfg, store=self.state.store,
+                                              symbol=str(payload.get("symbol") or self.state.cfg.default_symbol),
+                                              side=str(payload.get("side", "buy")), volume=number("volume"),
+                                              risk_percent=number("risk"), stop_loss=stop,
+                                              take_profit=number("tp"), comment="web-manual-demo")
+                    elif action in {"close", "modify"}:
+                        try:
+                            ticket = int(str(payload.get("ticket", "")))
+                        except (TypeError, ValueError) as exc:
+                            raise ValueError("invalid ticket") from exc
+                        if ticket <= 0:
+                            raise ValueError("invalid ticket")
+                        sl, tp = number("sl"), number("tp")
+                        if action == "close" and number("volume") is not None:
+                            raise ValueError("this panel supports full close only; omit volume")
+                        if action == "modify":
+                            if sl is None and tp is None:
+                                raise ValueError("provide SL or TP to modify")
+                            target = next((p for p in mt5.positions() if int(p["ticket"]) == ticket), {})
+                            if sl == 0 and target.get("sl"):
+                                raise ValueError("removing the protective SL is not supported")
+                            sl = target.get("sl", 0) if sl is None else sl
+                            tp = target.get("tp", 0) if tp is None else tp
+                        result = propose_manage(mt5=mt5, cfg=self.state.cfg, store=self.state.store,
+                                                action=action, ticket=ticket, sl=sl, tp=tp)
+                    else:
+                        raise ValueError("unsupported manual action")
+                return self._json(result)
             if path == "/api/terminal/explain":
                 llm = LLMClient.from_config(self.state.cfg)
                 if not llm.configured:
@@ -357,6 +407,8 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/api/proposals/") and path.endswith("/confirm"):
                 pid = path.split("/")[3]
                 with self.state.lock:
+                    if self.state.app.mt5.account_info(fresh=True).get("trade_mode") != "demo":
+                        return self._json({"ok": False, "message": "تأیید معامله در وب فقط برای حساب دمو مجاز است."}, 403)
                     result = confirm(
                         mt5=self.state.app.mt5,
                         cfg=self.state.cfg,
