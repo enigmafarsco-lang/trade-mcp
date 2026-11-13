@@ -95,3 +95,36 @@ def test_demo_flag_rejects_unverified_account(monkeypatch):
         returncode=next(results),stdout='',stderr=''))
     monkeypatch.setattr(connect.subprocess, 'call', lambda *a, **kw: pytest.fail('must not launch'))
     assert connect.main(['--console','--enable-demo-trading']) == 3
+
+
+def test_model_setup_verifies_without_printing_key(monkeypatch, capsys):
+    from trade_mcp.agents import LLMClient
+    answers = iter(['https://provider.example/v1', 'test-model'])
+    monkeypatch.setattr('builtins.input', lambda _: next(answers))
+    monkeypatch.setattr(connect.getpass, 'getpass', lambda _: 'private-model-key')
+    monkeypatch.setattr(LLMClient, 'chat', lambda self, messages: 'OK')
+    env = {}
+    assert connect.configure_llm(env)
+    assert env['TRADE_MCP_LLM_MODEL'] == 'test-model'
+    assert env['TRADE_MCP_LLM_API_KEY'] == 'private-model-key'
+    assert 'private-model-key' not in capsys.readouterr().out
+
+
+def test_model_setup_failure_does_not_leak_or_install_config(monkeypatch, capsys):
+    from trade_mcp.agents import LLMClient
+    answers = iter(['https://provider.example/v1', 'test-model'])
+    monkeypatch.setattr('builtins.input', lambda _: next(answers))
+    monkeypatch.setattr(connect.getpass, 'getpass', lambda _: 'private-model-key')
+    def fail(self, messages):
+        raise RuntimeError('private-model-key')
+    monkeypatch.setattr(LLMClient, 'chat', fail)
+    env = {}
+    assert not connect.configure_llm(env)
+    assert env == {}
+    assert 'private-model-key' not in capsys.readouterr().out
+
+
+def test_model_setup_rejects_remote_plain_http(monkeypatch):
+    answers = iter(['http://provider.example/v1', 'test-model'])
+    monkeypatch.setattr('builtins.input', lambda _: next(answers))
+    assert not connect.configure_llm({})

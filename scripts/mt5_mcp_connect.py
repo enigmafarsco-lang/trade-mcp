@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import re
@@ -79,12 +80,54 @@ def read_clipboard() -> str:
         raise ValueError('Cannot read clipboard. On Ubuntu/X11 install xclip: sudo apt install xclip') from None
 
 
+def configure_llm(env: dict[str, str]) -> bool:
+    """Prompt locally and verify a real response; do not persist or print secrets."""
+    from trade_mcp.agents import LLMClient
+
+    try:
+        base = input('OpenAI-compatible base URL (include /v1 if required): ').strip()
+        model = input('Exact model ID from your provider: ').strip()
+        parsed = urlparse(base)
+        local = parsed.hostname in {'localhost', '127.0.0.1', '::1'}
+        if (not parsed.hostname or parsed.username or parsed.password or parsed.query
+                or parsed.fragment or (parsed.scheme != 'https' and not (local and parsed.scheme == 'http'))):
+            print('Use HTTPS for remote providers or HTTP for a local model. No credentials in the URL.')
+            return False
+        if not model:
+            print('A model ID is required.')
+            return False
+        key = getpass.getpass('Model API key (hidden; Enter for a keyless local server): ').strip()
+        print('Testing one model request. Provider usage charges may apply.', flush=True)
+        client = LLMClient(base_url=base, api_key=key, model=model, timeout=30)
+        response = client.chat([{'role': 'user', 'content': 'Reply with OK only.'}])
+        if not response:
+            print('Model returned an empty response. Console not started.')
+            return False
+    except (EOFError, KeyboardInterrupt):
+        print('Model setup cancelled.')
+        return False
+    except Exception:
+        # Provider errors may echo credentials, request bodies or account information.
+        print('Model test failed. Check the provider URL, model ID, key, credit and network. Console not started.')
+        return False
+    env.update(TRADE_MCP_LLM_BASE_URL=base, TRADE_MCP_LLM_MODEL=model, TRADE_MCP_LLM_API_KEY=key)
+    print('Model response verified. Settings stay in this process only; agent JSON decisions can still fail validation.')
+    return True
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--console', action='store_true', help='start read-only console after doctor succeeds')
     parser.add_argument('--enable-demo-trading', action='store_true',
                         help='enable execution only after a fresh demo-account check; requires --console')
+    parser.add_argument('--setup-llm', action='store_true',
+                        help='prompt for an OpenAI-compatible model and verify a response; no keys saved')
     args = parser.parse_args(argv)
+    if args.setup_llm and (not args.console or not sys.stdin.isatty()):
+        parser.error('--setup-llm requires --console and an interactive terminal')
+    model_env = {}
+    if args.setup_llm and not configure_llm(model_env):
+        return 4
     if args.enable_demo_trading and not args.console:
         parser.error('--enable-demo-trading requires --console')
     if sys.stdin.isatty():
@@ -104,6 +147,7 @@ def main(argv=None) -> int:
         print('On Ubuntu/X11, install a clipboard reader if needed: sudo apt install xclip')
         return 2
     env = os.environ.copy()
+    env.update(model_env)
     env.update(TRADE_MCP_BACKEND='native', TRADE_MCP_MCP_URL=url,
                TRADE_MCP_MCP_TOKEN=token, TRADE_MCP_ALLOW_TRADING='false',
                TRADE_MCP_TRAINING_BUDGET='100')

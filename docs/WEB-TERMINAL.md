@@ -258,3 +258,18 @@ MT5 نمایش داده می‌شود و درخواست خودکار تکرار 
 انتخاب پوزیشن و پرشدن فرم در مرورگر آزمایش شده است. اگر روی ترمینال
 واقعی خطای بستن رخ دهد، نتیجهٔ JSON همان عملیات (بدون کلید) لازم است؛
 تصویر پنجرهٔ سفارش به‌تنهایی علت خطای بروکر یا ابزار MCP را مشخص نمی‌کند.
+
+### Interactive model setup
+
+Run `scripts/mt5_mcp_connect.py --console --enable-demo-trading --setup-llm`
+with the virtualenv Python. Enter your OpenAI-compatible provider base URL
+(including `/v1` if required), its exact model ID, and the model API key at the
+hidden prompt. This key is separate from the MT5 MCP key. A single generic chat
+request tests the provider before MT5 clipboard setup; provider charges may apply.
+Remote providers require HTTPS. Local HTTP model servers are supported.
+Failure or an empty response aborts startup; no provider errors or keys are printed.
+The configuration is process-only and must be entered again on restart, unless
+configured separately through the existing environment mechanism. A successful
+chat test does not guarantee a valid agent JSON response or permission to trade.
+Agents still need to be created/run through the Agents tab, and sizing limits remain
+in force. Do not send API keys in chat or paste the MT5 Copy block into Bash.
