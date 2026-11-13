@@ -210,3 +210,10 @@ def test_management_rejection_is_not_execution(mock_app, monkeypatch, action):
     assert result['error'] == 'broker_rejected'
     assert result['executed'] is False
     assert mock_app.store.get_proposal(proposal['proposal_id'])['status'] == 'failed'
+
+
+def test_explicit_volume_has_risk_preview(mock_app):
+    price = mock_app.mt5.tick('XAUUSD')['ask']
+    p = _proposal(mock_app, volume=.01, stop_loss=price-1)
+    assert p['preview']['risk_amount'] > 0
+    assert p['preview']['risk_percent_of_budget'] > 0

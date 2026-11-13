@@ -15,6 +15,7 @@ from .bridge.base import BridgeError
 from .config import Config, sizing_balance
 from .risk import (
     has_blockers,
+    loss_per_lot,
     lots_for_risk,
     normalise_volume,
     validate_order,
@@ -122,6 +123,8 @@ def propose_open(
     }
     proposal = store.create_proposal(payload, ttl=cfg.proposal_ttl)
     blocked = has_blockers(issues)
+    estimated_risk = (loss_per_lot(info, abs(entry-float(stop_loss)))*volume
+                      if stop_loss else None)
 
     return {
         "ok": True,
@@ -141,17 +144,11 @@ def propose_open(
             "take_profit": payload["tp"] or None,
             "risk_per_unit": payload["risk_per_unit"],
             "estimated_margin": margin,
-            "risk_amount": (sizing or {}).get("actual_risk"),
-            "risk_percent_of_equity": (
-                round(
-                    float((sizing or {}).get("actual_risk") or 0)
-                    / float(account.get("equity") or 1)
-                    * 100,
-                    2,
-                )
-                if sizing
-                else None
-            ),
+            "risk_amount": round(estimated_risk, 4) if estimated_risk is not None else None,
+            "risk_percent_of_budget": (round(estimated_risk/sizing_balance(account, cfg)*100, 4)
+                                       if estimated_risk is not None and sizing_balance(account, cfg)>0 else None),
+            "risk_percent_of_equity": (round(estimated_risk/float(account.get("equity") or 1)*100, 4)
+                                       if estimated_risk is not None else None),
             "trading_enabled": cfg.allow_trading,
         },
         "next_step": (

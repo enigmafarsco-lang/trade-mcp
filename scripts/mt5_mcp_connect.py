@@ -82,7 +82,11 @@ def read_clipboard() -> str:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--console', action='store_true', help='start read-only console after doctor succeeds')
+    parser.add_argument('--enable-demo-trading', action='store_true',
+                        help='enable execution only after a fresh demo-account check; requires --console')
     args = parser.parse_args(argv)
+    if args.enable_demo_trading and not args.console:
+        parser.error('--enable-demo-trading requires --console')
     if sys.stdin.isatty():
         print('Open MT5 > Tools > Options > MCP and click Copy now.')
         print('Return here and press Enter only. Do NOT paste the configuration.')
@@ -115,6 +119,18 @@ def main(argv=None) -> int:
     if result.returncode:
         print('Console not started. If HTTP 401 persists, the saved terminal key was rejected by the running server.')
         return result.returncode
+    if args.enable_demo_trading:
+        check = subprocess.run([sys.executable, '-c',
+            'from trade_mcp.app import build_app; from trade_mcp.config import Config; '
+            'a=build_app(Config.from_env()); '
+            'account=a.mt5.account_info(fresh=True); a.close(); '
+            'raise SystemExit(0 if account.get("trade_mode")=="demo" else 3)'],
+            env=env, capture_output=True, text=True)
+        if check.returncode:
+            print('Demo account could not be verified. Trading remains disabled; console not started.')
+            return 3
+        env['TRADE_MCP_ALLOW_TRADING'] = 'true'
+        print('Demo account verified. Execution enabled; each web order still requires confirmation.', flush=True)
     if args.console:
         return subprocess.call([sys.executable, '-m', 'trade_mcp', 'console', '--no-browser'], env=env)
     return 0

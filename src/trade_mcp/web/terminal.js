@@ -177,6 +177,14 @@ el('desk-compare').onclick=async()=>{
 let manualProposal=null,manualRevision=0;
 const manualReset=()=>{manualRevision++;manualProposal=null;el('manual-confirm').disabled=true;};
 for(const n of document.querySelectorAll('[id^="manual-"]'))if(['INPUT','SELECT'].includes(n.tagName))n.addEventListener('input',manualReset);
+el('manual-scenario').onclick=async()=>{
+ manualReset();const revision=manualRevision,button=el('manual-scenario'),box=el('manual-result'),symbol=el('manual-symbol').value;button.disabled=true;box.textContent='در حال محاسبهٔ سناریو از چارت…';
+ try{const d=await get('/api/analysis?'+new URLSearchParams({symbol}));if(revision!==manualRevision)return;const s=d.scenario||{},z=s.sizing||{};
+ if(!['buy','sell'].includes(s.action)||!z.ok||!z.volume||!s.stop_loss||!s.take_profit_1)throw new Error(z.error||'سناریوی قابل ورود با بودجهٔ فعلی وجود ندارد؛ معامله نکنید.');
+ el('manual-action').value='open';el('manual-symbol').value=d.symbol;el('manual-side').value=s.action;el('manual-volume').value=z.volume;el('manual-sl').value=s.stop_loss;el('manual-tp').value=s.take_profit_1;
+ box.textContent='سناریوی قاعده‌محور به فرم منتقل شد؛ مدل زبانی نیست و سفارش ایجاد نشده است. برای قیمت فعلی و کنترل ریسک، پیش‌نمایش بگیرید.\n'+(d.summary_fa||'');
+ }catch(e){box.textContent=e.message;}finally{button.disabled=false;}
+};
 el('manual-preview').onclick=async()=>{
  manualReset();const revision=manualRevision,button=el('manual-preview'),box=el('manual-result');button.disabled=true;box.textContent='در حال کنترل ریسک…';
  try{const payload={};for(const key of ['action','symbol','side','ticket','volume','risk','sl','tp'])payload[key]=el('manual-'+key).value;
@@ -185,7 +193,13 @@ el('manual-preview').onclick=async()=>{
  const r=await fetch('/api/manual/propose',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}),d=await r.json();
  if(revision!==manualRevision){box.textContent='فرم تغییر کرد؛ دوباره پیش‌نمایش بگیرید.';return;}
  if(!r.ok||!d.ok)throw new Error(d.message||d.error||'پیش‌نمایش ناموفق');
- const p=d.preview||{};box.textContent=`نماد: ${p.symbol||payload.symbol} | جهت: ${p.side||payload.side} | عملیات: ${payload.action}\nشناسه: ${d.proposal_id}\nوضعیت: ${d.blocked?'مسدود؛ اجرا ممکن نیست':'در انتظار تأیید جداگانه'}\nحجم: ${fmt(p.volume)}\nورود تخمینی: ${fmt(p.estimated_entry)}\nSL: ${fmt(p.stop_loss??p.new_sl)}\nTP: ${fmt(p.take_profit??p.new_tp)}\nمارجین: ${fmt(p.estimated_margin)}\n${d.auto_sl_note||''}\n${(d.blockers||[]).join('\n')}\n\nجزئیات:\n`+JSON.stringify(d,null,2);
+ const p=d.preview||{};
+ if(p.kind==='open'){
+  if(p.stop_loss!=null)el('manual-sl').value=p.stop_loss;
+  if(p.take_profit!=null)el('manual-tp').value=p.take_profit;
+  if(p.volume!=null)el('manual-volume').value=p.volume;
+ }
+ box.textContent=`نماد: ${p.symbol||payload.symbol} | جهت: ${p.side||payload.side} | عملیات: ${payload.action}\nشناسه: ${d.proposal_id}\nوضعیت: ${d.blocked?'مسدود؛ اجرا ممکن نیست':'در انتظار تأیید جداگانه'}\nحجم: ${fmt(p.volume)}\nورود تخمینی: ${fmt(p.estimated_entry)}\nSL: ${fmt(p.stop_loss??p.new_sl)}\nTP: ${fmt(p.take_profit??p.new_tp)}\nمارجین: ${fmt(p.estimated_margin)}\nزیان تخمینی پیش از هزینه: ${fmt(p.risk_amount)}\nدرصد بودجهٔ تمرینی: ${fmt(p.risk_percent_of_budget)}\n${d.auto_sl_note||''}\n${(d.blockers||[]).join('\n')}\n\nجزئیات:\n`+JSON.stringify(d,null,2);
  if(!d.blocked){manualProposal=d.proposal_id;el('manual-confirm').disabled=false;}
  }catch(e){box.textContent=e.message;}finally{button.disabled=false;}
 };

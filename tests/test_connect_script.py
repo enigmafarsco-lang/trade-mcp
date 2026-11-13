@@ -69,3 +69,29 @@ def test_success_starts_console_with_copied_key(monkeypatch):
     monkeypatch.setattr(connect.subprocess, 'call', launch)
     assert connect.main(['--console']) == 0
     assert calls[0][-2:] == ['console', '--no-browser']
+
+
+def test_demo_flag_enables_console_only_after_check(monkeypatch):
+    monkeypatch.setattr(connect, 'read_clipboard', configuration)
+    commands = []
+    def run(command, **kw):
+        assert kw['env']['TRADE_MCP_ALLOW_TRADING'] == 'false'
+        commands.append(command)
+        return SimpleNamespace(returncode=0, stdout='OK', stderr='')
+    monkeypatch.setattr(connect.subprocess, 'run', run)
+    def launch(command, **kw):
+        assert kw['env']['TRADE_MCP_ALLOW_TRADING'] == 'true'
+        return 0
+    monkeypatch.setattr(connect.subprocess, 'call', launch)
+    assert connect.main(['--console','--enable-demo-trading']) == 0
+    assert len(commands) == 2
+    assert commands[-1][1] == '-c'
+
+
+def test_demo_flag_rejects_unverified_account(monkeypatch):
+    monkeypatch.setattr(connect, 'read_clipboard', configuration)
+    results = iter([0,3])
+    monkeypatch.setattr(connect.subprocess, 'run', lambda *a, **kw: SimpleNamespace(
+        returncode=next(results),stdout='',stderr=''))
+    monkeypatch.setattr(connect.subprocess, 'call', lambda *a, **kw: pytest.fail('must not launch'))
+    assert connect.main(['--console','--enable-demo-trading']) == 3

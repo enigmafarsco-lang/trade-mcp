@@ -46,6 +46,8 @@ const {chromium} = require('playwright-core');
  await page.click('#manual-preview');
  await page.waitForFunction(()=>document.getElementById('manual-result').textContent.includes('مسدود'));
  assert.equal(await page.locator('#manual-confirm').isDisabled(),true,'disabled trading cannot be confirmed');
+ assert.ok(Number(await page.inputValue('#manual-tp'))>0,'computed TP populates form');
+ assert.ok(Number(await page.inputValue('#manual-sl'))>0,'SL is visible in form');
  await page.click('#order-dialog-close');
  await page.click('#desk-analyze');await page.waitForFunction(()=>document.getElementById('desk-analysis').textContent.includes('حجم:'));
  for(const tab of ['overview','analysis','training','plugins','agents','journal','settings'])await page.click(`[data-tab="${tab}"]`);
