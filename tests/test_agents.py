@@ -148,3 +148,27 @@ def test_auto_mode_executes_inside_limits(mock_app, monkeypatch):
         assert decided.get("status") in {"executed", "pending"}
         if decided["status"] == "executed":
             assert report["proposals"]
+
+
+def test_low_score_explains_wait_without_forcing_trade(mock_app):
+    engine = AgentEngine(cfg=mock_app.cfg, mt5=mock_app.mt5, store=mock_app.store)
+    engine.llm = LLMClient()
+    decision = engine._decide({'max_risk': .5}, {
+        'scenario': {'action':'sell','confidence':42,'stop_loss':3900,'take_profit_1':3860},
+        'summary_fa':'سناریوی فروش آزمایشی',
+    })
+    assert decision['action'] == 'wait'
+    assert decision['llm_status'] == 'not_configured'
+    assert '42' in decision['reason'] and '45' in decision['reason']
+    assert decision['wait_reasons']
+    assert mock_app.mt5.positions() == []
+
+
+def test_model_failure_fallback_is_visible(mock_app, monkeypatch):
+    engine = AgentEngine(cfg=mock_app.cfg, mt5=mock_app.mt5, store=mock_app.store)
+    engine.llm = LLMClient(base_url='http://unused/v1', model='test')
+    monkeypatch.setattr(engine.llm, 'chat_json', lambda *a: None)
+    decision = engine._decide({}, {'scenario':{'action':'sell','confidence':42}})
+    assert decision['llm_status'] == 'fallback'
+    assert 'پاسخ معتبر مدل دریافت نشد' in decision['reason']
+    assert decision['action'] == 'wait'

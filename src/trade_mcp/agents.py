@@ -237,6 +237,8 @@ class AgentEngine:
             "confidence": decision.get("confidence"),
             "reason": decision.get("reason"),
             "source": decision.get("source"),
+            "wait_reasons": decision.get("wait_reasons", []),
+            "llm_status": decision.get("llm_status", "used" if decision.get("source") == "llm" else "unknown"),
         }
         report["decisions"].append(entry)
 
@@ -316,17 +318,27 @@ class AgentEngine:
         # Deterministic fallback: trust the scenario engine.
         action = str(scenario.get("action") or "wait").lower()
         confidence = int(scenario.get("confidence") or 0)
+        reason = (scenario.get("reason") or analysis.get("summary_fa")
+                  or "سیگنال کافی برای ورود وجود ندارد.")
+        wait_reasons = []
         if confidence < ADVISORY_MIN_CONFIDENCE:
             action = "wait"
+            wait_reasons.append(f"امتیاز تحلیل {confidence} کمتر از حداقل ورود {ADVISORY_MIN_CONFIDENCE} است؛ سناریو به سفارش تبدیل نشد.")
+        elif action not in {"buy", "sell"}:
+            wait_reasons.append("تحلیل سناریوی ورود خرید یا فروش نداده است.")
+        llm_status = "fallback" if self.llm.configured else "not_configured"
+        model_note = ("پاسخ معتبر مدل دریافت نشد؛ از قواعد داخلی استفاده شد."
+                      if self.llm.configured else "مدل زبانی تنظیم نشده؛ این تحلیل قاعده‌محور است.")
+        reason = " | ".join([model_note, *wait_reasons, reason])
         return {
             "action": action,
             "confidence": confidence,
             "stop_loss": scenario.get("stop_loss"),
             "take_profit": scenario.get("take_profit_1"),
             "risk_percent": agent.get("max_risk"),
-            "reason": scenario.get("reason")
-            or analysis.get("summary_fa")
-            or "سیگنال کافی برای ورود وجود ندارد.",
+            "reason": reason,
+            "wait_reasons": wait_reasons,
+            "llm_status": llm_status,
             "source": "rules",
         }
 
