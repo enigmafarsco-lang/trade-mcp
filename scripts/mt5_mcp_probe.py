@@ -29,7 +29,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from trade_mcp.mcpclient import McpError, McpHttpClient, probe_tcp  # noqa: E402
+from trade_mcp.mcpclient import (  # noqa: E402
+    McpError,
+    McpHttpClient,
+    is_local_host,
+    probe_tcp,
+)
 
 TERMINAL_URL = "http://127.0.0.1:22346/mcp"
 MARKETDATA_URL = "https://www.metatrader.com/mcp"
@@ -61,6 +66,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--call", default="", help="tool name to invoke after listing")
     parser.add_argument("--args", default="{}", help="JSON object with the tool arguments")
     parser.add_argument("--dump", default="", help="write the full tool inventory here (JSON)")
+    parser.add_argument(
+        "--proxy",
+        choices=("auto", "never", "env"),
+        default="auto",
+        help="auto = bypass for 127.0.0.1/localhost (default), never = always bypass, env = honour http_proxy",
+    )
     parser.add_argument("--no-list", action="store_true", help="skip tools/list")
     opts = parser.parse_args(argv)
 
@@ -86,6 +97,18 @@ def main(argv: list[str] | None = None) -> int:
     for url in urls:
         print("=" * 78)
         print(f"endpoint : {url}")
+        bypass = {"auto": None, "never": True, "env": False}[opts.proxy]
+        local = is_local_host(url)
+        if bypass is None:
+            state = "bypassed (local endpoint)" if local else "environment setting"
+        else:
+            state = "bypassed (forced)" if bypass else "honoured from environment"
+        print(f"proxy    : {state}")
+        for var in ("http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
+            value = os.environ.get(var)
+            if value:
+                print(f"           ${var}={value}")
+
         blocked = probe_tcp(url)
         if blocked:
             print(f"  [FAIL] {blocked}")
@@ -95,11 +118,14 @@ def main(argv: list[str] | None = None) -> int:
             failures += 1
             continue
 
-        client = McpHttpClient(url, token, timeout=opts.timeout)
+        client = McpHttpClient(url, token, timeout=opts.timeout, bypass_proxy=bypass)
         try:
             info = client.initialize()
         except McpError as exc:
             print(f"  [FAIL] {exc}")
+            if exc.status == 503 and local:
+                print("         - try:  --proxy never   (some HTTP proxies answer 503 for local URLs)")
+                print("         - and make sure the 22346 endpoint is enabled in Tools > Options > MCP")
             failures += 1
             continue
 

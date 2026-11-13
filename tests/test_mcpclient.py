@@ -8,7 +8,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from trade_mcp.mcpclient import McpError, McpHttpClient, _parse_sse, probe_tcp
+from trade_mcp.mcpclient import (
+    McpError,
+    McpHttpClient,
+    _parse_sse,
+    is_local_host,
+    probe_tcp,
+)
 
 TOKEN = "good-token"
 SESSION = "sess-abc123"
@@ -229,3 +235,30 @@ def test_parse_sse_picks_matching_id_and_ignores_comments():
         "id": 9,
         "result": {"a": 1},
     }
+
+
+def test_is_local_host():
+    assert is_local_host("http://127.0.0.1:22346/mcp")
+    assert is_local_host("http://localhost:22346/mcp")
+    assert is_local_host("http://[::1]:22346/mcp")
+    assert not is_local_host("https://www.metatrader.com/mcp")
+    assert not is_local_host("http://example.com/mcp")
+
+
+def test_local_endpoint_ignores_environment_proxy(stub, monkeypatch):
+    """A stray http_proxy must not swallow requests to 127.0.0.1 (it did once)."""
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:1")
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+    monkeypatch.setenv("no_proxy", "")
+    client = McpHttpClient(stub, TOKEN, timeout=5).connect()
+    assert {tool["name"] for tool in client.list_tools()} == {"get_account", "place_order"}
+
+
+def test_remote_endpoint_honours_the_proxy_when_asked(stub, monkeypatch):
+    """bypass_proxy=False must keep the environment proxy (deliberately broken here)."""
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:1")
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+    monkeypatch.setenv("no_proxy", "")
+    client = McpHttpClient(stub, TOKEN, timeout=5, bypass_proxy=False)
+    with pytest.raises(McpError):
+        client.initialize()

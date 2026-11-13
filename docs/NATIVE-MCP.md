@@ -63,10 +63,43 @@ export MT5_MCP_TOKEN='...'
 | نشانه | معنی | کار |
 |---|---|---|
 | `nothing is listening on 127.0.0.1:22346` | سرور داخلی خاموش است یا MT5 بسته است | تیک Enable internal server + OK؛ `pgrep -af terminal64` |
+| `HTTP 503` روی `127.0.0.1` | پورت باز است ولی جواب از خود MT5 نیست | اول `env | grep -i proxy` (پایین)؛ بعد Endpoint را در تب MCP چک کن |
 | `HTTP 401` | کلید غلط/قدیمی | در همان تب API Key را دوباره تولید و پیست کن |
 | `HTTP 406` | کلاینت `Accept` را درست نفرستاده | از همین اسکریپت استفاده کن (هر دو نوع را می‌پذیرد) |
 | `session` خالی | سرور `Mcp-Session-Id` نداده | نسخه‌ی MT5 را آپدیت کن |
 | جواب خالی از `curl` | `-s` خطا را پنهان می‌کند | `-i` یا `-v` بزن، یا اسکریپت بالا |
+
+### ۵۰۳ روی آدرس لوکال = پروکسی
+
+`urllib` (و `requests`) متغیرهای `http_proxy`/`HTTPS_PROXY` را رعایت می‌کنند، پس درخواست
+`http://127.0.0.1:22346/mcp` از پروکسی رد می‌شود و پروکسی `503` برمی‌گرداند — درحالی که
+`curl --noproxy '*'` سالم جواب می‌دهد.
+
+کلاینت `trade_mcp.mcpclient` برای آدرس‌های لوکال (`127.0.0.1`, `localhost`, `::1` و
+آدرس‌های خصوصی) **همیشه** پروکسی را دور می‌زند. برای اجباری کردن:
+
+```bash
+.venv/bin/python scripts/mt5_mcp_probe.py --proxy never
+```
+
+و برای چک دستی:
+
+```bash
+env | grep -i proxy
+read -rsp 'key: ' K; echo
+curl -i --noproxy '*' -H "Authorization: Bearer $K" \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"p","version":"0"}}}' \
+  http://127.0.0.1:22346/mcp | head -30
+unset K
+```
+
+### سرور marketdata
+
+`https://www.metatrader.com/mcp` با کلید محلی ترمینال `401 MCP: Unauthorized` می‌دهد؛
+آن سرویس ابری است و کلیدش به حساب MQL5.com گره می‌خورد. برای تب اخبار نیازی به آن
+نیست — `news.py` با RSS کار می‌کند و همین کافی است.
 
 ## ۴) بعدش چه می‌شود
 

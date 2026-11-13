@@ -29,6 +29,7 @@ Wire notes (Streamable HTTP transport)
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import json
 import socket
 from typing import Any
@@ -83,6 +84,18 @@ def _parse_sse(text: str, want_id: Any = None) -> dict[str, Any] | None:
     return messages[-1]
 
 
+def is_local_host(url: str) -> bool:
+    """True for loopback/private addresses, which must never go through a proxy."""
+    host = urlparse(url).hostname or ""
+    if host in {"localhost", "localhost.localdomain", "::1"}:
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_private
+
+
 def probe_tcp(url: str, timeout: float = 2.0) -> str | None:
     """Pre-flight check: return an error string when nothing listens on the URL."""
     parsed = urlparse(url)
@@ -108,6 +121,7 @@ class McpHttpClient:
         timeout: float = DEFAULT_TIMEOUT,
         client_name: str = "trade-mcp",
         client_version: str = "0.2.0",
+        bypass_proxy: bool | None = None,
     ):
         self.url = url
         self.token = token
@@ -119,6 +133,11 @@ class McpHttpClient:
         self.protocol_version: str | None = None
         self._next_id = 0
         self._handshaken = False
+        # ``None`` = decide per URL: local endpoints always bypass the proxy,
+        # remote ones honour http_proxy/https_proxy/no_proxy as usual.
+        self.bypass_proxy = bypass_proxy
+        use_proxy = not (bypass_proxy if bypass_proxy is not None else is_local_host(url))
+        self._opener = request.build_opener(*([] if use_proxy else [request.ProxyHandler({})]))
 
     # ------------------------------------------------------------------ http
     def _id(self) -> int:
@@ -143,7 +162,7 @@ class McpHttpClient:
         body = json.dumps(payload).encode("utf-8")
         req = request.Request(self.url, data=body, headers=self._headers(), method="POST")
         try:
-            with request.urlopen(req, timeout=self.timeout) as response:
+            with self._opener.open(req, timeout=self.timeout) as response:
                 status = response.status
                 session = response.headers.get("Mcp-Session-Id")
                 if session:
@@ -157,8 +176,14 @@ class McpHttpClient:
             hint = ""
             if exc.code in {401, 403}:
                 hint = " - the API key looks wrong; regenerate it in Tools > Options > MCP"
+            elif exc.code == 503:
+                hint = (
+                    " - the port answers but not the MCP server itself: enable the "
+                    "endpoint in Tools > Options > MCP, and check for http_proxy/"
+                    "HTTPS_PROXY, which makes a local request go through the proxy"
+                )
             raise McpError(
-                f"HTTP {exc.code} from {self.url}{hint}: {text or exc.reason}",
+                f"HTTP {exc.code} from {self.url}{hint}: {text or '(empty body) ' + str(exc.reason)}",
                 status=exc.code,
             ) from None
         except error.URLError as exc:
