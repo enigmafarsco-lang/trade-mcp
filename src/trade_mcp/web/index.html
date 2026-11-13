@@ -72,6 +72,7 @@
 <nav>
   <button class="active" data-tab="overview">نمای کلی</button>
   <button data-tab="training">ترمینال آموزشی دمو</button>
+  <button data-tab="plugins">اندیکاتورها و افزونه‌ها</button>
   <button data-tab="analysis">تحلیل</button>
   <button data-tab="agents">ایجنت‌ها</button>
   <button data-tab="news">اخبار</button>
@@ -118,6 +119,7 @@
     <canvas id="tr-chart" height="400" style="width:100%;touch-action:none"></canvas></div>
     <div class="card"><h2>سناریو و محاسبات</h2><div id="tr-result"></div></div>
   </section>
+  <section id="tab-plugins"><div class="card"><h2>کتابخانهٔ اندیکاتورهای داخلی رایگان</h2><p>این‌ها محاسبات داخلی پروژه‌اند؛ افزونهٔ EX5 اجرا نمی‌شود. هر اندیکاتور سیگنال مستقل تضمین‌شده نیست. مقادیر مربوط به آخرین کندل بسته هستند.</p><div id="plugin-list"></div><p><label>نماد</label><input id="plugin-symbol" value="XAUUSD"></p><button id="plugin-run" class="primary">محاسبهٔ موارد انتخابی</button><div id="plugin-result"></div><canvas id="plugin-chart" height="240" style="width:100%"></canvas></div></section>
   <section id="tab-analysis">
     <div class="card">
       <h2>تحلیل چند تایم‌فریمی</h2>
@@ -207,20 +209,8 @@
         این کنسول و OpenCode هر دو به یک هسته وصل می‌شوند: OpenCode از راه MCP (stdio) و این صفحه از راه HTTP محلی.
         برای اینکه OpenCode هم همین ابزارها را ببیند، در فایل <code>~/.config/opencode/opencode.json</code> این بلوک را داشته باش:
       </div>
-      <pre>{
-  "mcp": {
-    "servers": {
-      "trade": {
-        "type": "local",
-        "command": ["/ABS/PATH/.venv/bin/trade-mcp", "serve"],
-        "environment": {
-          "TRADE_MCP_BACKEND": "file",
-          "TRADE_MCP_FILES_DIR": "/media/.../MetaTrader 5/MQL5/Files"
-        }
-      }
-    }
-  }
-}</pre>
+      <pre id="opencode-config">—</pre>
+      <p>کلید در این صفحه چاپ نمی‌شود. OpenCode را از شلی اجرا کنید که TRADE_MCP_MCP_TOKEN در آن export شده است. قالب فوق برای پیکربندی فعلی تولید می‌شود.</p>
       <div class="muted">سپس در OpenCode با <code>/mcps</code> بررسی کن که <code>trade</code> وصل است.</div>
     </div>
   </section>
@@ -253,6 +243,7 @@ document.querySelectorAll("nav button").forEach((b) => {
     if (b.dataset.tab === "news") loadNews();
     if (b.dataset.tab === "journal") loadJournal();
     if (b.dataset.tab === "settings") loadSettings();
+    if (b.dataset.tab === "plugins") loadPlugins();
     if (b.dataset.tab === "agents") loadAgents();
   };
 });
@@ -322,7 +313,7 @@ async function runAnalysis() {
     ["سوگیری", bias.bias || "—"],
     ["هم‌راستایی", nf(bias.alignment, 2)],
     ["اقدام پیشنهادی", ({buy: "خرید", sell: "فروش", wait: "انتظار"})[sc.action] || sc.action || "—"],
-    ["اطمینان", sc.confidence ?? "—"],
+    ["امتیاز تحلیل، نه احتمال برد", sc.confidence ?? "—"],
     ["ورود", nf(sc.entry_reference, 2)],
     ["حد ضرر", nf(sc.stop_loss, 2)],
   ].map(([k, v]) => `<div class="kpi"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
@@ -331,7 +322,8 @@ async function runAnalysis() {
       <td>${tf}</td><td>${p.trend || "—"}</td><td>${p.strength ?? "—"}</td>
       <td>${nf(p.rsi14, 1)}</td><td>${nf(p.adx14, 1)}</td><td>${nf(p.atr, 2)}</td>
       <td>${p.regime || "—"}</td></tr>`).join("");
-  $("an-scenario").textContent = JSON.stringify(sc, null, 2);
+  const sz=sc.sizing||{};
+  $("an-scenario").textContent = `سناریو: ${({buy:'خرید',sell:'فروش',wait:'انتظار'})[sc.action]||sc.action||'بدون ورود'}\nورود: ${sc.entry_reference??'—'}\nحد ضرر: ${sc.stop_loss??'—'}\nهدف اول: ${sc.take_profit_1??'—'}\nهدف دوم: ${sc.take_profit_2??'—'}\nحجم: ${sz.volume??'—'}\nبودجهٔ زیان: ${sz.risk_amount??'—'}\nزیان تخمینی حجم نهایی: ${sz.actual_risk??'—'}\nنسبت سود/ضرر: ${sc.reward_risk_1??'—'}\nامتیاز قواعد: ${sc.confidence??'—'} (احتمال آماری برد نیست)\n${(sz.warnings||[]).join('\n')}\n\nجزئیات فنی:\n`+JSON.stringify(sc,null,2);
   drawSpark(sym);
 }
 async function drawSpark(sym) {
@@ -432,7 +424,8 @@ async function addNote() {
 /* ---------------- settings ---------------- */
 async function loadSettings() {
   const d = await api("/api/settings");
-  $("cfg-json").textContent = JSON.stringify(d, null, 2);
+  $("cfg-json").textContent = `بک‌اند: ${d.backend}\nبودجهٔ مشترک تحلیل و ایجنت: ${d.training_budget} (ارز حساب)\nسقف ریسک: ${d.max_risk_percent}%\nمعامله: ${d.trading?'فعال':'غیرفعال'}\nمدل زبانی: ${d.llm.configured?d.llm.model:'پیکربندی نشده؛ تحلیل قاعده‌محور است'}\n\n`+JSON.stringify(d,null,2);
+  $("opencode-config").textContent=JSON.stringify(d.opencode,null,2);
 }
 
 async function refreshAll() {
@@ -451,6 +444,19 @@ document.getElementById('tr-backtest').onclick=async()=>{
  const d=await api('/api/training/backtest?'+q);out.replaceChildren();
  for(const text of ['تعداد معاملات: '+d.trades.length,'خالص نتیجه: '+d.net.toFixed(2),'موجودی نهایی: '+d.ending.toFixed(2),'بیشترین افت سرمایه ٪: '+d.max_drawdown_percent.toFixed(2),'درصد معاملات مثبت: '+(d.win_rate??'نامشخص'),...d.warnings_fa]){const p=document.createElement('p');p.textContent=text;out.append(p);}
  }catch(e){out.textContent=e.message;}finally{btn.disabled=false;}
+};
+async function loadPlugins(){
+ const box=document.getElementById('plugin-list');if(box.children.length)return;
+ try{const d=await api('/api/plugins');for(const p of d.plugins){const label=document.createElement('label'),input=document.createElement('input');input.type='checkbox';input.checked=true;input.value=p.id;input.style.width='auto';label.append(input,document.createTextNode(' '+p.name+' — '+p.help));box.append(label);}}catch(e){box.textContent=e.message;}
+}
+document.getElementById('plugin-run').onclick=async()=>{
+ const out=document.getElementById('plugin-result');out.textContent='در حال محاسبه…';
+ try{const selected=[...document.querySelectorAll('#plugin-list input:checked')].map(x=>x.value);if(!selected.length){out.textContent='حداقل یک مورد انتخاب کنید';return;}
+ const q=new URLSearchParams({symbol:document.getElementById('plugin-symbol').value,selected:selected.join(',')});const d=await api('/api/indicators?'+q);out.replaceChildren();
+ for(const [key,series] of Object.entries(d.series)){for(const [name,values] of Object.entries(series)){const p=document.createElement('p');p.textContent=key+' / '+name+' : '+(values.at(-1)?.toFixed(4)??'داده کافی نیست');out.append(p);}}
+ const cv=document.getElementById('plugin-chart'),w=cv.width=Math.max(300,cv.clientWidth),h=cv.height=240,c=cv.getContext('2d');c.fillStyle='#080d12';c.fillRect(0,0,w,h);
+ const values=Object.values(d.series[selected[0]])[0].slice(-100);const valid=values.filter(v=>v!==null);if(!valid.length)return;const lo=Math.min(...valid),hi=Math.max(...valid);c.strokeStyle='#4ea1ff';c.beginPath();let begun=false;values.forEach((v,i)=>{if(v===null)return;const x=10+i/(values.length-1)*Math.max(1,w-20),y=220-(v-lo)/(hi-lo||1)*200;if(begun)c.lineTo(x,y);else c.moveTo(x,y);begun=true;});c.stroke();
+ }catch(e){out.textContent=e.message;}
 };
 /* Demo training: textContent for all data; no order endpoints. */
 let trainingBars=[], chartCount=80, chartOffset=0, dragStart=null;

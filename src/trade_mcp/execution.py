@@ -12,7 +12,7 @@ import time
 from typing import Any
 
 from .bridge.base import BridgeError
-from .config import Config
+from .config import Config, sizing_balance
 from .risk import (
     has_blockers,
     lots_for_risk,
@@ -69,7 +69,7 @@ def propose_open(
     sizing: dict[str, Any] | None = None
     if volume is None:
         sizing = lots_for_risk(
-            balance=float(account.get("equity") or account.get("balance") or 0.0),
+            balance=sizing_balance(account, cfg),
             risk_percent=(cfg.max_risk_percent if risk_percent is None else float(risk_percent)),
             entry=entry,
             stop=float(stop_loss),

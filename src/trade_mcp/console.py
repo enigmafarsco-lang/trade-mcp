@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import sys
 import threading
 import time
 import webbrowser
@@ -32,6 +33,7 @@ from .bridge.base import BridgeError
 from .config import Config
 from .execution import confirm
 from .news import fetch_news
+from .plugins import CATALOG, calculate
 from .store import Store
 from .training import backtest, training_snapshot
 
@@ -202,6 +204,14 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path in {"/", "/index.html"}:
                 return self._index()
+            if path == "/api/plugins":
+                return self._json({"ok": True, "plugins": CATALOG})
+            if path == "/api/indicators":
+                with self.state.lock:
+                    symbol = self.state.app.mt5.resolve_symbol(query.get("symbol") or "XAUUSD")
+                    bars = self.state.app.mt5.candles(symbol, query.get("tf", "M15"), 300)[:-1]
+                    series = calculate(bars, query.get("selected", "ema,rsi,macd").split(","))
+                return self._json({"ok": True, "bars": bars, "series": series})
             if path == "/api/training/backtest":
                 with self.state.lock:
                     mt5 = self.state.app.mt5
@@ -292,6 +302,13 @@ class Handler(BaseHTTPRequestHandler):
             "symbol": cfg.default_symbol,
             "timeframes": list(cfg.timeframes),
             "trading": cfg.allow_trading,
+            "training_budget": cfg.training_budget,
+            "opencode": {"mcp": {"trade": {"type": "local",
+                "command": [sys.executable, "-m", "trade_mcp", "serve"],
+                "environment": {"TRADE_MCP_BACKEND": cfg.backend,
+                                "TRADE_MCP_MCP_URL": cfg.mcp_url,
+                                "TRADE_MCP_TRAINING_BUDGET": str(cfg.training_budget)},
+                "enabled": True}}},
             "max_lot": cfg.max_lot,
             "max_risk_percent": cfg.max_risk_percent,
             "allowed_symbols": list(cfg.allowed_symbols),

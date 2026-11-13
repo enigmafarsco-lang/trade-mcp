@@ -106,6 +106,7 @@ class Config:
     # trading guard rails
     allow_trading: bool = False
     max_lot: float = 0.10
+    training_budget: float = 100.0  # shared conservative sizing cap; account currency
     max_risk_percent: float = 1.0
     max_open_positions: int = 3
     max_spread_points: float = 60.0
@@ -154,6 +155,7 @@ class Config:
             ),
             allow_trading=_env_bool("ALLOW_TRADING", False),
             max_lot=_env_float("MAX_LOT", 0.10),
+            training_budget=_env_float("TRAINING_BUDGET", 100.0),
             max_risk_percent=_env_float("MAX_RISK_PERCENT", 1.0),
             max_open_positions=_env_int("MAX_OPEN_POSITIONS", 3),
             max_spread_points=_env_float("MAX_SPREAD_POINTS", 60.0),
@@ -204,3 +206,14 @@ class Config:
             if tf in VALID_TIMEFRAMES and tf not in out:
                 out.append(tf)
         return tuple(out) or self.timeframes
+
+
+def sizing_balance(account: dict, cfg) -> float:
+    """Never size against more than the account or the explicit practice cap."""
+    import math
+
+    equity = float(account.get("equity") or account.get("balance") or 0)
+    budget = float(getattr(cfg, "training_budget", 100))
+    if not math.isfinite(budget) or budget <= 0:
+        return 0.0
+    return max(0.0, min(equity, budget)) if math.isfinite(equity) else 0.0

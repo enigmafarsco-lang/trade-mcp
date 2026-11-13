@@ -15,6 +15,7 @@ def mock_app(tmp_path, monkeypatch):
     monkeypatch.setenv("TRADE_MCP_JOURNAL", str(tmp_path / "journal.sqlite3"))
     monkeypatch.setenv("TRADE_MCP_ALLOW_TRADING", "false")
     monkeypatch.setenv("TRADE_MCP_SYMBOL", "XAUUSD")
+    monkeypatch.setenv("TRADE_MCP_TRAINING_BUDGET", "10000")
     monkeypatch.setenv("TRADE_MCP_MAX_LOT", "0.10")
     monkeypatch.setenv("TRADE_MCP_MAX_RISK_PERCENT", "1.0")
 

@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from . import indicators as ta
+from .config import sizing_balance
 from .risk import lots_for_risk, reward_risk
 
 TF_WEIGHTS = {
@@ -475,7 +476,7 @@ def build_scenario(
     if account:
         pct = cfg.max_risk_percent if risk_percent is None else min(float(risk_percent), cfg.max_risk_percent)
         sizing = lots_for_risk(
-            balance=float(account.get("equity") or account.get("balance") or 0.0),
+            balance=sizing_balance(account, cfg),
             risk_percent=pct,
             entry=entry_mid,
             stop=stop,
@@ -616,7 +617,7 @@ def _summary_fa(result: dict[str, Any]) -> str:
     if sc.get("action") in {"buy", "sell"}:
         parts.append(
             "سناریو: {} در ناحیه {} تا {}، حد ضرر {}، هدف اول {} و هدف دوم {}، "
-            "نسبت سود به ضرر {} و اطمینان {}٪".format(
+            "نسبت سود به ضرر {} و امتیاز تحلیل {} از ۱۰۰ (نه احتمال برد)".format(
                 action_map.get(sc["action"], sc["action"]),
                 sc.get("entry_zone", [None, None])[0],
                 sc.get("entry_zone", [None, None])[1],

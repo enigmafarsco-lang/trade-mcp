@@ -46,6 +46,7 @@ def test_proposal_is_blocked_when_trading_disabled(mock_app):
 
 
 def test_confirm_executes_and_journals(mock_app):
+    mock_app.cfg.training_budget = 10000
     mock_app.cfg.allow_trading = True
     price = mock_app.mt5.tick("XAUUSD")["ask"]
     out = _proposal(mock_app, stop_loss=price - 3.0, risk_percent=0.5)

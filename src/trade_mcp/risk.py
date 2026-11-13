@@ -6,7 +6,7 @@ import math
 from collections.abc import Iterable
 from typing import Any
 
-from .config import Config
+from .config import Config, sizing_balance
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -82,6 +82,10 @@ def lots_for_risk(
         volume, notes = normalise_volume(max_lot, info)
         warnings.append(f"volume capped by TRADE_MCP_MAX_LOT ({max_lot})")
         warnings.extend(notes)
+    if volume * per_lot > risk_amount + 1e-9:
+        return {"ok": False, "volume": 0.0, "risk_amount": risk_amount,
+                "actual_risk": 0.0, "warnings": warnings,
+                "error": "حداقل حجم بروکر از بودجهٔ ریسک بیشتر است؛ معامله نکنید"}
     return {
         "ok": True,
         "volume": volume,
@@ -191,14 +195,16 @@ def validate_order(
     if stop and entry:
         per_lot = loss_per_lot(info, abs(entry - stop))
         risk = per_lot * volume
-        equity = _f(account.get("equity"), _f(account.get("balance"), 0.0))
+        equity = sizing_balance(account, cfg)
+        if equity <= 0:
+            add("blocker", "invalid_budget", "sizing budget must be positive")
         if equity > 0:
             risk_pct = risk / equity * 100.0
             if risk_pct > cfg.max_risk_percent + 1e-9:
                 add(
                     "blocker",
                     "risk_exceeded",
-                    f"the stop would risk {risk_pct:.2f}% of equity "
+                    f"the stop would risk {risk_pct:.2f}% of sizing budget "
                     f"(limit {cfg.max_risk_percent:.2f}%)",
                 )
 

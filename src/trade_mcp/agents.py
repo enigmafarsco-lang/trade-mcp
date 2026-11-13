@@ -388,7 +388,7 @@ class AgentEngine:
             fa = {"buy": "خرید", "sell": "فروش", "wait": "انتظار"}.get(action, action)
             line = f"{item.get('symbol')}: {fa}"
             if item.get("confidence"):
-                line += f" (اطمینان {item['confidence']})"
+                line += f" (امتیاز تحلیل {item['confidence']}؛ نه احتمال برد)"
             if item.get("proposal_id"):
                 line += f" - پیشنهاد {item['proposal_id']}"
             if item.get("status"):

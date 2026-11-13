@@ -60,7 +60,7 @@ def test_reward_risk():
 
 
 def test_min_stop_distance_and_validation_blocks_bad_orders():
-    cfg = Config(allow_trading=True, max_lot=0.1, max_risk_percent=1.0)
+    cfg = Config(allow_trading=True, training_budget=10000, max_lot=0.1, max_risk_percent=1.0)
     assert min_stop_distance(GOLD) == (25 + 2) * 0.01
 
     issues = validate_order(
@@ -81,7 +81,7 @@ def test_min_stop_distance_and_validation_blocks_bad_orders():
 
 
 def test_validation_blocks_oversized_risk_and_lot():
-    cfg = Config(allow_trading=True, max_lot=0.1, max_risk_percent=1.0)
+    cfg = Config(allow_trading=True, training_budget=10000, max_lot=0.1, max_risk_percent=1.0)
     issues = validate_order(
         cfg=cfg,
         info=GOLD,
@@ -99,7 +99,7 @@ def test_validation_blocks_oversized_risk_and_lot():
 
 
 def test_validation_passes_a_sane_order():
-    cfg = Config(allow_trading=True, max_lot=0.1, max_risk_percent=1.0)
+    cfg = Config(allow_trading=True, training_budget=10000, max_lot=0.1, max_risk_percent=1.0)
     issues = validate_order(
         cfg=cfg,
         info=GOLD,
