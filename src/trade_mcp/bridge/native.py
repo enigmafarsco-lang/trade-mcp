@@ -335,7 +335,8 @@ class NativeBridge:
     def _cmd_account_info(self, **_: Any) -> dict[str, Any]:
         raw = self.call("get_trading_account_info")
         self.last_raw["get_trading_account_info"] = raw
-        mode = as_text(find(raw, "trade_mode", "account_mode"), "").lower()
+        account = raw.get("account", raw)
+        mode = as_text(find(account, "trade_mode", "account_mode", "type"), "").lower()
         if not mode:
             demo = find(raw, "demo", "is_demo")
             mode = "demo" if as_bool(demo) else "real"
@@ -345,7 +346,7 @@ class NativeBridge:
             "name": as_text(find(raw, "name", "owner")),
             "company": as_text(find(raw, "company", "broker")),
             "currency": as_text(find(raw, "currency", "deposit_currency"), "USD"),
-            "leverage": as_int(find(raw, "leverage"), 1),
+            "leverage": as_int(find(raw, "leverage")) if find(raw, "leverage") is not None else None,
             "balance": as_float(find(raw, "balance")),
             "equity": as_float(find(raw, "equity")),
             "margin": as_float(find(raw, "margin")),
@@ -516,19 +517,19 @@ class NativeBridge:
     def _position_record(row: dict[str, Any]) -> dict[str, Any]:
         symbol = as_text(find(row, "symbol", "name"))
         return {
-            "ticket": as_int(find(row, "ticket", "position_ticket", "id")),
+            "ticket": as_int(find(row, "ticket", "position_ticket", "position_id", "id")),
             "symbol": symbol,
-            "type": _side(find(row, "type", "side", "direction")),
+            "type": _side(find(row, "type", "side", "direction", "action")),
             "volume": as_float(find(row, "volume", "lots")),
             "price_open": as_float(find(row, "price_open", "open_price", "price")),
             "sl": as_float(find(row, "sl", "stop_loss")),
             "tp": as_float(find(row, "tp", "take_profit")),
-            "price_current": as_float(find(row, "price_current", "current_price")),
+            "price_current": as_float(find(row, "price_current", "current_price", "price_last")),
             "profit": as_float(find(row, "profit", "profit_loss")),
-            "swap": as_float(find(row, "swap")),
+            "swap": as_float(find(row, "swap", "swaps")),
             "magic": as_int(find(row, "magic", "magic_number")),
             "comment": as_text(find(row, "comment")),
-            "time": to_epoch(find(row, "time", "open_time", "datetime")),
+            "time": to_epoch(find(row, "time", "open_time", "create_time", "datetime")),
         }
 
     @staticmethod
@@ -582,7 +583,7 @@ class NativeBridge:
                     "volume": as_float(find(row, "volume", "lots")),
                     "price": as_float(find(row, "price")),
                     "profit": as_float(find(row, "profit")),
-                    "swap": as_float(find(row, "swap")),
+                    "swap": as_float(find(row, "swap", "swaps")),
                     "commission": as_float(find(row, "commission", "fee")),
                     "magic": as_int(find(row, "magic", "magic_number")),
                     "time": to_epoch(find(row, "time", "datetime")),

@@ -151,7 +151,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(
             f"  [ OK ] account: {acct.get('login')}@{acct.get('server')} "
             f"balance={acct.get('balance')} {acct.get('currency')} "
-            f"equity={acct.get('equity')} leverage=1:{acct.get('leverage')}"
+            f"equity={acct.get('equity')} leverage={('1:' + str(acct['leverage'])) if acct.get('leverage') else 'unknown'}"
         )
 
         symbol = app.mt5.resolve_symbol(cfg.default_symbol)

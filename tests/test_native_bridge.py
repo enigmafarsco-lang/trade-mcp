@@ -497,3 +497,28 @@ def test_env_selects_the_native_backend(monkeypatch):
     assert Config.from_env().backend == "native"
     monkeypatch.setenv("TRADE_MCP_BACKEND", "nonsense")
     assert Config.from_env().backend == "bridge"
+
+
+def test_build_6318_position_field_names():
+    row = NativeBridge._position_record({
+        "position_id": 152898489594, "action": "sell", "symbol": "EURUSD",
+        "volume": 9.01, "price_open": 1.10793, "price_last": 1.10528,
+        "swaps": -6.31, "create_time": "2026-11-12T16:47:16",
+    })
+    assert row["ticket"] == 152898489594
+    assert row["type"] == "sell"
+    assert row["price_current"] == 1.10528
+    assert row["swap"] == -6.31
+    assert row["time"] > 0
+
+
+def test_build_6318_account_without_leverage(monkeypatch):
+    monkeypatch.setattr(NativeBridge, "call", lambda *a, **kw: {
+        "account": {"type": "demo", "login": 123, "balance": 100000},
+        "terminal": {"build": 6318},
+    })
+    native = NativeBridge.__new__(NativeBridge)
+    native.last_raw = {}
+    account = native._cmd_account_info()
+    assert account["trade_mode"] == "demo"
+    assert account["leverage"] is None
