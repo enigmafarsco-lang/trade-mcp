@@ -34,6 +34,7 @@ from .bridge.base import BridgeError
 from .config import Config
 from .execution import confirm, propose_manage, propose_open
 from .live import QuoteFeed
+from .manual import automatic_stop
 from .news import fetch_news
 from .plugins import CATALOG, calculate
 from .store import Store
@@ -247,9 +248,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "symbol": symbol, "timeframe": tf,
                                    "bars": bars, "series": indicators,
                                    "received_at_ms": int(time.time()*1000)})
+            if path == "/api/order-ticket":
+                with self.state.lock:
+                    mt5 = self.state.app.mt5
+                    symbol = mt5.resolve_symbol(query.get("symbol") or self.state.cfg.default_symbol)
+                    result = {"ok": True, "symbol": symbol, "spec": mt5.symbol_info(symbol, fresh=True),
+                              "quote": mt5.tick(symbol), "account": mt5.account_info(fresh=True),
+                              "trading_enabled": self.state.cfg.allow_trading,
+                              "training_budget": self.state.cfg.training_budget,
+                              "max_risk_percent": self.state.cfg.max_risk_percent}
+                return self._json(result)
             if path == "/api/marketwatch":
                 with self.state.lock:
-                    rows = self.state.app.mt5.symbols_list(limit=200)
+                    rows = self.state.app.mt5.symbols_list(limit=5000)
+                    if query.get("all") != "1":
+                        rows = [row for row in rows if row.get("visible", False)]
+                    q = query.get("q", "").casefold()
+                    rows = [r for r in rows if q in (str(r.get("symbol") or r.get("name") or "") + " " + str(r.get("description", ""))).casefold()]
                     for row in rows[:30]:
                         if not row.get("bid") or not row.get("ask"):
                             name = row.get("symbol") or row.get("name")
@@ -327,6 +342,13 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path.rstrip("/") or "/"
         payload = self._body()
         try:
+            if path == "/api/marketwatch/select":
+                name = str(payload.get("symbol") or "").strip()
+                if not name or len(name) > 64:
+                    raise ValueError("invalid symbol")
+                with self.state.lock:
+                    result = self.state.app.mt5.symbol_select(name, enable=bool(payload.get("enable", True)))
+                return self._json({"ok": True, "result": result})
             if path == "/api/manual/propose":
                 def number(key, required=False):
                     value = payload.get(key)
@@ -341,18 +363,32 @@ class Handler(BaseHTTPRequestHandler):
 
                 with self.state.lock:
                     mt5 = self.state.app.mt5
-                    if mt5.account_info(fresh=True).get("trade_mode") != "demo":
+                    account = mt5.account_info(fresh=True)
+                    if account.get("trade_mode") != "demo":
                         return self._json({"ok": False, "message": "ترید دستی وب فقط روی حساب دموی تأییدشده مجاز است."}, 403)
                     action = payload.get("action", "open")
                     if action == "open":
-                        stop = number("sl", True)
+                        stop, volume = number("sl"), number("volume")
+                        automatic = False
+                        symbol = str(payload.get("symbol") or self.state.cfg.default_symbol)
+                        if stop is None:
+                            if payload.get("auto_sl") is not True:
+                                raise ValueError("قیمت SL را وارد کنید یا محاسبهٔ خودکار SL را روشن کنید.")
+                            symbol = mt5.resolve_symbol(symbol)
+                            stop, volume = automatic_stop(spec=mt5.symbol_info(symbol, fresh=True),
+                                quote=mt5.tick(symbol), account=account, cfg=self.state.cfg,
+                                side=str(payload.get("side", "buy")), volume=volume, risk=number("risk"))
+                            automatic = True
                         if stop <= 0:
-                            raise ValueError("positive stop loss is required")
+                            raise ValueError("قیمت SL باید مثبت باشد.")
                         result = propose_open(mt5=mt5, cfg=self.state.cfg, store=self.state.store,
-                                              symbol=str(payload.get("symbol") or self.state.cfg.default_symbol),
-                                              side=str(payload.get("side", "buy")), volume=number("volume"),
+                                              symbol=symbol,
+                                              side=str(payload.get("side", "buy")), volume=volume,
                                               risk_percent=number("risk"), stop_loss=stop,
                                               take_profit=number("tp"), comment="web-manual-demo")
+                        result["auto_sl"] = automatic
+                        if automatic:
+                            result["auto_sl_note"] = "SL از بودجهٔ ریسک و حجم محاسبه شد، نه از تحلیل تکنیکال؛ هزینه و لغزش می‌توانند زیان را بیشتر کنند."
                     elif action in {"close", "modify"}:
                         try:
                             ticket = int(str(payload.get("ticket", "")))

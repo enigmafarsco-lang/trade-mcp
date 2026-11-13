@@ -163,3 +163,24 @@ def test_manual_demo_confirm_mock_only(mock_app):
                                             'tp':quote['ask']+9})
         assert modify['preview']['new_sl'] == position['sl']
         assert len(mock_app.mt5.positions()) == 1
+
+
+def test_watch_selected_and_automatic_stop_preview(mock_app):
+    mock_app.cfg.training_budget = 10000
+    with console(mock_app) as base:
+        with urlopen(base+'/api/marketwatch') as r:
+            selected = json.load(r)['symbols']
+        assert all(s['visible'] for s in selected)
+        assert 'XAUUSD.a' not in [s['symbol'] for s in selected]
+        with urlopen(base+'/api/marketwatch?all=1') as r:
+            assert any(not s['visible'] for s in json.load(r)['symbols'])
+        with urlopen(base+'/api/order-ticket?symbol=XAUUSD') as r:
+            assert json.load(r)['spec']['volume_min'] == .01
+        req = Request(base+'/api/manual/propose', data=json.dumps({
+            'symbol':'XAUUSD','side':'buy','volume':.01,'auto_sl':True}).encode(),
+            headers={'Content-Type':'application/json'})
+        with urlopen(req) as r:
+            d = json.load(r)
+        assert d['auto_sl'] and d['ok'] and d['blocked']
+        assert d['preview']['stop_loss'] > 0
+        assert mock_app.mt5.positions() == []

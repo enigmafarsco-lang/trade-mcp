@@ -409,7 +409,7 @@ class NativeBridge:
             "currency_base": as_text(find(record, "currency_base", "base_currency")),
             "currency_profit": as_text(find(record, "currency_profit", "profit_currency")),
             "currency_margin": as_text(find(record, "currency_margin", "margin_currency")),
-            "visible": as_bool(find(record, "visible", "in_market_watch"), True),
+            "visible": as_bool(find(record, "visible", "in_market_watch", "selected"), True),
             "trade_mode": as_text(find(record, "trade_mode"), "full"),
             "filling_mode": as_text(find(record, "filling_mode"), "both"),
             "native": True,
@@ -432,8 +432,6 @@ class NativeBridge:
         for row in rows:
             if row["symbol"].upper() == wanted.upper():
                 return row
-        if rows:
-            return rows[0]
         raise BridgeError(f"symbol '{wanted}' is not in Market Watch", code="unknown_symbol")
 
     def _cmd_symbol_select(self, symbol: str = "", enable: bool = True, **_: Any) -> dict[str, Any]:

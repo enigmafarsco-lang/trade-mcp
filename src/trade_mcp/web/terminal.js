@@ -108,20 +108,33 @@ function renderAccount(d){
  const target=el('desk-positions');target.replaceChildren();
  const table=make('table'),head=make('tr');for(const title of ['نوع','تیکت','نماد','جهت','حجم','ورود','SL','TP','سود','عملیات'])head.append(make('th',title));table.append(head);
  for(const [type,list] of [['پوزیشن',d.positions],['سفارش',d.orders]])for(const p of list){const tr=make('tr');for(const v of [type,p.ticket,p.symbol,p.type,p.volume,p.price_open,p.sl,p.tp,p.profit])tr.append(make('td',fmt(v)));
- const actions=make('td');if(type==='پوزیشن')for(const [action,title] of [['modify','SL/TP'],['close','بستن کامل']]){const b=make('button',title,'ghost');b.onclick=()=>{manualReset();el('manual-action').value=action;el('manual-ticket').value=String(p.ticket);el('manual-symbol').value=p.symbol;el('manual-sl').value=p.sl||'';el('manual-tp').value=p.tp||'';el('manual-volume').value='';el('manual-result').textContent='عملیات انتخاب شد؛ ابتدا پیش‌نمایش بگیرید.';el('manual-preview').scrollIntoView({behavior:'smooth',block:'center'});};actions.append(b);}tr.append(actions);table.append(tr);}
+ const actions=make('td');if(type==='پوزیشن')for(const [action,title] of [['modify','SL/TP'],['close','بستن کامل']]){const b=make('button',title,'ghost');b.onclick=()=>{manualReset();el('manual-action').value=action;el('manual-ticket').value=String(p.ticket);el('manual-symbol').value=p.symbol;el('manual-sl').value=p.sl||'';el('manual-tp').value=p.tp||'';el('manual-volume').value='';el('manual-result').textContent='عملیات انتخاب شد؛ ابتدا پیش‌نمایش بگیرید.';openManualPanel();el('manual-preview').scrollIntoView({behavior:'smooth',block:'center'});};actions.append(b);}tr.append(actions);table.append(tr);}
  target.append(table);if(!d.positions.length&&!d.orders.length)target.append(make('p','پوزیشن یا سفارش بازی وجود ندارد.'));
 }
-function drawWatch(){const box=el('desk-symbols');box.replaceChildren();const q=el('desk-search').value.trim().toUpperCase();for(const r of rows.filter(r=>(r.name||r.symbol||'').toUpperCase().includes(q)).slice(0,100)){const symbol=r.name||r.symbol,b=make('button',`${symbol}  ${fmt(r.bid)} / ${fmt(r.ask)}`);b.onclick=()=>{if(!active)return;active.symbol=symbol;active.offset=0;active.load();persist();};box.append(b);}}
+function openManualPanel(){const dialog=el('order-dialog');el('order-dialog-body').append(el('manual-panel'));if(!dialog.open)dialog.showModal();}
+el('order-dialog-close').onclick=()=>el('order-dialog').close();
+el('order-dialog').addEventListener('close',()=>el('manual-slot').append(el('manual-panel')));
+async function openOrder(symbol){
+ manualReset();el('manual-action').value='open';el('manual-symbol').value=symbol;el('manual-ticket').value='';el('manual-sl').value='';el('manual-tp').value='';el('manual-result').textContent='پیش‌نمایش سفارش هنوز ساخته نشده است.';openManualPanel();el('manual-ticket-info').textContent='دریافت قیمت و مشخصات…';
+ try{const d=await get('/api/order-ticket?'+new URLSearchParams({symbol}));if(el('manual-symbol').value!==symbol)return;el('manual-symbol').value=d.symbol;el('manual-volume').value=d.spec.volume_min;el('manual-volume').step=d.spec.volume_step;el('manual-volume').min=d.spec.volume_min;el('manual-volume').max=d.spec.volume_max;
+ el('manual-ticket-info').textContent=`${d.symbol} | ${d.account.server} | ${d.account.trade_mode} | Bid ${fmt(d.quote.bid)} / Ask ${fmt(d.quote.ask)} | حداقل حجم ${fmt(d.spec.volume_min)} | گام ${fmt(d.spec.volume_step)} | اجرای سفارش: ${d.trading_enabled?'فعال، نیازمند تأیید':'خاموش؛ فقط پیش‌نمایش'}`;
+ }catch(e){el('manual-ticket-info').textContent=e.message;}
+}
+function drawWatch(){const box=el('desk-symbols');box.replaceChildren();const q=el('desk-search').value.trim().toUpperCase();for(const r of rows.filter(r=>((r.name||r.symbol||'')+' '+(r.description||'')).toUpperCase().includes(q)).slice(0,200)){const symbol=r.name||r.symbol,entry=make('div'),b=make('button',`${symbol}  ${fmt(r.bid)} / ${fmt(r.ask)}${r.visible===false?' • مخفی':''}`),chart=make('button','چارت');
+ b.onclick=()=>openOrder(symbol);chart.onclick=()=>{if(!active)return;active.symbol=symbol;active.offset=0;active.load();persist();};entry.append(b,chart);
+ if(r.visible===false){const add=make('button','افزودن به مارکت‌واچ MT5');add.onclick=async()=>{try{const res=await fetch('/api/marketwatch/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol,enable:true})});const d=await res.json();if(!res.ok||!d.ok)throw new Error(d.message||d.error);lastWatch=0;await refresh();}catch(e){status(e.message);}};entry.append(add);}
+ box.append(entry);}}
+
 async function refresh(){if(busy||!started)return;busy=true;el('desk-refresh').disabled=true;status('در حال خواندن داده…');try{await Promise.all(charts.map(c=>c.load('chart')));const now=Date.now();
  if(now-lastDetail>=10000){const d=await get('/api/account-state');for(const c of charts)if(c.data)Object.assign(c.data,d);if(active?.data)renderAccount(active.data);lastDetail=Date.now();}
- if(now-lastWatch>=30000){const d=await get('/api/marketwatch');rows=d.symbols;drawWatch();lastWatch=Date.now();}
+ if(now-lastWatch>=30000){const d=await get('/api/marketwatch?all='+(el('desk-all-symbols').checked?'1':'0'));rows=d.symbols;drawWatch();lastWatch=Date.now();}
  status('کندل و اندیکاتور: هدف ۲ ثانیه • حساب: ۱۰ ثانیه • مارکت‌واچ عمومی: ۳۰ ثانیه • قیمت نمادهای باز: نرخ انتخابی');
  }catch(e){status('اتصال قطع یا داده نامعتبر: '+e.message);}finally{busy=false;el('desk-refresh').disabled=false;}}
 function add(o){if(charts.length>=4){status('حداکثر چهار نمودار همزمان.');return;}const c=new Chart(o);charts.push(c);c.activate();c.load();persist();}
 function layout(){el('desk-charts').classList.toggle('single',oneColumn);charts.forEach(c=>c.draw());}
 async function init(){if(started){charts.forEach(c=>c.draw());return;}started=true;const list=Array.isArray(saved.charts)&&saved.charts.length?saved.charts.slice(0,4):[{symbol:'XAUUSD',tf:'M15'},{symbol:'XAUUSD',tf:'H1'}];for(const o of list)add(o);layout();await refresh();restartLive();}
 el('desk-add').onclick=()=>add({symbol:active?.symbol||'XAUUSD',tf:'H1'});
-el('desk-layout').onclick=()=>{oneColumn=!oneColumn;layout();persist();};el('desk-refresh').onclick=refresh;el('desk-search').oninput=drawWatch;
+el('desk-layout').onclick=()=>{oneColumn=!oneColumn;layout();persist();};el('desk-refresh').onclick=refresh;el('desk-search').oninput=drawWatch;el('desk-all-symbols').onchange=()=>{lastWatch=0;refresh();};
 function visible(){return started&&el('desk-auto').checked&&el('tab-terminal').classList.contains('active')&&!document.hidden;}
 async function pollQuotes(generation){
  if(!visible()||generation!==liveGeneration)return;
@@ -162,17 +175,18 @@ for(const n of document.querySelectorAll('[id^="manual-"]'))if(['INPUT','SELECT'
 el('manual-preview').onclick=async()=>{
  manualReset();const revision=manualRevision,button=el('manual-preview'),box=el('manual-result');button.disabled=true;box.textContent='در حال کنترل ریسک…';
  try{const payload={};for(const key of ['action','symbol','side','ticket','volume','risk','sl','tp'])payload[key]=el('manual-'+key).value;
+ payload.auto_sl=el('manual-auto-sl').checked;
  if(payload.action==='close')delete payload.volume; // this UI offers full close only
  const r=await fetch('/api/manual/propose',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}),d=await r.json();
  if(revision!==manualRevision){box.textContent='فرم تغییر کرد؛ دوباره پیش‌نمایش بگیرید.';return;}
  if(!r.ok||!d.ok)throw new Error(d.message||d.error||'پیش‌نمایش ناموفق');
- const p=d.preview||{};box.textContent=`نماد: ${p.symbol||payload.symbol} | جهت: ${p.side||payload.side} | عملیات: ${payload.action}\nشناسه: ${d.proposal_id}\nوضعیت: ${d.blocked?'مسدود؛ اجرا ممکن نیست':'در انتظار تأیید جداگانه'}\nحجم: ${fmt(p.volume)}\nورود تخمینی: ${fmt(p.estimated_entry)}\nSL: ${fmt(p.stop_loss??p.new_sl)}\nTP: ${fmt(p.take_profit??p.new_tp)}\nمارجین: ${fmt(p.estimated_margin)}\n${(d.blockers||[]).join('\n')}\n\nجزئیات:\n`+JSON.stringify(d,null,2);
+ const p=d.preview||{};box.textContent=`نماد: ${p.symbol||payload.symbol} | جهت: ${p.side||payload.side} | عملیات: ${payload.action}\nشناسه: ${d.proposal_id}\nوضعیت: ${d.blocked?'مسدود؛ اجرا ممکن نیست':'در انتظار تأیید جداگانه'}\nحجم: ${fmt(p.volume)}\nورود تخمینی: ${fmt(p.estimated_entry)}\nSL: ${fmt(p.stop_loss??p.new_sl)}\nTP: ${fmt(p.take_profit??p.new_tp)}\nمارجین: ${fmt(p.estimated_margin)}\n${d.auto_sl_note||''}\n${(d.blockers||[]).join('\n')}\n\nجزئیات:\n`+JSON.stringify(d,null,2);
  if(!d.blocked){manualProposal=d.proposal_id;el('manual-confirm').disabled=false;}
  }catch(e){box.textContent=e.message;}finally{button.disabled=false;}
 };
 el('manual-confirm').onclick=async()=>{
  if(!manualProposal||!confirm('همین پیشنهاد روی حساب دمو اجرا شود؟ این عملیات واقعاً پوزیشن را باز/بسته یا تغییر می‌دهد.'))return;
- const id=manualProposal;manualReset();try{const r=await fetch('/api/proposals/'+encodeURIComponent(id)+'/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}),d=await r.json();el('manual-result').textContent=JSON.stringify(d,null,2);await refresh();}catch(e){el('manual-result').textContent=e.message;}
+ const id=manualProposal;manualReset();try{const r=await fetch('/api/proposals/'+encodeURIComponent(id)+'/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}),d=await r.json();el('manual-result').textContent=(d.executed?'MT5 اجرای سفارش را پذیرفت؛ نتیجهٔ ترمینال:\n':'اجرا نشد؛ علت:\n')+JSON.stringify(d,null,2);lastDetail=0;await refresh();}catch(e){el('manual-result').textContent=e.message;}
 };
 el('desk-analyze').onclick=async()=>{if(!active)return;const symbol=active.symbol,button=el('desk-analyze');button.disabled=true;el('desk-analysis').textContent='در حال تحلیل…';try{const d=await get('/api/analysis?symbol='+encodeURIComponent(symbol));const s=d.scenario||{},z=s.sizing||{};el('desk-analysis').textContent=(d.summary_fa||'')+'\n'+`ورود: ${fmt(s.entry_reference)} | SL: ${fmt(s.stop_loss)} | TP1: ${fmt(s.take_profit_1)}\nحجم: ${fmt(z.volume)} | بودجهٔ زیان: ${fmt(z.risk_amount)} | زیان تخمینی: ${fmt(z.actual_risk)}\n${z.error||''}\n${(z.warnings||[]).join('\n')}\n${(d.warnings||[]).join('\n')}\nتحلیل قاعده‌محور است، احتمال برد تضمین‌شده نیست.`;}catch(e){el('desk-analysis').textContent=e.message;}finally{button.disabled=false;}};
 el('desk-llm').onclick=async()=>{

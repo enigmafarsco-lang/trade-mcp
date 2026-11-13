@@ -91,12 +91,12 @@
     <label>نرخ قیمت <select id="desk-rate"><option value="250">۲۵۰ ms</option><option value="500" selected>۵۰۰ ms</option><option value="1000">۱ ثانیه</option><option value="2000">۲ ثانیه</option></select></label>
     <span id="desk-live" role="status">قیمت زنده در انتظار…</span><button id="desk-reset" class="ghost">بازنشانی چیدمان</button></div>
     <div id="desk-status" role="status">برای شروع تب ترمینال را باز کنید.</div>
-    <div class="desk"><aside class="desk-watch"><h2>Market Watch</h2><input id="desk-search" placeholder="جست‌وجوی نماد"><div id="desk-symbols"></div><p>کلیک روی نماد: نمودار فعال • مشخصات از بروکر متصل خوانده می‌شوند.</p></aside>
+    <div class="desk"><aside class="desk-watch"><h2>Market Watch</h2><input id="desk-search" placeholder="جست‌وجوی نماد"><label><input id="desk-all-symbols" type="checkbox" style="width:auto"> فهرست همهٔ نمادها (شامل مخفی)</label><div id="desk-symbols"></div><p>کلیک روی نماد: پنجرهٔ سفارش؛ دکمهٔ چارت: نمودار فعال • مشخصات از بروکر متصل خوانده می‌شوند.</p></aside>
     <div id="desk-charts" class="desk-charts"></div></div>
     <div class="desk-account" id="desk-account"></div>
     <div class="desk-bottom"><h2>پوزیشن‌ها و سفارش‌ها</h2><div id="desk-positions"></div></div>
     <div class="desk-bottom"><h2>پنجرهٔ داده و مقایسهٔ کندل</h2><button id="desk-compare" class="ghost">بازخوانی مستقیم ۳۰۰ کندل و نمایش ۵ کندل آخر</button><p>برای مقایسه، حساب، نماد دقیق (با پسوند) و تایم‌فریم MT5 باید یکسان باشند. زمان‌های بدون منطقهٔ زمانی، ساعت دیواری فید هستند؛ نه تبدیل قطعی به UTC.</p><div id="desk-candles"></div></div>
-    <div class="desk-bottom"><h2>ترید دستی دمو • Market</h2><p>ابتدا پیش‌نمایش بگیرید؛ سپس جداگانه تأیید کنید. با ALLOW_TRADING=false هیچ معامله‌ای اجرا نمی‌شود. سفارش Limit/Stop و بستن جزئی در این پنل پشتیبانی نشده‌اند.</p>
+    <div id="manual-slot"><div id="manual-panel" class="desk-bottom"><h2>ترید دستی دمو • Market</h2><p id="manual-ticket-info"></p><p>ابتدا پیش‌نمایش بگیرید؛ سپس جداگانه تأیید کنید. با ALLOW_TRADING=false هیچ معامله‌ای اجرا نمی‌شود. سفارش Limit/Stop و بستن جزئی در این پنل پشتیبانی نشده‌اند.</p>
     <div class="row">
     <div><label>عملیات</label><select id="manual-action"><option value="open">بازکردن Market</option><option value="modify">تغییر SL/TP</option><option value="close">بستن کامل پوزیشن</option></select></div>
     <div><label>نماد</label><input id="manual-symbol" value="XAUUSD"></div>
@@ -104,9 +104,9 @@
     <div><label>تیکت (تغییر/بستن)</label><input id="manual-ticket" inputmode="numeric"></div>
     <div><label>حجم (خالی = محاسبه با ریسک)</label><input id="manual-volume" type="number" min="0.01" step="0.01"></div>
     <div><label>ریسک ٪ برای حجم خودکار</label><input id="manual-risk" type="number" min="0.01" value="1" step="0.1"></div>
-    <div><label>قیمت SL (برای بازکردن اجباری)</label><input id="manual-sl" type="number" step="any"></div>
+    <div><label>قیمت SL (خالی = خودکار، اگر روشن باشد)</label><input id="manual-sl" type="number" step="any"></div>
     <div><label>قیمت TP</label><input id="manual-tp" type="number" step="any"></div>
-    </div><p><button id="manual-preview" class="primary">پیش‌نمایش و کنترل ریسک</button> <button id="manual-confirm" class="ghost" disabled>تأیید و اجرای همین پیش‌نمایش</button></p><pre id="manual-result">هنوز پیشنهادی ایجاد نشده است.</pre></div>
+    </div><p><label><input id="manual-auto-sl" type="checkbox" checked style="width:auto"> SL خودکار از بودجهٔ ریسک، اگر قیمت SL خالی است</label></p><p><button id="manual-preview" class="primary">پیش‌نمایش و کنترل ریسک</button> <button id="manual-confirm" class="ghost" disabled>تأیید و اجرای همین پیش‌نمایش</button></p><pre id="manual-result">هنوز پیشنهادی ایجاد نشده است.</pre></div></div><dialog id="order-dialog"><button id="order-dialog-close" class="ghost">بستن پنجره</button><div id="order-dialog-body"></div></dialog>
     <div class="desk-bottom"><h2>تحلیل نمودار فعال</h2><button id="desk-analyze" class="primary">تحلیل و سناریوی توضیح‌پذیر</button><button id="desk-llm" class="ghost">توضیح هوش مصنوعی (نیازمند تنظیم مدل)</button><button id="desk-training" class="ghost">محاسبهٔ ریسک و بک‌تست</button><div id="desk-analysis"></div></div>
   </section>
   <section id="tab-overview">
