@@ -45,6 +45,7 @@ const {chromium} = require('playwright-core');
  assert.equal(await page.locator('.order-modes button:disabled').count(),3);
  await page.click('#order-sell');assert.equal(await page.inputValue('#manual-side'),'sell');
  await page.click('#order-buy');assert.equal(await page.inputValue('#manual-side'),'buy');
+ await page.waitForFunction(()=>!document.getElementById('manual-scenario').disabled);
  await page.fill('#manual-sl',String(snapshot.quote.ask-.5));
  await page.fill('#manual-tp',String(snapshot.quote.ask+1));
  await page.click('#manual-preview');

@@ -257,7 +257,8 @@ class Handler(BaseHTTPRequestHandler):
                               "trading_enabled": self.state.cfg.allow_trading,
                               "terminal": mt5.terminal_info(), "positions": mt5.positions(),
                               "training_budget": self.state.cfg.training_budget,
-                              "max_risk_percent": self.state.cfg.max_risk_percent}
+                              "max_risk_percent": self.state.cfg.max_risk_percent,
+                              "llm_configured": LLMClient.from_config(self.state.cfg).configured}
                 return self._json(result)
             if path == "/api/marketwatch":
                 with self.state.lock:

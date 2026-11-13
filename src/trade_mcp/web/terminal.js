@@ -115,15 +115,17 @@ function renderAccount(d){
  const actions=make('td');if(type==='پوزیشن')for(const [action,title] of [['modify','SL/TP'],['close','بستن کامل']]){const b=make('button',title,'ghost');b.onclick=async()=>{openManualPanel();el('manual-action').value=action;await loadManualPositions(p.ticket);manualMode();el('manual-result').textContent='پوزیشن انتخاب شد؛ ابتدا پیش‌نمایش بگیرید.';};actions.append(b);}tr.append(actions);table.append(tr);}
  target.append(table);if(!d.positions.length&&!d.orders.length)target.append(make('p','پوزیشن یا سفارش بازی وجود ندارد.'));
 }
-let orderQuoteTimer=null,orderQuoteSequence=0;
+let orderQuoteTimer=null,orderQuoteSequence=0,orderQuoteBusy=false;
 async function refreshOrderQuote(){
+ if(orderQuoteBusy)return;orderQuoteBusy=true;
  const symbol=el('manual-symbol').value.trim(),sequence=++orderQuoteSequence;
  try{const d=await get('/api/order-ticket?'+new URLSearchParams({symbol}));
  if(sequence!==orderQuoteSequence||symbol!==el('manual-symbol').value.trim())return;
  el('order-bid').textContent=fmt(d.quote.bid);el('order-ask').textContent=fmt(d.quote.ask);
  el('order-title').textContent='Order: '+d.symbol+' • '+d.account.trade_mode;
+ el('order-model-status').textContent=d.llm_configured?'مدل زبانی تنظیم شده است؛ این محاسبات عددی و قاعده‌محورند، نه پاسخ مدل.':'مدل زبانی تنظیم نشده است؛ تحلیل و محاسبهٔ ریسک قاعده‌محور است.';
  el('order-quote-status').textContent='MT5 quote • '+new Date().toLocaleTimeString()+' • polling 2s, not tick streaming';
- }catch(e){if(sequence!==orderQuoteSequence)return;el('order-bid').textContent='—';el('order-ask').textContent='—';el('order-quote-status').textContent=e.message;}
+ }catch(e){if(sequence!==orderQuoteSequence)return;el('order-bid').textContent='—';el('order-ask').textContent='—';el('order-quote-status').textContent=e.message;}finally{orderQuoteBusy=false;}
 }
 for(const button of document.querySelectorAll('[data-order-mode]'))button.onclick=()=>{
  el('manual-action').value=button.dataset.orderMode;el('manual-action').dispatchEvent(new Event('change'));
@@ -141,6 +143,8 @@ async function openOrder(symbol,side='buy'){
  manualReset();el('manual-action').value='open';el('manual-symbol').value=symbol;el('manual-ticket').value='';el('manual-sl').value='';el('manual-tp').value='';el('manual-result').textContent='پیش‌نمایش سفارش هنوز ساخته نشده است.';openManualPanel();el('manual-ticket-info').textContent='دریافت قیمت و مشخصات…';
  try{const d=await get('/api/order-ticket?'+new URLSearchParams({symbol}));if(el('manual-symbol').value!==symbol)return;el('manual-symbol').value=d.symbol;el('manual-volume').value=d.spec.volume_min;setManualPositions(d.positions||[]);manualMode();el('manual-volume').step=d.spec.volume_step;el('manual-volume').min=d.spec.volume_min;el('manual-volume').max=d.spec.volume_max;
  el('manual-ticket-info').textContent=`${d.symbol} | ${d.account.server} | ${d.account.trade_mode} | Bid ${fmt(d.quote.bid)} / Ask ${fmt(d.quote.ask)} | حداقل حجم ${fmt(d.spec.volume_min)} | سیاست پرشدن گزارش‌شده: ${d.spec.filling_mode||'نامشخص'} | گام ${fmt(d.spec.volume_step)} | مجوز برنامه: ${d.trading_enabled?'روشن؛ نیازمند تأیید':'خاموش؛ فقط پیش‌نمایش'} | مجوز MCP در MT5: ${d.terminal.mcp_trade_allowed==null?'نامشخص':d.terminal.mcp_trade_allowed?'روشن':'خاموش؛ اجرای سفارش رد می‌شود'}`;
+ el('manual-risk').value=d.max_risk_percent;el('manual-risk').max=d.max_risk_percent;
+ if(el('manual-action').value==='open')await el('manual-scenario').onclick();
  }catch(e){el('manual-ticket-info').textContent=e.message;}
 }
 function drawWatch(){const box=el('desk-symbols');box.replaceChildren();const q=el('desk-search').value.trim().toUpperCase();for(const r of rows.filter(r=>((r.name||r.symbol||'')+' '+(r.description||'')).toUpperCase().includes(q)).slice(0,200)){const symbol=r.name||r.symbol,entry=make('div'),b=make('button',`${symbol}  ${fmt(r.bid)} / ${fmt(r.ask)}${r.visible===false?' • مخفی':''}`),chart=make('button','چارت');
@@ -155,7 +159,7 @@ async function refresh(){if(busy||!started)return;busy=true;el('desk-refresh').d
  }catch(e){status('اتصال قطع یا داده نامعتبر: '+e.message);}finally{busy=false;el('desk-refresh').disabled=false;}}
 function add(o){if(charts.length>=4){status('حداکثر چهار نمودار همزمان.');return;}const c=new Chart(o);charts.push(c);c.activate();c.load();persist();}
 function layout(){el('desk-charts').classList.toggle('single',oneColumn);charts.forEach(c=>c.draw());}
-async function init(){if(started){charts.forEach(c=>c.draw());return;}started=true;const list=Array.isArray(saved.charts)&&saved.charts.length?saved.charts.slice(0,4):[{symbol:'XAUUSD',tf:'M15'},{symbol:'XAUUSD',tf:'H1'}];for(const o of list)add(o);layout();await refresh();restartLive();}
+async function init(){if(started){charts.forEach(c=>c.draw());return;}started=true;refreshOrderQuote();const list=Array.isArray(saved.charts)&&saved.charts.length?saved.charts.slice(0,4):[{symbol:'XAUUSD',tf:'M15'},{symbol:'XAUUSD',tf:'H1'}];for(const o of list)add(o);layout();await refresh();restartLive();}
 el('desk-add').onclick=()=>add({symbol:active?.symbol||'XAUUSD',tf:'H1'});
 el('desk-layout').onclick=()=>{oneColumn=!oneColumn;layout();persist();};el('desk-refresh').onclick=refresh;el('desk-search').oninput=drawWatch;el('desk-all-symbols').onchange=()=>{lastWatch=0;refresh();};
 function visible(){return started&&el('desk-auto').checked&&el('tab-terminal').classList.contains('active')&&!document.hidden;}
@@ -226,7 +230,13 @@ for(const n of document.querySelectorAll('[id^="manual-"]'))if(['INPUT','SELECT'
 el('manual-scenario').onclick=async()=>{
  manualReset();const revision=manualRevision,button=el('manual-scenario'),box=el('manual-result'),symbol=el('manual-symbol').value;button.disabled=true;box.textContent='در حال محاسبهٔ سناریو از چارت…';
  try{const d=await get('/api/analysis?'+new URLSearchParams({symbol}));if(revision!==manualRevision)return;const s=d.scenario||{},z=s.sizing||{};
- if(!['buy','sell'].includes(s.action)||!z.ok||!z.volume||!s.stop_loss||!s.take_profit_1)throw new Error(z.error||'سناریوی قابل ورود با بودجهٔ فعلی وجود ندارد؛ معامله نکنید.');
+ if(!z.ok){
+ el('manual-volume').value='';
+ if(s.stop_loss)el('manual-sl').value=s.stop_loss;
+ if(s.take_profit_1)el('manual-tp').value=s.take_profit_1;
+ box.textContent=(z.error||'ورود مجاز نیست')+'\nبودجهٔ زیان: '+fmt(z.risk_amount)+'\nحداقل لات بروکر: '+fmt(z.minimum_volume)+'\nزیان تخمینی حداقل لات تا SL: '+fmt(z.minimum_volume_loss)+'\nفاصلهٔ ورود تا SL: '+fmt(z.stop_distance)+'\nحجم خام محاسبه‌شده: '+fmt(z.raw_volume)+'\nحجم قابل اجرا: صفر؛ سفارش ایجاد نشد. SL/TP فقط سناریو هستند. برای بازکردن معامله، بودجه یا SL را خودکار تغییر نمی‌دهیم.';return;
+ }
+ if(!['buy','sell'].includes(s.action)||!z.volume||!s.stop_loss||!s.take_profit_1)throw new Error('سناریوی قابل ورود وجود ندارد؛ معامله نکنید.');
  el('manual-action').value='open';el('manual-symbol').value=d.symbol;el('manual-side').value=s.action;el('manual-volume').value=z.volume;el('manual-sl').value=s.stop_loss;el('manual-tp').value=s.take_profit_1;manualMode();
  box.textContent='سناریوی قاعده‌محور به فرم منتقل شد؛ مدل زبانی نیست و سفارش ایجاد نشده است. برای قیمت فعلی و کنترل ریسک، پیش‌نمایش بگیرید.\n'+(d.summary_fa||'');
  }catch(e){box.textContent=e.message;}finally{button.disabled=false;}

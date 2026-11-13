@@ -123,3 +123,16 @@ def test_symbol_allowlist_matches_broker_suffixes():
     assert cfg.is_symbol_allowed("xauusdm")
     assert not cfg.is_symbol_allowed("EURUSD")
     assert not cfg.is_symbol_allowed("")
+
+
+def test_blocked_sizing_explains_minimum_lot_cost():
+    info = {"volume_min": .01, "volume_step": .01, "volume_max": 100,
+            "trade_tick_size": .01, "trade_tick_value": 1}
+    result = lots_for_risk(100, 1, 3000, 2980, info)
+    assert result['ok'] is False
+    assert result['volume'] == 0
+    assert result['risk_amount'] == 1
+    assert result['minimum_volume'] == .01
+    assert result['minimum_volume_loss'] == 20
+    assert result['stop_distance'] == 20
+    assert result['raw_volume'] == .0005

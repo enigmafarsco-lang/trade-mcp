@@ -85,6 +85,11 @@ def lots_for_risk(
     if volume * per_lot > risk_amount + 1e-9:
         return {"ok": False, "volume": 0.0, "risk_amount": risk_amount,
                 "actual_risk": 0.0, "warnings": warnings,
+                "minimum_volume": _f(info.get("volume_min"), 0.01),
+                "minimum_volume_loss": round(_f(info.get("volume_min"), 0.01) * per_lot, 4),
+                "risk_per_lot": round(per_lot, 4),
+                "stop_distance": round(distance, 5),
+                "raw_volume": raw,
                 "error": "حداقل حجم بروکر از بودجهٔ ریسک بیشتر است؛ معامله نکنید"}
     return {
         "ok": True,
