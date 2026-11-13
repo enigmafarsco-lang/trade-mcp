@@ -28,7 +28,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mt5_mcp_probe import _parse_targets, _parse_tokens, _short  # noqa: E402
 
-from trade_mcp.mcpclient import McpError, McpHttpClient, is_local_host  # noqa: E402
+from trade_mcp.mcpclient import (  # noqa: E402
+    McpError,
+    McpHttpClient,
+    is_local_host,
+    key_fingerprint,
+    key_paste_problem,
+)
 
 TERMINAL_URL = "http://127.0.0.1:22346/mcp"
 
@@ -129,6 +135,10 @@ def main(argv: list[str] | None = None) -> int:
     if not token:
         print("no key given", file=sys.stderr)
         return 2
+    print(f"key    : {key_fingerprint(token)}")
+    problem = key_paste_problem(token)
+    if problem:
+        print(f"         !! {problem} - paste only the bare key, not the Copy block")
 
     calls = _read_calls(opts.symbol)
     if opts.tool:

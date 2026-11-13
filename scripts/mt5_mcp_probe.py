@@ -41,6 +41,8 @@ from trade_mcp.mcpclient import (  # noqa: E402
     McpError,
     McpHttpClient,
     is_local_host,
+    key_fingerprint,
+    key_paste_problem,
     probe_tcp,
 )
 
@@ -156,7 +158,10 @@ def main(argv: list[str] | None = None) -> int:
         token = token_for(name)
         print("=" * 78)
         print(f"endpoint : {url}   [{name}]")
-        print(f"key      : {'given' if token else 'MISSING'}")
+        print(f"key      : {'given (' + key_fingerprint(token) + ')' if token else 'MISSING'}")
+        problem = key_paste_problem(token) if token else None
+        if problem:
+            print(f"           !! {problem} - that is a Copy block, not the bare key")
         bypass = {"auto": None, "never": True, "env": False}[opts.proxy]
         local = is_local_host(url)
         if bypass is None:

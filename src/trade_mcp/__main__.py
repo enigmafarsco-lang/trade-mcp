@@ -84,7 +84,15 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"  files dir   : {cfg.files_dir or '(auto-detect)'}")
     elif backend in {"native", "mcp"}:
         print(f"  mcp url     : {cfg.mcp_url}")
-        print(f"  mcp key     : {'set' if cfg.mcp_token else 'MISSING (see docs/NATIVE-MCP.md)'}")
+        if cfg.mcp_token:
+            from .mcpclient import key_fingerprint, key_paste_problem
+
+            print(f"  mcp key     : set ({key_fingerprint(cfg.mcp_token)})")
+            problem = key_paste_problem(cfg.mcp_token)
+            if problem:
+                print(f"                !! {problem} - paste only the bare key, not the Copy block")
+        else:
+            print("  mcp key     : MISSING (see docs/NATIVE-MCP.md)")
     else:
         print(f"  listen      : {cfg.host}:{cfg.port}")
     print(f"  symbol      : {cfg.default_symbol}  timeframes={','.join(cfg.timeframes)}")
@@ -116,6 +124,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     print(f"         - is TradeMCPFile.mq5 on a chart? files dir {status.get('ea_dir')}")
                     print("         - mt5_status/json shows the last heartbeat it wrote")
                 elif backend in {"native", "mcp"}:
+                    from .mcpclient import key_paste_problem
+
+                    problem = key_paste_problem(cfg.mcp_token) if cfg.mcp_token else None
+                    if problem:
+                        print(f"         - the key you gave {problem}; paste only the bare key")
                     print("         - is the internal MCP server enabled in Tools > Options > MCP?")
                     print(f"         - is the 'terminal' key the one for {cfg.mcp_url}?")
                     print(f"         - reason: {status.get('reason')}")

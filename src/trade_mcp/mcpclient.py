@@ -84,6 +84,35 @@ def _parse_sse(text: str, want_id: Any = None) -> dict[str, Any] | None:
     return messages[-1]
 
 
+def key_fingerprint(token: str) -> str:
+    """Describe a key without revealing it: length plus four characters either end."""
+    text = (token or "").strip()
+    if not text:
+        return "empty"
+    if len(text) < 12:
+        return f"len={len(text)} (too short to be a key)"
+    return f"len={len(text)} {text[:4]}...{text[-4:]}"
+
+
+def key_paste_problem(token: str) -> str | None:
+    """Reason why this value cannot be a bare API key (e.g. a whole Copy block)."""
+    text = token or ""
+    if not text.strip():
+        return None
+    if text != text.strip():
+        return "leading or trailing whitespace"
+    for marker in ('"', "'", "{", "}", "[", "]", "\n", "\r", "\t"):
+        if marker in text:
+            return f"contains {marker!r}"
+    if any(ch.isspace() for ch in text):
+        return "contains whitespace"
+    lowered = text.lower()
+    for word in ("api_key", "mt5_mcp", "bearer", "authorization"):
+        if word in lowered:
+            return f"contains {word!r}"
+    return None
+
+
 def is_local_host(url: str) -> bool:
     """True for loopback/private addresses, which must never go through a proxy."""
     host = urlparse(url).hostname or ""

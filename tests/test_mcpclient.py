@@ -262,3 +262,27 @@ def test_remote_endpoint_honours_the_proxy_when_asked(stub, monkeypatch):
     client = McpHttpClient(stub, TOKEN, timeout=5, bypass_proxy=False)
     with pytest.raises(McpError):
         client.initialize()
+
+
+def test_key_fingerprint_never_reveals_the_key():
+    from trade_mcp.mcpclient import key_fingerprint
+
+    secret = "0123456789abcdef0123456789abcdef"
+    shown = key_fingerprint(secret)
+    assert shown.startswith("len=32 ")
+    assert secret not in shown
+    assert "0123" in shown and "cdef" in shown
+    assert key_fingerprint("") == "empty"
+    assert "too short" in key_fingerprint("abc")
+
+
+def test_key_paste_problem_detects_a_pasted_copy_block():
+    from trade_mcp.mcpclient import key_paste_problem
+
+    assert key_paste_problem('{"env":{"MT5_MCP_API_KEY":"abc"}}')
+    assert key_paste_problem("api_key = abc")
+    assert key_paste_problem("Bearer abc")
+    assert key_paste_problem(" abc")
+    assert key_paste_problem("abc def")
+    assert key_paste_problem("0123456789abcdef") is None
+    assert key_paste_problem("") is None
