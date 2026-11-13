@@ -224,6 +224,7 @@ export TRADE_MCP_LLM_API_KEY="sk-..."
 | [docs/FILE-BRIDGE.md](docs/FILE-BRIDGE.md) | پل فایلی: چرا، چگونه، عیب‌یابی (مسیر پیش‌فرض) |
 | [docs/CONSOLE.md](docs/CONSOLE.md) | کنسول محلی: تب‌ها، ایجنت‌ها، حالت‌های اختیار، API |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | پروتکل پیام‌ها (همان قرارداد برای سوکت و فایل) |
+| [docs/NATIVE-MCP.md](docs/NATIVE-MCP.md) | سرور MCP داخلی MT5: اتصال بدون اکسپرت و بدون کامپایل |
 
 ## وضعیت پروژه
 
