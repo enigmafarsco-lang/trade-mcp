@@ -7,9 +7,13 @@ const fmt = v => v===null||v===undefined?'—':typeof v==='number'?Number(v.toFi
 async function get(path){const r=await fetch(path);const d=await r.json();if(!r.ok||d.ok===false)throw new Error(d.message||d.error||'پاسخ نامعتبر');return d;}
 const KEY='trade-desk-v1';
 let saved={};try{saved=JSON.parse(localStorage.getItem(KEY)||'{}')||{};}catch(_){}
-let charts=[],active=null,rows=[],timer=null,busy=false,oneColumn=!!saved.single,started=false;
+let charts=[],active=null,rows=[],timer=null,slowTimer=null,busy=false,oneColumn=!!saved.single,started=false;
+let quoteBusy=false,liveFailures=0,lastDetail=0,lastWatch=0,liveGeneration=0;
+const validRates=[250,500,1000,2000];
+el('desk-rate').value=String(validRates.includes(saved.rate)?saved.rate:500);
+el('desk-auto').checked=saved.live!==false;
 const status=text=>el('desk-status').textContent=text;
-function persist(){try{localStorage.setItem(KEY,JSON.stringify({single:oneColumn,charts:charts.map(c=>c.settings())}));}catch(_){status('ذخیرهٔ چیدمان در مرورگر ممکن نیست.');}}
+function persist(){try{localStorage.setItem(KEY,JSON.stringify({single:oneColumn,rate:Number(el('desk-rate').value),live:el('desk-auto').checked,charts:charts.map(c=>c.settings())}));}catch(_){status('ذخیرهٔ چیدمان در مرورگر ممکن نیست.');}}
 const colors=['#73b8ff','#ffbc65','#da8cff','#6ed7cf','#f680ab'];
 class Chart {
  constructor(options={}){
@@ -46,18 +50,36 @@ class Chart {
  activate(){active=this;charts.forEach(c=>c.root.classList.toggle('selected',c===this));if(this.data)renderAccount(this.data);}
  addLine(l){l.symbol=this.symbol;l.tf=this.tf;this.lines.push(l);this.lines=this.lines.slice(-30);persist();this.draw();}
  point(e){const r=this.cv.getBoundingClientRect(),s=this.scale;const i=Math.max(0,Math.min(s.bars.length-1,Math.floor((e.clientX-r.left)/s.dx)));return {time:s.bars[i].time,price:s.price(e.clientY-r.top)};}
- async load(){
-  const seq=++this.sequence;this.quote.classList.remove('chart-error');this.quote.textContent='در حال خواندن '+this.symbol+' '+this.tf;
-  try{const selected=this.selected.size?[...this.selected].join(','):'ema';const q=new URLSearchParams({symbol:this.symbol,tf:this.tf,selected});const d=await get('/api/terminal?'+q);if(seq!==this.sequence)return;this.data=d;this.symbol=d.symbol;this.input.value=d.symbol;this.quote.textContent=`${d.account.server?.includes('Mock')?'[SIMULATED] ':''}${d.symbol} ${d.timeframe} | Bid ${fmt(d.quote.bid)} | Ask ${fmt(d.quote.ask)} | ${new Date().toLocaleTimeString('fa-IR')} • تازه‌ترین کندل ممکن است باز باشد`;
-   if(active===this)renderAccount(d);this.draw();persist();
-  }catch(e){if(seq!==this.sequence)return;this.quote.textContent='قطع/خطا؛ دادهٔ قبلی ممکن است قدیمی باشد: '+e.message;this.quote.classList.add('chart-error');}
+ async load(mode='full'){
+  if(this.pending){if(mode==='full')this.reloadAfter=true;return;}
+  this.pending=true;const seq=++this.sequence,symbol=this.symbol,tf=this.tf;
+  if(mode==='full'){this.quote.classList.remove('chart-error');this.quote.textContent='در حال خواندن '+symbol+' '+tf;}
+  try{const selected=this.selected.size?[...this.selected].join(','):'ema';const q=new URLSearchParams({symbol,tf,selected});const d=await get((mode==='chart'&&this.data?'/api/chart?':'/api/terminal?')+q);if(seq!==this.sequence||symbol!==this.symbol||tf!==this.tf)return;
+   const previous=this.data;this.data={...previous,...d};
+   // A slower chart snapshot must not overwrite a newer quote.
+   if(previous?.symbol===d.symbol&&previous?.quote?.received_at_ms&&!d.received_at_ms)this.data.quote=previous.quote;
+   this.symbol=d.symbol;this.input.value=d.symbol;this.lastChart=Date.now();
+   this.root.classList.remove('chart-stale');
+   if(mode==='full'){this.updateQuote(this.data.quote);if(active===this)renderAccount(this.data);}
+   this.draw();persist();
+  }catch(e){if(seq!==this.sequence)return;this.root.classList.add('chart-stale');this.quote.textContent='قطع/خطا؛ دادهٔ قبلی ممکن است قدیمی باشد: '+e.message;this.quote.classList.add('chart-error');}
+  finally{this.pending=false;if(this.reloadAfter&&this.root.isConnected){this.reloadAfter=false;this.load();}}
  }
+ updateQuote(q){
+  if(!this.data)return;const prev=this.data.quote?.bid;this.data.quote=q;
+  this.lastQuote=Date.now();this.quote.classList.remove('chart-error');this.quote.title='زمان نمایش‌داده‌شده زمان دریافت است؛ نه تضمین زمان تیک بروکر.';
+  this.quote.classList.toggle('quote-up',Number(q.bid)>Number(prev));this.quote.classList.toggle('quote-down',Number(q.bid)<Number(prev));
+  this.quote.textContent=`${this.data.account.server?.includes('Mock')?'[SIMULATED] ':''}${this.symbol} ${this.tf} | Bid ${fmt(q.bid)} | Ask ${fmt(q.ask)} | spread ${fmt(q.spread_points)} pt | دریافت ${new Date(q.received_at_ms||Date.now()).toLocaleTimeString('fa-IR')}`;
+  this.draw();
+ }
+
  draw(){
   const rect=this.cv.getBoundingClientRect();if(rect.width<20||!this.data?.bars?.length)return;
   const w=rect.width,h=rect.height,dpr=window.devicePixelRatio||1;this.cv.width=Math.round(w*dpr);this.cv.height=Math.round(h*dpr);
   const c=this.cv.getContext('2d');c.scale(dpr,dpr);c.direction='ltr';c.textAlign='left';c.fillStyle='#090e15';c.fillRect(0,0,w,h);c.font='10px monospace';
   const end=this.data.bars.length-this.offset,start=Math.max(0,end-this.count),bars=this.data.bars.slice(start,end);if(!bars.length)return;
-  const lo=Math.min(...bars.map(b=>b.low)),hi=Math.max(...bars.map(b=>b.high)),pad=(hi-lo||1)*.08;
+  const livePrices=this.offset===0?[this.data.quote?.bid,this.data.quote?.ask].filter(v=>Number.isFinite(v)&&v>0):[];
+  const lo=Math.min(...bars.map(b=>b.low),...livePrices),hi=Math.max(...bars.map(b=>b.high),...livePrices),pad=(hi-lo||1)*.08;
   const lowerKeys=['rsi','macd','atr','adx','stochastic'].filter(k=>this.selected.has(k)&&this.data.series[k]);
   const plotH=lowerKeys.length?Math.max(140,h-32-lowerKeys.length*45):h-35;
   const y=p=>plotH-10-(p-lo+pad)/(hi-lo+2*pad)*(plotH-30),dx=(w-85)/bars.length;
@@ -68,6 +90,10 @@ class Chart {
   c.save();c.beginPath();c.rect(0,0,w-85,plotH);c.clip();
   for(const key of ['ema','bollinger'])if(this.selected.has(key)&&this.data.series[key])Object.entries(this.data.series[key]).forEach(([name,values],i)=>{seriesLine(values,y,colors[i]);c.fillStyle=colors[i];c.fillText((key==='bollinger'?'BB':key)+' '+name,8+i*90,key==='bollinger'?27:14);});
   c.restore();
+  // Live bid is a separate overlay, NOT an invented historical candle.
+  if(this.offset===0)for(const [field,color,label] of [['bid','#60a5fa','BID'],['ask','#f9a870','ASK']]){
+   const price=this.data.quote?.[field];if(price&&price>=lo-pad&&price<=hi+pad){c.strokeStyle=color;c.setLineDash([2,3]);c.beginPath();c.moveTo(0,y(price));c.lineTo(w-85,y(price));c.stroke();c.setLineDash([]);c.fillStyle=color;c.fillText(label+' '+fmt(price),Math.max(8,w-200),y(price)+(field==='ask'?-4:12));}
+  }
   // Real broker positions, not hypothetical orders; never drag-to-trade.
   for(const p of this.data.positions.filter(p=>p.symbol===this.symbol))for(const [field,label,color] of [['price_open','POS '+p.ticket,'#e9b769'],['sl','SL','#ed6678'],['tp','TP','#41c69b']]){const v=p[field];if(!v||v<lo-pad||v>hi+pad)continue;c.strokeStyle=color;c.setLineDash([4,4]);c.beginPath();c.moveTo(0,y(v));c.lineTo(w-85,y(v));c.stroke();c.setLineDash([]);c.fillStyle=color;c.fillText(label+' '+fmt(v),8,y(v)-4);}
   const xFor=t=>{let best=0;for(let i=1;i<bars.length;i++)if(Math.abs(bars[i].time-t)<Math.abs(bars[best].time-t))best=i;return (best+.5)*dx;};
@@ -86,13 +112,41 @@ function renderAccount(d){
  target.append(table);if(!d.positions.length&&!d.orders.length)target.append(make('p','پوزیشن یا سفارش بازی وجود ندارد.'));
 }
 function drawWatch(){const box=el('desk-symbols');box.replaceChildren();const q=el('desk-search').value.trim().toUpperCase();for(const r of rows.filter(r=>(r.name||r.symbol||'').toUpperCase().includes(q)).slice(0,100)){const symbol=r.name||r.symbol,b=make('button',`${symbol}  ${fmt(r.bid)} / ${fmt(r.ask)}`);b.onclick=()=>{if(!active)return;active.symbol=symbol;active.offset=0;active.load();persist();};box.append(b);}}
-async function refresh(){if(busy||!started)return;busy=true;el('desk-refresh').disabled=true;status('در حال خواندن داده…');try{await Promise.all(charts.map(c=>c.load()));const d=await get('/api/marketwatch');rows=d.symbols;drawWatch();status('آخرین تلاش: '+new Date().toLocaleTimeString('fa-IR')+' • به‌روزرسانی دوره‌ای، نه استریم تیک؛ خطای هر نمودار کنار همان نمودار نمایش داده می‌شود.');}catch(e){status('اتصال قطع یا داده نامعتبر: '+e.message);}finally{busy=false;el('desk-refresh').disabled=false;}}
+async function refresh(){if(busy||!started)return;busy=true;el('desk-refresh').disabled=true;status('در حال خواندن داده…');try{await Promise.all(charts.map(c=>c.load('chart')));const now=Date.now();
+ if(now-lastDetail>=10000){const d=await get('/api/account-state');for(const c of charts)if(c.data)Object.assign(c.data,d);if(active?.data)renderAccount(active.data);lastDetail=Date.now();}
+ if(now-lastWatch>=30000){const d=await get('/api/marketwatch');rows=d.symbols;drawWatch();lastWatch=Date.now();}
+ status('کندل و اندیکاتور: هدف ۲ ثانیه • حساب: ۱۰ ثانیه • مارکت‌واچ عمومی: ۳۰ ثانیه • قیمت نمادهای باز: نرخ انتخابی');
+ }catch(e){status('اتصال قطع یا داده نامعتبر: '+e.message);}finally{busy=false;el('desk-refresh').disabled=false;}}
 function add(o){if(charts.length>=4){status('حداکثر چهار نمودار همزمان.');return;}const c=new Chart(o);charts.push(c);c.activate();c.load();persist();}
 function layout(){el('desk-charts').classList.toggle('single',oneColumn);charts.forEach(c=>c.draw());}
-async function init(){if(started){charts.forEach(c=>c.draw());return;}started=true;const list=Array.isArray(saved.charts)&&saved.charts.length?saved.charts.slice(0,4):[{symbol:'XAUUSD',tf:'M15'},{symbol:'XAUUSD',tf:'H1'}];for(const o of list)add(o);layout();await refresh();}
+async function init(){if(started){charts.forEach(c=>c.draw());return;}started=true;const list=Array.isArray(saved.charts)&&saved.charts.length?saved.charts.slice(0,4):[{symbol:'XAUUSD',tf:'M15'},{symbol:'XAUUSD',tf:'H1'}];for(const o of list)add(o);layout();await refresh();restartLive();}
 el('desk-add').onclick=()=>add({symbol:active?.symbol||'XAUUSD',tf:'H1'});
 el('desk-layout').onclick=()=>{oneColumn=!oneColumn;layout();persist();};el('desk-refresh').onclick=refresh;el('desk-search').oninput=drawWatch;
-el('desk-auto').onchange=()=>{clearInterval(timer);if(el('desk-auto').checked)timer=setInterval(()=>{if(el('tab-terminal').classList.contains('active')&&!document.hidden)refresh();},15000);};
+function visible(){return started&&el('desk-auto').checked&&el('tab-terminal').classList.contains('active')&&!document.hidden;}
+async function pollQuotes(generation){
+ if(!visible()||generation!==liveGeneration)return;
+ const delay=Number(el('desk-rate').value),began=performance.now();
+ if(quoteBusy){timer=setTimeout(()=>pollQuotes(generation),delay);return;}
+ quoteBusy=true;
+ try{const symbols=[...new Set(charts.filter(c=>c.data&&c.data.symbol===c.symbol).map(c=>c.symbol))];
+ if(symbols.length){const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),25000);let d;
+ try{const r=await fetch('/api/quotes?'+new URLSearchParams({symbols:symbols.join(',')}),{signal:controller.signal});d=await r.json();if(!r.ok||!d.ok)throw new Error(d.message||d.error);}finally{clearTimeout(timeout);}
+ if(generation!==liveGeneration||!visible())return;
+ for(const c of charts){const q=d.quotes[c.symbol];if(q&&c.data?.symbol===c.symbol)c.updateQuote(q);else if(d.errors[c.symbol]){c.quote.classList.add('chart-error');c.quote.textContent='قیمت تازه دریافت نشد: '+d.errors[c.symbol];}}
+ for(const row of rows){const q=d.quotes[row.symbol||row.name];if(q)Object.assign(row,q);}drawWatch();
+ const elapsed=Math.round(performance.now()-began),failed=Object.keys(d.errors).length;
+ liveFailures=failed?Math.min(liveFailures+1,5):0;
+ el('desk-live').textContent=`${failed?'خطای دریافت '+failed+' نماد':'قیمت متصل'} • پاسخ ${elapsed} ms • هدف ${delay} ms • polling، نه تک‌تک تیک‌ها`;
+ el('desk-live').classList.toggle('chart-error',!!failed);
+ }
+ }catch(e){liveFailures=Math.min(liveFailures+1,5);el('desk-live').textContent='قطع دریافت قیمت؛ تلاش مجدد با مکث: '+e.message;el('desk-live').classList.add('chart-error');for(const c of charts){c.quote.classList.add('chart-error');}}
+ finally{quoteBusy=false;if(visible()&&generation===liveGeneration)timer=setTimeout(()=>pollQuotes(generation),Math.max(50,delay*Math.pow(2,liveFailures)-(performance.now()-began)));}
+}
+async function slowLoop(generation){if(!visible()||generation!==liveGeneration)return;const began=performance.now();try{await refresh();}finally{if(visible()&&generation===liveGeneration)slowTimer=setTimeout(()=>slowLoop(generation),Math.max(100,2000-(performance.now()-began)));}}
+function restartLive(){liveGeneration++;clearTimeout(timer);clearTimeout(slowTimer);persist();if(visible()){const g=liveGeneration;timer=setTimeout(()=>pollQuotes(g),0);slowTimer=setTimeout(()=>slowLoop(g),2000);}else el('desk-live').textContent='دریافت خودکار متوقف است؛ قیمت‌های قبلی ممکن است قدیمی باشند.';}
+el('desk-auto').onchange=restartLive;el('desk-rate').onchange=restartLive;
+document.addEventListener('visibilitychange',restartLive);
+new MutationObserver(restartLive).observe(el('tab-terminal'),{attributes:true,attributeFilter:['class']});
 el('desk-reset').onclick=()=>{if(!confirm('خطوط رسم‌شده و چیدمان مرورگر پاک شوند؟'))return;for(const c of charts){c.sequence++;c.observer.disconnect();c.root.remove();}charts=[];active=null;oneColumn=false;add({symbol:'XAUUSD',tf:'M15'});add({symbol:'XAUUSD',tf:'H1'});layout();persist();};
 el('desk-analyze').onclick=async()=>{if(!active)return;const symbol=active.symbol,button=el('desk-analyze');button.disabled=true;el('desk-analysis').textContent='در حال تحلیل…';try{const d=await get('/api/analysis?symbol='+encodeURIComponent(symbol));const s=d.scenario||{},z=s.sizing||{};el('desk-analysis').textContent=(d.summary_fa||'')+'\n'+`ورود: ${fmt(s.entry_reference)} | SL: ${fmt(s.stop_loss)} | TP1: ${fmt(s.take_profit_1)}\nحجم: ${fmt(z.volume)} | بودجهٔ زیان: ${fmt(z.risk_amount)} | زیان تخمینی: ${fmt(z.actual_risk)}\n${z.error||''}\n${(z.warnings||[]).join('\n')}\n${(d.warnings||[]).join('\n')}\nتحلیل قاعده‌محور است، احتمال برد تضمین‌شده نیست.`;}catch(e){el('desk-analysis').textContent=e.message;}finally{button.disabled=false;}};
 el('desk-llm').onclick=async()=>{
@@ -103,5 +157,6 @@ el('desk-llm').onclick=async()=>{
 el('desk-training').onclick=()=>{if(active)el('tr-symbol').value=active.symbol;document.querySelector('[data-tab="training"]').click();};
 document.querySelector('[data-tab="terminal"]').addEventListener('click',()=>requestAnimationFrame(init));
 if(el('tab-terminal').classList.contains('active'))requestAnimationFrame(init);
-window.addEventListener('beforeunload',()=>{clearInterval(timer);persist();});
+const staleTimer=setInterval(()=>{if(!visible())return;let oldest=0;for(const c of charts){if(c.lastQuote){const age=Date.now()-c.lastQuote;oldest=Math.max(oldest,age);if(age>5000){c.quote.classList.add('chart-error');c.quote.title='از آخرین دریافت موفق '+Math.floor(age/1000)+' ثانیه گذشته است.';}}}if(quoteBusy&&oldest>5000){el('desk-live').textContent='دریافت کند است؛ آخرین قیمت موفق '+Math.floor(oldest/1000)+' ثانیه قبل. داده‌ها ممکن است قدیمی باشند.';el('desk-live').classList.add('chart-error');}},1000);
+window.addEventListener('beforeunload',()=>{clearInterval(staleTimer);clearTimeout(timer);clearTimeout(slowTimer);liveGeneration++;persist();});
 })();

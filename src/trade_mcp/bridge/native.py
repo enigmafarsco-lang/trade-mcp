@@ -448,6 +448,7 @@ class NativeBridge:
         bid = as_float(info.get("bid"))
         ask = as_float(info.get("ask"))
         return {
+            "time_source": "received",  # endpoint exposes no verified broker tick timestamp
             "time": int(time.time()),
             "time_str": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "bid": bid,

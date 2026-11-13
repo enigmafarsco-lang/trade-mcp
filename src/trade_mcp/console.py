@@ -32,6 +32,7 @@ from .analysis import analyze_symbol
 from .bridge.base import BridgeError
 from .config import Config
 from .execution import confirm
+from .live import QuoteFeed
 from .news import fetch_news
 from .plugins import CATALOG, calculate
 from .store import Store
@@ -47,6 +48,8 @@ class ConsoleState:
         self.app = app
         self.lock = threading.Lock()
         self.scheduler = _Scheduler(app, self.lock)
+        self.quotes = QuoteFeed(app.mt5, self.lock)
+        self.chart_cache: dict[tuple, tuple] = {}
 
     @property
     def cfg(self) -> Config:
@@ -210,6 +213,39 @@ class Handler(BaseHTTPRequestHandler):
                 asset = WEB_DIR / path[1:]
                 kind = "text/javascript" if path.endswith(".js") else "text/css"
                 return self._send(200, asset.read_bytes(), kind + "; charset=utf-8")
+            if path == "/api/account-state":
+                with self.state.lock:
+                    mt5 = self.state.app.mt5
+                    result = {"ok": True, "account": mt5.account_info(fresh=True),
+                              "positions": mt5.positions(), "orders": mt5.orders(),
+                              "training_budget": self.state.cfg.training_budget}
+                return self._json(result)
+            if path == "/api/quotes":
+                return self._json(self.state.quotes.snapshot(query.get("symbols", "").split(",")))
+            if path == "/api/chart":
+                symbol = query.get("symbol") or self.state.cfg.default_symbol
+                tf = query.get("tf", "M15").upper()
+                if tf not in {"M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"}:
+                    raise ValueError("invalid timeframe")
+                if not symbol or len(symbol) > 64:
+                    raise ValueError("invalid symbol")
+                with self.state.lock:
+                    key = (symbol, tf)
+                    saved = self.state.chart_cache.get(key)
+                    full = not saved or time.monotonic()-saved[0] >= 60
+                    incoming = self.state.app.mt5.candles(symbol, tf, 300 if full else 3)
+                    if not incoming:
+                        raise BridgeError("empty chart response", code="rates_unavailable")
+                    merged = {bar["time"]: bar for bar in (saved[1] if saved and not full else [])}
+                    merged.update({bar["time"]: bar for bar in incoming})
+                    bars = [merged[t] for t in sorted(merged)][-300:]
+                    self.state.chart_cache[key] = (time.monotonic() if full else saved[0], bars)
+                    while len(self.state.chart_cache) > 32:
+                        del self.state.chart_cache[next(iter(self.state.chart_cache))]
+                    indicators = calculate(bars, query.get("selected", "ema,bollinger,rsi,macd").split(","))
+                return self._json({"ok": True, "symbol": symbol, "timeframe": tf,
+                                   "bars": bars, "series": indicators,
+                                   "received_at_ms": int(time.time()*1000)})
             if path == "/api/marketwatch":
                 with self.state.lock:
                     rows = self.state.app.mt5.symbols_list(limit=200)

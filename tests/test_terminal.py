@@ -84,3 +84,29 @@ def test_default_workspace_and_package_assets():
     assert 'desk-llm' in html
     assert '/api/terminal' in (web/'terminal.js').read_text()
     assert 'localStorage' in (web/'terminal.js').read_text()
+
+
+def test_incremental_chart_and_fast_quotes(mock_app, monkeypatch):
+    calls = []
+    original = mock_app.mt5.candles
+
+    def candles(symbol, tf, count):
+        calls.append(count)
+        return original(symbol, tf, count)
+
+    monkeypatch.setattr(mock_app.mt5, 'candles', candles)
+    with console(mock_app) as base:
+        for _ in range(2):
+            with urlopen(base+'/api/chart?symbol=XAUUSD&tf=M15&selected=ema,rsi') as r:
+                data = json.load(r)
+            assert len(data['bars']) == 300
+            assert len(data['series']['ema']['20']) == 300
+        assert calls == [300, 3]
+        with urlopen(base+'/api/quotes?symbols=XAUUSD,XAUUSD,EURUSD') as r:
+            prices = json.load(r)
+        assert set(prices['quotes']) == {'XAUUSD', 'EURUSD'}
+        assert prices['quotes']['XAUUSD']['bid'] > 0
+        with urlopen(base+'/api/account-state') as r:
+            state = json.load(r)
+        assert state['account']['trade_mode'] == 'demo'
+        assert mock_app.mt5.positions() == []

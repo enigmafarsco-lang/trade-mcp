@@ -87,7 +87,9 @@
   <section id="tab-terminal" class="active">
     <div class="desk-toolbar"><strong>TRADE DESK</strong><span>متصل به MT5 • نمایش و تحلیل، بدون ارسال سفارش از این تب</span>
     <button id="desk-add" class="ghost">+ نمودار</button><button id="desk-layout" class="ghost">تغییر چیدمان</button><button id="desk-refresh" class="primary">به‌روزرسانی</button>
-    <label><input type="checkbox" id="desk-auto"> به‌روزرسانی هر ۱۵ ثانیه</label><button id="desk-reset" class="ghost">بازنشانی چیدمان</button></div>
+    <label><input type="checkbox" id="desk-auto" checked> زنده</label>
+    <label>نرخ قیمت <select id="desk-rate"><option value="250">۲۵۰ ms</option><option value="500" selected>۵۰۰ ms</option><option value="1000">۱ ثانیه</option><option value="2000">۲ ثانیه</option></select></label>
+    <span id="desk-live" role="status">قیمت زنده در انتظار…</span><button id="desk-reset" class="ghost">بازنشانی چیدمان</button></div>
     <div id="desk-status" role="status">برای شروع تب ترمینال را باز کنید.</div>
     <div class="desk"><aside class="desk-watch"><h2>Market Watch</h2><input id="desk-search" placeholder="جست‌وجوی نماد"><div id="desk-symbols"></div><p>کلیک روی نماد: نمودار فعال • مشخصات از بروکر متصل خوانده می‌شوند.</p></aside>
     <div id="desk-charts" class="desk-charts"></div></div>
