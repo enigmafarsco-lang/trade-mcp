@@ -129,6 +129,7 @@ class McpHttpClient:
         self.client_name = client_name
         self.client_version = client_version
         self.session_id: str | None = None
+        self.server_header: str = ""
         self.server_info: dict[str, Any] = {}
         self.protocol_version: str | None = None
         self._next_id = 0
@@ -167,6 +168,9 @@ class McpHttpClient:
                 session = response.headers.get("Mcp-Session-Id")
                 if session:
                     self.session_id = session
+                server = response.headers.get("Server")
+                if server:
+                    self.server_header = str(server)
                 content_type = (response.headers.get("Content-Type") or "").lower()
                 raw = response.read()
         except error.HTTPError as exc:
