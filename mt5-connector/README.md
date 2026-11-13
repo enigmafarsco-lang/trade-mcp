@@ -81,6 +81,6 @@ MetaEditor وسط کامپایل با `fatal compiler error: unknown error` کر
 | `doctor` می‌گوید `no status.json yet` | `InpDir` با `TRADE_MCP_FILES_DIR` یکی نیست (پوشه‌ی `Files` را چک کن) |
 | `status.json is stale` | ترمینال بسته شده یا اکسپرت Remove شده؛ اکسپرت را دوباره Attach کن |
 | `trading_disabled` | `InpAllowTrading` یا AutoTrading یا `TRADE_MCP_ALLOW_TRADING` خاموش است |
-| `fatal compiler error: unknown error` در `F7` | اول `TradeMCPProbe.mq5` را کامپایل کن؛ اگر آن هم کرش کرد مشکل محیط است (`pkill -f metaeditor64` و `wineserver -k`) |
+| `fatal compiler error: unknown error` در `F7` | خطای کد نیست؛ باگ کامپایلر متاادیتور است. سه فایل `diag/` را به ترتیب کامپایل کن (بین هر کرش ادیتور را ببند) و بخش عیب‌یابیِ [../docs/FILE-BRIDGE.md](../docs/FILE-BRIDGE.md) را ببین |
 
 جزئیات پروتکل: [../docs/FILE-BRIDGE.md](../docs/FILE-BRIDGE.md)
