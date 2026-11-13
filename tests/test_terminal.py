@@ -163,6 +163,12 @@ def test_manual_demo_confirm_mock_only(mock_app):
                                             'tp':quote['ask']+9})
         assert modify['preview']['new_sl'] == position['sl']
         assert len(mock_app.mt5.positions()) == 1
+        close = post('/api/manual/propose', {'action':'close', 'ticket':str(position['ticket'])})
+        assert close['preview']['close_volume'] == position['volume']
+        assert not close['blocked']
+        done = post('/api/proposals/'+close['proposal_id']+'/confirm', {})
+        assert done['executed'] is True
+        assert mock_app.mt5.positions() == []
 
 
 def test_watch_selected_and_automatic_stop_preview(mock_app):

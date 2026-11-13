@@ -112,7 +112,7 @@ function renderAccount(d){
  const target=el('desk-positions');target.replaceChildren();
  const table=make('table'),head=make('tr');for(const title of ['نوع','تیکت','نماد','جهت','حجم','ورود','SL','TP','سود','عملیات'])head.append(make('th',title));table.append(head);
  for(const [type,list] of [['پوزیشن',d.positions],['سفارش',d.orders]])for(const p of list){const tr=make('tr');for(const v of [type,p.ticket,p.symbol,p.type,p.volume,p.price_open,p.sl,p.tp,p.profit])tr.append(make('td',fmt(v)));
- const actions=make('td');if(type==='پوزیشن')for(const [action,title] of [['modify','SL/TP'],['close','بستن کامل']]){const b=make('button',title,'ghost');b.onclick=()=>{manualReset();el('manual-action').value=action;el('manual-ticket').value=String(p.ticket);el('manual-symbol').value=p.symbol;el('manual-sl').value=p.sl||'';el('manual-tp').value=p.tp||'';el('manual-volume').value='';el('manual-result').textContent='عملیات انتخاب شد؛ ابتدا پیش‌نمایش بگیرید.';openManualPanel();el('manual-preview').scrollIntoView({behavior:'smooth',block:'center'});};actions.append(b);}tr.append(actions);table.append(tr);}
+ const actions=make('td');if(type==='پوزیشن')for(const [action,title] of [['modify','SL/TP'],['close','بستن کامل']]){const b=make('button',title,'ghost');b.onclick=async()=>{openManualPanel();el('manual-action').value=action;await loadManualPositions(p.ticket);manualMode();el('manual-result').textContent='پوزیشن انتخاب شد؛ ابتدا پیش‌نمایش بگیرید.';};actions.append(b);}tr.append(actions);table.append(tr);}
  target.append(table);if(!d.positions.length&&!d.orders.length)target.append(make('p','پوزیشن یا سفارش بازی وجود ندارد.'));
 }
 function openManualPanel(){const dialog=el('order-dialog');el('order-dialog-body').append(el('manual-panel'));if(!dialog.open)dialog.showModal();}
@@ -121,8 +121,8 @@ el('order-dialog').addEventListener('close',()=>el('manual-slot').append(el('man
 async function openOrder(symbol,side='buy'){
  el('manual-side').value=side;
  manualReset();el('manual-action').value='open';el('manual-symbol').value=symbol;el('manual-ticket').value='';el('manual-sl').value='';el('manual-tp').value='';el('manual-result').textContent='پیش‌نمایش سفارش هنوز ساخته نشده است.';openManualPanel();el('manual-ticket-info').textContent='دریافت قیمت و مشخصات…';
- try{const d=await get('/api/order-ticket?'+new URLSearchParams({symbol}));if(el('manual-symbol').value!==symbol)return;el('manual-symbol').value=d.symbol;el('manual-volume').value=d.spec.volume_min;el('manual-volume').step=d.spec.volume_step;el('manual-volume').min=d.spec.volume_min;el('manual-volume').max=d.spec.volume_max;
- el('manual-ticket-info').textContent=`${d.symbol} | ${d.account.server} | ${d.account.trade_mode} | Bid ${fmt(d.quote.bid)} / Ask ${fmt(d.quote.ask)} | حداقل حجم ${fmt(d.spec.volume_min)} | گام ${fmt(d.spec.volume_step)} | مجوز برنامه: ${d.trading_enabled?'روشن؛ نیازمند تأیید':'خاموش؛ فقط پیش‌نمایش'} | مجوز MCP در MT5: ${d.terminal.mcp_trade_allowed==null?'نامشخص':d.terminal.mcp_trade_allowed?'روشن':'خاموش؛ اجرای سفارش رد می‌شود'}`;
+ try{const d=await get('/api/order-ticket?'+new URLSearchParams({symbol}));if(el('manual-symbol').value!==symbol)return;el('manual-symbol').value=d.symbol;el('manual-volume').value=d.spec.volume_min;setManualPositions(d.positions||[]);manualMode();el('manual-volume').step=d.spec.volume_step;el('manual-volume').min=d.spec.volume_min;el('manual-volume').max=d.spec.volume_max;
+ el('manual-ticket-info').textContent=`${d.symbol} | ${d.account.server} | ${d.account.trade_mode} | Bid ${fmt(d.quote.bid)} / Ask ${fmt(d.quote.ask)} | حداقل حجم ${fmt(d.spec.volume_min)} | سیاست پرشدن گزارش‌شده: ${d.spec.filling_mode||'نامشخص'} | گام ${fmt(d.spec.volume_step)} | مجوز برنامه: ${d.trading_enabled?'روشن؛ نیازمند تأیید':'خاموش؛ فقط پیش‌نمایش'} | مجوز MCP در MT5: ${d.terminal.mcp_trade_allowed==null?'نامشخص':d.terminal.mcp_trade_allowed?'روشن':'خاموش؛ اجرای سفارش رد می‌شود'}`;
  }catch(e){el('manual-ticket-info').textContent=e.message;}
 }
 function drawWatch(){const box=el('desk-symbols');box.replaceChildren();const q=el('desk-search').value.trim().toUpperCase();for(const r of rows.filter(r=>((r.name||r.symbol||'')+' '+(r.description||'')).toUpperCase().includes(q)).slice(0,200)){const symbol=r.name||r.symbol,entry=make('div'),b=make('button',`${symbol}  ${fmt(r.bid)} / ${fmt(r.ask)}${r.visible===false?' • مخفی':''}`),chart=make('button','چارت');
@@ -174,14 +174,40 @@ el('desk-compare').onclick=async()=>{
  for(const b of d.bars.slice(-5)){const tr=make('tr');for(const v of [new Date(b.time*1000).toISOString().slice(0,19).replace('T',' '),b.open,b.high,b.low,b.close,b.tick_volume])tr.append(make('td',fmt(v)));t.append(tr);}box.append(t);
  }catch(e){box.textContent=e.message;}
 };
+let manualPositions=[];
+function setManualPositions(positions,selected){
+ manualPositions=positions;const select=el('manual-position');select.replaceChildren(make('option','پوزیشن را انتخاب کنید'));select.firstChild.value='';
+ for(const p of positions){const option=make('option',`#${p.ticket} | ${p.symbol} | ${p.type} | ${fmt(p.volume)} lot | P/L ${fmt(p.profit)}`);option.value=String(p.ticket);select.append(option);}
+ if(selected)select.value=String(selected);
+ el('manual-position-status').textContent=positions.length?'پوزیشن‌ها از MT5 خوانده شدند.':'پوزیشن بازی در پاسخ MT5 نیست.';
+ if(selected)applyPosition();
+}
+async function loadManualPositions(ticket){try{const d=await get('/api/account-state');setManualPositions(d.positions,ticket);}catch(e){el('manual-position-status').textContent=e.message;}}
+function applyPosition(){
+ const p=manualPositions.find(p=>String(p.ticket)===el('manual-position').value);manualReset();if(!p)return;
+ el('manual-ticket-info').textContent=`پوزیشن #${p.ticket} | ${p.symbol} | ${p.type} | حجم ${fmt(p.volume)} | ورود ${fmt(p.price_open)} | قیمت فعلی ${fmt(p.price_current)} | سود/زیان شناور ${fmt(p.profit)}`;
+ for(const [key,value] of Object.entries({ticket:p.ticket,symbol:p.symbol,side:p.type,volume:p.volume,sl:p.sl??0,tp:p.tp??0}))el('manual-'+key).value=value;
+ manualMode();
+}
+function manualMode(){
+ const action=el('manual-action').value,open=action==='open',close=action==='close';
+ for(const key of ['ticket','side','risk','sl','tp','volume'])el('manual-'+key).parentElement.hidden=(key==='ticket'?open:key==='side'||key==='risk'?!open:(key==='sl'||key==='tp')?close:false);
+ el('manual-position').parentElement.hidden=open;
+ el('manual-volume').readOnly=close;el('manual-symbol').readOnly=!open;
+ el('manual-auto-sl').parentElement.hidden=!open;el('manual-scenario').hidden=!open;
+ el('manual-preview').textContent=close?'پیش‌نمایش بستن کامل':open?'پیش‌نمایش و کنترل ریسک':'پیش‌نمایش تغییر SL/TP';
+}
 let manualProposal=null,manualRevision=0;
 const manualReset=()=>{manualRevision++;manualProposal=null;el('manual-confirm').disabled=true;};
+el('manual-position').onchange=applyPosition;el('manual-reload').onclick=()=>loadManualPositions(el('manual-ticket').value);
+el('manual-action').addEventListener('change',()=>{manualReset();manualMode();if(el('manual-action').value!=='open')loadManualPositions(el('manual-ticket').value);});
+manualMode();
 for(const n of document.querySelectorAll('[id^="manual-"]'))if(['INPUT','SELECT'].includes(n.tagName))n.addEventListener('input',manualReset);
 el('manual-scenario').onclick=async()=>{
  manualReset();const revision=manualRevision,button=el('manual-scenario'),box=el('manual-result'),symbol=el('manual-symbol').value;button.disabled=true;box.textContent='در حال محاسبهٔ سناریو از چارت…';
  try{const d=await get('/api/analysis?'+new URLSearchParams({symbol}));if(revision!==manualRevision)return;const s=d.scenario||{},z=s.sizing||{};
  if(!['buy','sell'].includes(s.action)||!z.ok||!z.volume||!s.stop_loss||!s.take_profit_1)throw new Error(z.error||'سناریوی قابل ورود با بودجهٔ فعلی وجود ندارد؛ معامله نکنید.');
- el('manual-action').value='open';el('manual-symbol').value=d.symbol;el('manual-side').value=s.action;el('manual-volume').value=z.volume;el('manual-sl').value=s.stop_loss;el('manual-tp').value=s.take_profit_1;
+ el('manual-action').value='open';el('manual-symbol').value=d.symbol;el('manual-side').value=s.action;el('manual-volume').value=z.volume;el('manual-sl').value=s.stop_loss;el('manual-tp').value=s.take_profit_1;manualMode();
  box.textContent='سناریوی قاعده‌محور به فرم منتقل شد؛ مدل زبانی نیست و سفارش ایجاد نشده است. برای قیمت فعلی و کنترل ریسک، پیش‌نمایش بگیرید.\n'+(d.summary_fa||'');
  }catch(e){box.textContent=e.message;}finally{button.disabled=false;}
 };
@@ -189,7 +215,8 @@ el('manual-preview').onclick=async()=>{
  manualReset();const revision=manualRevision,button=el('manual-preview'),box=el('manual-result');button.disabled=true;box.textContent='در حال کنترل ریسک…';
  try{const payload={};for(const key of ['action','symbol','side','ticket','volume','risk','sl','tp'])payload[key]=el('manual-'+key).value;
  payload.auto_sl=el('manual-auto-sl').checked;
- if(payload.action==='close')delete payload.volume; // this UI offers full close only
+ if(payload.action==='close')delete payload.volume;
+ if(payload.action!=='open'&&!payload.ticket)throw new Error('ابتدا پوزیشن را از فهرست انتخاب کنید.'); // this UI offers full close only
  const r=await fetch('/api/manual/propose',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}),d=await r.json();
  if(revision!==manualRevision){box.textContent='فرم تغییر کرد؛ دوباره پیش‌نمایش بگیرید.';return;}
  if(!r.ok||!d.ok)throw new Error(d.message||d.error||'پیش‌نمایش ناموفق');
@@ -199,13 +226,13 @@ el('manual-preview').onclick=async()=>{
   if(p.take_profit!=null)el('manual-tp').value=p.take_profit;
   if(p.volume!=null)el('manual-volume').value=p.volume;
  }
- box.textContent=`نماد: ${p.symbol||payload.symbol} | جهت: ${p.side||payload.side} | عملیات: ${payload.action}\nشناسه: ${d.proposal_id}\nوضعیت: ${d.blocked?'مسدود؛ اجرا ممکن نیست':'در انتظار تأیید جداگانه'}\nحجم: ${fmt(p.volume)}\nورود تخمینی: ${fmt(p.estimated_entry)}\nSL: ${fmt(p.stop_loss??p.new_sl)}\nTP: ${fmt(p.take_profit??p.new_tp)}\nمارجین: ${fmt(p.estimated_margin)}\nزیان تخمینی پیش از هزینه: ${fmt(p.risk_amount)}\nدرصد بودجهٔ تمرینی: ${fmt(p.risk_percent_of_budget)}\n${d.auto_sl_note||''}\n${(d.blockers||[]).join('\n')}\n\nجزئیات:\n`+JSON.stringify(d,null,2);
+ box.textContent=`نماد: ${p.symbol||payload.symbol} | جهت: ${p.side||payload.side} | عملیات: ${payload.action}\nشناسه: ${d.proposal_id}\nوضعیت: ${d.blocked?'مسدود؛ اجرا ممکن نیست':'در انتظار تأیید جداگانه'}\nتیکت پوزیشن: ${fmt(p.ticket)}\nحجم: ${fmt(p.volume??p.close_volume??p.open_volume)}\nقیمت مرجع: ${fmt(p.estimated_entry??p.current_price)}\nSL: ${fmt(p.stop_loss??p.new_sl??p.current_sl)}\nTP: ${fmt(p.take_profit??p.new_tp??p.current_tp)}\nمارجین: ${fmt(p.estimated_margin)}\nزیان تخمینی پیش از هزینه: ${fmt(p.risk_amount)}\nدرصد بودجهٔ تمرینی: ${fmt(p.risk_percent_of_budget)}\n${d.auto_sl_note||''}\n${(d.blockers||[]).join('\n')}\n\nجزئیات:\n`+JSON.stringify(d,null,2);
  if(!d.blocked){manualProposal=d.proposal_id;el('manual-confirm').disabled=false;}
  }catch(e){box.textContent=e.message;}finally{button.disabled=false;}
 };
 el('manual-confirm').onclick=async()=>{
  if(!manualProposal||!confirm('همین پیشنهاد روی حساب دمو اجرا شود؟ این عملیات واقعاً پوزیشن را باز/بسته یا تغییر می‌دهد.'))return;
- const id=manualProposal;manualReset();try{const r=await fetch('/api/proposals/'+encodeURIComponent(id)+'/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}),d=await r.json();el('manual-result').textContent=(d.executed?'MT5 اجرای سفارش را پذیرفت؛ نتیجهٔ ترمینال:\n':d.error==='mcp_trading_not_permitted'?'MT5 معامله از طریق MCP را مجاز نکرده است. Tools → Options → AI Assistant → Trading را بررسی کنید؛ تب MCP فقط اتصال سرور را تنظیم می‌کند. پیشنهاد ناموفق را دوباره تأیید نکنید؛ پس از اصلاح مجوز، پیش‌نمایش جدید بگیرید.\n':'اجرا نشد؛ علت:\n')+JSON.stringify(d,null,2);lastDetail=0;await refresh();}catch(e){el('manual-result').textContent=e.message;}
+ const id=manualProposal,operation=el('manual-action').value,ticket=el('manual-ticket').value;manualReset();try{const r=await fetch('/api/proposals/'+encodeURIComponent(id)+'/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}),d=await r.json();el('manual-result').textContent=(d.executed?'MT5 اجرای سفارش را پذیرفت؛ نتیجهٔ ترمینال:\n':d.error==='mcp_trading_not_permitted'?'MT5 معامله از طریق MCP را مجاز نکرده است. Tools → Options → AI Assistant → Trading را بررسی کنید؛ تب MCP فقط اتصال سرور را تنظیم می‌کند. پیشنهاد ناموفق را دوباره تأیید نکنید؛ پس از اصلاح مجوز، پیش‌نمایش جدید بگیرید.\n':'اجرا نشد؛ علت:\n')+JSON.stringify(d,null,2);lastDetail=0;await loadManualPositions();if(d.executed&&operation==='close')el('manual-result').textContent+=manualPositions.some(p=>String(p.ticket)===ticket)?'\nپوزیشن هنوز در پاسخ تازه دیده می‌شود؛ نتیجه و MT5 را بررسی کنید، خودکار تکرار نکنید.':'\nتیکت در فهرست تازهٔ پوزیشن‌های MT5 وجود ندارد.';await refresh();}catch(e){el('manual-result').textContent=e.message;}
 };
 el('desk-analyze').onclick=async()=>{if(!active)return;const symbol=active.symbol,button=el('desk-analyze');button.disabled=true;el('desk-analysis').textContent='در حال تحلیل…';try{const d=await get('/api/analysis?symbol='+encodeURIComponent(symbol));const s=d.scenario||{},z=s.sizing||{};el('desk-analysis').textContent=(d.summary_fa||'')+'\n'+`ورود: ${fmt(s.entry_reference)} | SL: ${fmt(s.stop_loss)} | TP1: ${fmt(s.take_profit_1)}\nحجم: ${fmt(z.volume)} | بودجهٔ زیان: ${fmt(z.risk_amount)} | زیان تخمینی: ${fmt(z.actual_risk)}\n${z.error||''}\n${(z.warnings||[]).join('\n')}\n${(d.warnings||[]).join('\n')}\nتحلیل قاعده‌محور است، احتمال برد تضمین‌شده نیست.`;}catch(e){el('desk-analysis').textContent=e.message;}finally{button.disabled=false;}};
 el('desk-llm').onclick=async()=>{
