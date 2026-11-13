@@ -78,8 +78,20 @@ class Config:
     # transport
     host: str = "127.0.0.1"
     port: int = 8787
-    backend: str = "bridge"  # "bridge" | "mock"
+    backend: str = "bridge"  # "bridge" (socket) | "file" (shared files) | "mock"
     timeout: float = 20.0
+
+    # file transport (backend="file")
+    files_dir: str | None = None
+    file_stale_after: float = 8.0
+
+    # local console app + built-in agent
+    console_host: str = "127.0.0.1"
+    console_port: int = 8790
+    llm_base_url: str = ""
+    llm_api_key: str = ""
+    llm_model: str = ""
+    news_feeds: tuple[str, ...] = ()
 
     # instrument defaults
     default_symbol: str = DEFAULT_SYMBOL
@@ -109,6 +121,14 @@ class Config:
             port=_env_int("PORT", 8787),
             backend=(_env("BACKEND", "bridge") or "bridge").strip().lower(),
             timeout=_env_float("TIMEOUT", 20.0),
+            files_dir=(_env("FILES_DIR") or "").strip() or None,
+            file_stale_after=_env_float("FILE_STALE_AFTER", 8.0),
+            console_host=(_env("CONSOLE_HOST", "127.0.0.1") or "127.0.0.1").strip(),
+            console_port=_env_int("CONSOLE_PORT", 8790),
+            llm_base_url=(_env("LLM_BASE_URL") or "").strip(),
+            llm_api_key=(_env("LLM_API_KEY") or "").strip(),
+            llm_model=(_env("LLM_MODEL") or "").strip(),
+            news_feeds=_env_list("NEWS_FEEDS", ()),
             default_symbol=(_env("SYMBOL", DEFAULT_SYMBOL) or DEFAULT_SYMBOL).strip(),
             timeframes=tuple(
                 tf.upper() for tf in _env_list("TIMEFRAMES", DEFAULT_TIMEFRAMES)
@@ -125,10 +145,12 @@ class Config:
             deviation_points=_env_int("DEVIATION", 30),
             journal_path=str(Path(_env("JOURNAL", "~/.local/share/trade-mcp/journal.sqlite3") or "~/.local/share/trade-mcp/journal.sqlite3").expanduser()),
         )
-        if cfg.backend not in {"bridge", "mock"}:
+        if cfg.backend not in {"bridge", "file", "mock"}:
             cfg.backend = "bridge"
         if cfg.port <= 0:
             cfg.port = 8787
+        if cfg.console_port <= 0:
+            cfg.console_port = 8790
         return cfg
 
     def with_overrides(self, **kwargs) -> Config:

@@ -45,6 +45,9 @@ def _apply_cli_overrides(args: argparse.Namespace) -> None:
         os.environ[ENV_PREFIX + "SYMBOL"] = args.symbol
     if getattr(args, "port", None):
         os.environ[ENV_PREFIX + "PORT"] = str(args.port)
+    if getattr(args, "files_dir", None):
+        os.environ[ENV_PREFIX + "FILES_DIR"] = str(args.files_dir)
+        os.environ.setdefault(ENV_PREFIX + "BACKEND", "file")
 
 
 # ------------------------------------------------------------------- commands
@@ -77,7 +80,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"trade-mcp {__version__} - doctor")
     print(f"  python      : {sys.version.split()[0]}  ({sys.executable})")
     print(f"  backend     : {backend}")
-    print(f"  listen      : {cfg.host}:{cfg.port}")
+    if backend == "file":
+        print(f"  files dir   : {cfg.files_dir or '(auto-detect)'}")
+    else:
+        print(f"  listen      : {cfg.host}:{cfg.port}")
     print(f"  symbol      : {cfg.default_symbol}  timeframes={','.join(cfg.timeframes)}")
     print(f"  trading     : {'ENABLED' if cfg.allow_trading else 'disabled'}")
     print(f"  journal     : {cfg.journal_path}")
@@ -100,8 +106,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 print("  [FAIL] no EA connected")
                 print("         - is MetaTrader 5 running (Wine or Windows)?")
                 print("         - is TradeMCPConnector attached to a chart and AutoTrading on?")
-                print(f"         - does the EA point at {cfg.host}:{cfg.port}?")
-                print("         - check the terminal's Experts tab for socket errors")
+                if backend == "file":
+                    print(f"         - is the EA's InpTransport = FILE, and files dir {status.get('ea_dir')}?")
+                    print("         - mt5_status/json shows the last heartbeat it wrote")
+                else:
+                    print(f"         - does the EA point at {cfg.host}:{cfg.port}?")
+                    print("         - check the terminal's Experts tab for socket errors")
                 return 2
             print(f"  [ OK ] EA connected: {status.get('ea_hello')}")
 
@@ -186,6 +196,46 @@ def cmd_bridge(args: argparse.Namespace) -> int:
         server.close()
 
 
+def cmd_console(args: argparse.Namespace) -> int:
+    """Local web console: tabs for market, agents, news, journal."""
+    from .app import build_app
+    from .console import ConsoleServer
+
+    app = build_app()
+    host = args.host or app.cfg.console_host
+    port = args.console_port or app.cfg.console_port
+    server = ConsoleServer(app, host=host, port=port, open_browser=not args.no_browser)
+    print(f"trade-mcp console {__version__} - {server.url}", flush=True)
+    print(f"  backend : {app.cfg.backend}", flush=True)
+    print(f"  trading : {'ENABLED' if app.cfg.allow_trading else 'disabled (proposals only)'}", flush=True)
+    print("Ctrl-C to stop", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopping")
+    finally:
+        server.stop()
+        app.close()
+    return 0
+
+
+def cmd_discover(args: argparse.Namespace) -> int:
+    """Find MQL5/Files directories of Wine/Windows MetaTrader installs."""
+    from .bridge.file import discover_files_dirs
+
+    dirs = discover_files_dirs(args.root)
+    if not dirs:
+        print("no MQL5/Files directory found - pass --root /path/to/wine/prefix")
+        return 1
+    print(f"{len(dirs)} candidate(s):")
+    for path in dirs:
+        marker = " (has trade-mcp/)" if (path / "trade-mcp").is_dir() else ""
+        print(f"  {path}{marker}")
+    print("")
+    print(f'export TRADE_MCP_FILES_DIR="{dirs[0]}"')
+    return 0
+
+
 def cmd_tools(args: argparse.Namespace) -> int:
     """List the MCP tools/prompts without starting a client."""
     import asyncio
@@ -213,6 +263,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-trading", action="store_true", help="force-enable order execution")
     parser.add_argument("--symbol", default=None, help="default symbol (e.g. XAUUSD)")
     parser.add_argument("--port", type=int, default=None, help="bridge listen port")
+    parser.add_argument(
+        "--files-dir",
+        default=None,
+        help="MQL5/Files directory of the terminal (implies --backend file)",
+    )
     parser.add_argument("-v", "--verbose", action="count", default=0)
     parser.add_argument("--version", action="version", version=f"trade-mcp {__version__}")
 
@@ -229,6 +284,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_tools = sub.add_parser("tools", help="list the exposed MCP tools")
     p_tools.set_defaults(func=cmd_tools)
+
+    p_console = sub.add_parser("console", help="run the local web console (tabs + agents)")
+    p_console.add_argument("--host", default=None, help="bind address (default 127.0.0.1)")
+    p_console.add_argument("--console-port", type=int, default=None, help="port (default 8790)")
+    p_console.add_argument("--no-browser", action="store_true", help="do not open a browser")
+    p_console.set_defaults(func=cmd_console)
+
+    p_discover = sub.add_parser("discover", help="find MQL5/Files directories (file backend)")
+    p_discover.add_argument(
+        "--root", action="append", default=None, help="extra root to search (repeatable)"
+    )
+    p_discover.set_defaults(func=cmd_discover)
     return parser
 
 

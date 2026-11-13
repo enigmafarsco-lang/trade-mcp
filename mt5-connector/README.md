@@ -1,7 +1,13 @@
 # TradeMCPConnector (MQL5)
 
-اکسپرت سمت متاتریدر. کلاینت TCP است: به پایتون وصل می‌شود، JSON خط‌به‌خط می‌خواند و
-دستور را روی API متاتریدر اجرا می‌کند.
+اکسپرت سمت متاتریدر. دو حالت حمل دارد و در هر دو، JSON را می‌خواند و دستور را روی API
+متاتریدر اجرا می‌کند:
+
+- **`file` (پیش‌فرض، نسخه ۱.۲۰+):** پایتون درخواست را در `MQL5/Files/trade-mcp/in/`
+  می‌گذارد، اکسپرت پاسخ را در `out/` می‌نویسد و هر ثانیه `status.json` را به‌روز می‌کند.
+  هیچ پورت و هیچ مجوز شبکه‌ای لازم نیست — همین حالت زیر Wine مطمئن است.
+- **`socket`:** کلاینت TCP؛ به پایتون وصل می‌شود. این حالت به «فهرست مجاز» MT5
+  (`Ctrl+O → Expert Advisors`) نیاز دارد، وگرنه با `err=4014` رد می‌شود.
 
 ## نصب
 
@@ -10,13 +16,20 @@
 2. در MetaEditor `F7` بزن. باید بدون خطا کامپایل شود.
 3. در MT5 چارت را باز کن، اکسپرت را از Navigator روی چارت بکش.
 4. در دیالوگ: **Allow Algo Trading** ✔ — و دکمه‌ی **AutoTrading** نوار ابزار سبز باشد.
-5. تب **Experts** باید نشان دهد: `[trade-mcp] connected to 127.0.0.1:8787`.
+5. در تب **Inputs** مقدار `InpTransport` را انتخاب کن: `file` (پیشنهادی) یا `socket`.
+6. تب **Experts** باید نشان دهد — حالت فایل:
+   `[trade-mcp] 1.20 file transport | folder=MQL5\Files\trade-mcp`
+   و حالت سوکت: `[trade-mcp] connected to 127.0.0.1:8787`.
 
 ## ورودی‌ها
 
 | ورودی | پیش‌فرض | توضیح |
 |---|---|---|
-| `InpHost` | `127.0.0.1` | آدرس پایتون |
+| `InpTransport` | `file` | `file` = پوشه‌ی مشترک، `socket` = TCP |
+| `InpFileDir` | `trade-mcp` | زیرپوشه‌ی `MQL5/Files` برای پل فایلی |
+| `InpFilePollMs` | `150` | دوره‌ی خواندن `in/` (ms) |
+| `InpStatusMs` | `1000` | دوره‌ی به‌روزرسانی `status.json` (ms) |
+| `InpHost` | `127.0.0.1` | آدرس پایتون (فقط حالت سوکت) |
 | `InpPort` | `8787` | پورت پایتون (`TRADE_MCP_PORT`) |
 | `InpConnectTimeout` | `1500` | تایم‌اوت اتصال (ms) |
 | `InpRetrySeconds` | `3` | فاصله‌ی تلاش دوباره |
@@ -33,8 +46,10 @@
 
 ## نکته‌های فنی
 
-- از `SocketCreate/SocketConnect/SocketRead/SocketSend` استفاده می‌کند؛ **نه**
-  `WebRequest` — پس نیازی به whitelist کردن آدرس در تنظیمات ترمینال نیست.
+- در حالت `file` از `FileOpen/FileReadArray/FileWriteArray` با UTF-8 استفاده می‌کند و
+  پوشه‌ها را خودش می‌سازد؛ حداکثر ۸ درخواست در هر دور برداشته می‌شود.
+- در حالت `socket` از `SocketCreate/SocketConnect/SocketRead/SocketSend` استفاده می‌کند؛
+  **نه** `WebRequest`. توجه: در بیلدهای جدید `SocketConnect` هم فهرست مجاز می‌خواهد.
 - خواندن سوکت غیرمسدودکننده است (`timeout=0`) و در `OnTimer` انجام می‌شود؛ چارت قفل
   نمی‌شود.
 - سمت پایتون همیشه باید در حال اجرا باشد؛ اگر نباشد، EA هر ۳ ثانیه دوباره تلاش می‌کند.

@@ -27,10 +27,13 @@
 |---|---|---|
 | پایتون، MCP، تحلیل، ژورنال | لینوکس بومی | سریع، قابل دیباگ، قابل تست |
 | دسترسی به بازار و `OrderSend` | داخل خود ترمینال MT5 (هر جا که هست) | تنها جایی که API متاتریدر وجود دارد |
-| ارتباط دو طرف | سوکت TCP + JSON خط‌به‌خط | پایدار، بدون WebRequest/whitelist، بدون DLL |
+| ارتباط دو طرف | **پل فایلی** (پیش‌فرض) یا سوکت TCP + JSON خط‌به‌خط | بدون DLL؛ پل فایلی هیچ مجوز شبکه‌ای نمی‌خواهد |
 
-`WebRequest` لازم نیست (پس نیازی به لیست سفید URL نیست) و `Socket*` در MQL5 نیازی به
-اجازه‌ی اضافی ندارد.
+`WebRequest` لازم نیست. درباره‌ی سوکت یک نکته‌ی مهم: در بیلدهای جدید MT5، `SocketConnect`
+هم از همان «فهرست مجاز» تغذیه می‌کند و در غیر این صورت `err=4014` می‌دهد؛ آن فهرست هم
+در `Config/settings.ini` رمزگذاری‌شده زندگی می‌کند و ویرایش فایلی روی آن اثر ندارد. به همین
+دلیل **پل فایلی پیش‌فرض شد**: اکسپرت و پایتون از طریق `MQL5/Files` حرف می‌زنند، بدون هیچ
+پورت، مجوز یا تنظیم شبکه‌ای. جزئیات: [docs/FILE-BRIDGE.md](docs/FILE-BRIDGE.md).
 
 ## چه چیزی داخلش هست
 
@@ -42,13 +45,17 @@ trade-mcp/
 │   ├── indicators.py    # EMA/RSI/ATR/ADX/Bollinger/Donchian/Swing (بدون numpy)
 │   ├── risk.py          # حجم بر اساس ریسک، اعتبارسنجی سفارش، گاردها
 │   ├── execution.py     # جریان دو مرحله‌ای: propose → تأیید انسان → اجرا
-│   ├── store.py         # ژورنال SQLite (پیشنهادها، معاملات، یادداشت‌ها)
-│   └── bridge/          # سرور سوکت + کلاینت + بک‌اند mock
+│   ├── store.py         # ژورنال SQLite (پیشنهادها، معاملات، یادداشت‌ها، ایجنت‌ها)
+│   ├── agents.py        # ایجنت‌های مقیدشده (قید نماد/لات/ریسک/ساعت) + موتور LLM
+│   ├── console.py       # اپلیکیشن محلی با تب‌ها (http://127.0.0.1:8790)
+│   ├── web/index.html   # رابط کاربری همان کنسول (فارسی، RTL)
+│   ├── news.py          # خواننده‌ی RSS برای تب اخبار
+│   └── bridge/          # پل فایلی + سرور سوکت + کلاینت + بک‌اند mock
 ├── mt5-connector/
 │   └── TradeMCPConnector.mq5   # اکسپرت متاتریدر
 ├── docs/                # نصب، OpenCode، معماری، پروتکل
 ├── examples/opencode.jsonc
-└── tests/               # ۴۱ تست، کامل آفلاین
+└── tests/               # ۵۸ تست، کامل آفلاین
 ```
 
 ## نصب سریع (۵ دقیقه)
@@ -83,7 +90,9 @@ cp .env.example .env                    # و مقادیر را تنظیم کن
 2. در MetaEditor کلید `F7` (Compile) — باید بدون خطا کامپایل شود.
 3. در MT5 یک چارت باز کن و از پنجره‌ی Navigator اکسپرت را روی چارت بکش.
 4. تیک **Allow Algo Trading** را بزن (در تنظیمات اکسپرت و دکمه‌ی AutoTrading در نوار ابزار).
-5. تب **Experts** باید بنویسد: `[trade-mcp] connected to 127.0.0.1:8787`.
+5. در تب **Inputs** مقدار `InpTransport` را روی `file` بگذار (مسیر پیشنهادی) یا
+   `socket` اگر فهرست مجاز MT5 را درست کرده‌ای.
+6. تب **Experts** باید بنویسد: `[trade-mcp] 1.20 file transport | folder=MQL5\Files\trade-mcp`.
 
 جزئیات و مشکلات رایج: [docs/SETUP-LINUX-MT5.md](docs/SETUP-LINUX-MT5.md).
 
@@ -129,6 +138,39 @@ opencode mcp list          # باید trade را connected ببینی
 > «طلا را در M15 و H1 و H4 بررسی کن، سناریوی معاملاتی با حد ضرر و دو هدف بده و
 > حجم را بر اساس ۰.۵٪ ریسک حساب حساب کن.»
 
+## داشبورد محلی با تب‌های ایجنت (`trade-mcp console`)
+
+علاوه بر OpenCode، یک اپلیکیشن محلی هم داری که همان هسته را با تب و دکمه نشان می‌دهد:
+
+```bash
+TRADE_MCP_BACKEND=file \
+TRADE_MCP_FILES_DIR="/media/.../MetaTrader 5/MQL5/Files" \
+.venv/bin/trade-mcp console
+# مرورگر: http://127.0.0.1:8790
+```
+
+| تب | کار |
+|---|---|
+| نمای کلی | حساب، پوزیشن‌ها، پیشنهادهای در انتظار با دکمه‌ی تأیید |
+| تحلیل | تحلیل چند تایم‌فریمی + سناریو + نمودار |
+| ایجنت‌ها | ساخت ایجنت با قید (نماد، سقف لات، ریسک، ساعت، حالت) و اجرا |
+| اخبار | سرخط‌های RSS |
+| ژورنال | یادداشت و معاملات |
+| تنظیمات | پیکربندی فعال + بلوک آماده‌ی OpenCode |
+
+ایجنت داخلی بدون هیچ API key کار می‌کند (موتور قاعده‌محور خودِ trade-mcp) و اگر LLM
+سازگار با OpenAI بدهی، تصمیم‌ها را مدل می‌گیرد:
+
+```bash
+export TRADE_MCP_LLM_BASE_URL="https://api.openai.com/v1"
+export TRADE_MCP_LLM_MODEL="gpt-4o-mini"
+export TRADE_MCP_LLM_API_KEY="sk-..."
+```
+
+هر ایجنت سه حالت اختیار دارد: `advisory` (فقط پیشنهاد)، `guarded` (خودکار در محدوده‌ی
+اطمینان)، `auto` (خودکار کامل). در هر سه حالت `TRADE_MCP_ALLOW_TRADING` قفل نهایی است.
+جزئیات: [docs/CONSOLE.md](docs/CONSOLE.md).
+
 ## ابزارهایی که مدل در اختیار دارد
 
 | ابزار | کار |
@@ -168,7 +210,7 @@ opencode mcp list          # باید trade را connected ببینی
 
 ```bash
 .venv/bin/pip install -e ".[dev]"
-.venv/bin/python -m pytest        # ۴۱ تست، بدون نیاز به MT5 و اینترنت
+.venv/bin/python -m pytest        # ۵۸ تست، بدون نیاز به MT5 و اینترنت
 ```
 
 ## مستندات
@@ -178,7 +220,9 @@ opencode mcp list          # باید trade را connected ببینی
 | [docs/SETUP-LINUX-MT5.md](docs/SETUP-LINUX-MT5.md) | نصب MT5 روی Wine/ویندوز، نصب EA، عیب‌یابی سوکت |
 | [docs/OPENCODE.md](docs/OPENCODE.md) | کانفیگ OpenCode، اجازه‌ها، نمونه گفتگو |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | تصمیم‌های طراحی و لایه‌بندی |
-| [docs/PROTOCOL.md](docs/PROTOCOL.md) | پروتکل سوکت: دستورها و شکل پیام‌ها |
+| [docs/FILE-BRIDGE.md](docs/FILE-BRIDGE.md) | پل فایلی: چرا، چگونه، عیب‌یابی (مسیر پیش‌فرض) |
+| [docs/CONSOLE.md](docs/CONSOLE.md) | کنسول محلی: تب‌ها، ایجنت‌ها، حالت‌های اختیار، API |
+| [docs/PROTOCOL.md](docs/PROTOCOL.md) | پروتکل پیام‌ها (همان قرارداد برای سوکت و فایل) |
 
 ## وضعیت پروژه
 
@@ -186,6 +230,8 @@ opencode mcp list          # باید trade را connected ببینی
 - [x] تحلیل مولتی‌تایم‌فریم، سناریوساز، محاسبه‌ی ریسک و حجم
 - [x] جریان دو مرحله‌ای سفارش با ژورنال SQLite
 - [x] بک‌اند ساختگی (mock) برای توسعه بدون متاتریدر
+- [x] پل فایلی (`MQL5/Files`) — اتصال بدون هیچ مجوز شبکه‌ای، مقاوم زیر Wine
+- [x] کنسول محلی با تب‌ها + ایجنت‌های مقیدشده (قاعده‌محور یا LLM)
 - [ ] بک‌تست روی کندل‌های تاریخی (مرحله‌ی بعد)
 - [ ] پشتیبانی از چند حساب/چند ترمینال همزمان
 

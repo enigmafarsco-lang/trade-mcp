@@ -18,7 +18,19 @@
 #include <Trade\Trade.mqh>
 
 //--- inputs ---------------------------------------------------------
-input group             "Connection"
+enum ENUM_TRANSPORT
+{
+   TRANSPORT_FILE   = 0, // file  - MQL5\Files shared folder (no permissions needed)
+   TRANSPORT_SOCKET = 1  // socket - TCP to Python (needs the WebRequest allow-list)
+};
+
+input group             "Transport"
+input ENUM_TRANSPORT InpTransport = TRANSPORT_FILE; // how Python talks to this EA
+input string InpFileDir         = "trade-mcp";  // folder inside MQL5\Files
+input int    InpFilePollMs      = 150;          // inbox poll interval (ms)
+input int    InpStatusMs        = 1000;         // heartbeat interval (ms)
+
+input group             "Socket (only if InpTransport=socket)"
 input string InpHost            = "127.0.0.1"; // Python host
 input int    InpPort            = 8787;        // Python port
 input int    InpConnectTimeout  = 1500;        // connect timeout (ms)
@@ -37,12 +49,14 @@ input int    InpMaxRatesCount   = 5000;        // hard cap on bars per request
 input int    InpMaxSymbols      = 2000;        // hard cap on symbols per request
 
 //--- globals --------------------------------------------------------
-#define EA_VERSION "1.10"
+#define EA_VERSION "1.20"
 #define SOCK_NONE  INVALID_HANDLE
 
 int      g_socket        = SOCK_NONE;
 string   g_rx            = "";
 uint     g_lastAttempt   = 0;
+uint     g_lastStatus    = 0;
+bool     g_fileMode      = false;
 long     g_requests      = 0;
 long     g_errors        = 0;
 datetime g_connectedAt   = 0;
@@ -90,7 +104,7 @@ public:
    }
    void Str(const string k, const string v) { Raw("\"" + JEsc(k) + "\":\"" + JEsc(v) + "\""); }
    void Num(const string k, const double v, const int digits = 5) { Raw("\"" + JEsc(k) + "\":" + DoubleToString(v, digits)); }
-   void Int(const string k, const long v) { Raw("\"" + JEsc(k) + "\":" + LongToString(v)); }
+   void Int(const string k, const long v) { Raw("\"" + JEsc(k) + "\":" + (string)v); }
    void Bool(const string k, const bool v) { Raw("\"" + JEsc(k) + "\":" + (v ? "true" : "false")); }
    void Val(const string raw) { Raw(raw); }
    string ToString() { return (m_isArray ? "[" + m_body + "]" : "{" + m_body + "}"); }
@@ -312,7 +326,7 @@ void ProcessLines()
 //+------------------------------------------------------------------+
 //| Request dispatch                                                 |
 //+------------------------------------------------------------------+
-void HandleLine(const string line)
+string HandleLineToString(const string line)
 {
    string id  = JGetStr(line, "id");
    string cmd = JGetStr(line, "cmd");
@@ -356,7 +370,12 @@ void HandleLine(const string line)
       resp = "{\"id\":\"" + JEsc(id) + "\",\"ok\":false,\"error\":{\"code\":\"" +
              JEsc(g_errCode) + "\",\"message\":\"" + JEsc(g_errMsg) + "\"}}";
    }
-   SendRaw(resp + "\n");
+   return resp;
+}
+
+void HandleLine(const string line)
+{
+   SendRaw(HandleLineToString(line) + "\n");
 }
 
 //+------------------------------------------------------------------+
@@ -867,7 +886,7 @@ string CmdTradeModify(const string line)
    double tp   = JGetNum(line, "tp", 0.0);
    if(FindPositionByTicket(ticket) == 0)
    {
-      SetError("not_found", "position " + LongToString(ticket) + " not found");
+      SetError("not_found", "position " + (string)ticket + " not found");
       return "";
    }
    string symbol = PositionGetString(POSITION_SYMBOL);
@@ -894,7 +913,7 @@ string CmdTradeClose(const string line)
 
    if(FindPositionByTicket(ticket) == 0)
    {
-      SetError("not_found", "position " + LongToString(ticket) + " not found");
+      SetError("not_found", "position " + (string)ticket + " not found");
       return "";
    }
    double posVolume = PositionGetDouble(POSITION_VOLUME);
@@ -966,6 +985,138 @@ string CmdTradeCloseAll(const string line)
 }
 
 //+------------------------------------------------------------------+
+//| File transport (InpTransport = TRANSPORT_FILE)                   |
+//+------------------------------------------------------------------+
+string InDirPath()  { return InpFileDir + "\\in"; }
+string OutDirPath() { return InpFileDir + "\\out"; }
+
+void FileEnsureDirs()
+{
+   FolderCreate(InpFileDir);
+   FolderCreate(InpFileDir + "\\in");
+   FolderCreate(InpFileDir + "\\out");
+}
+
+string FileBaseName(const string path)
+{
+   string s = path;
+   StringReplace(s, "/", "\\");
+   int pos = 0, last = -1;
+   while(true)
+   {
+      int found = StringFind(s, "\\", pos);
+      if(found < 0) break;
+      last = found;
+      pos = found + 1;
+   }
+   return (last < 0) ? s : StringSubstr(s, last + 1);
+}
+
+string FileReadUtf8(const string name)
+{
+   int h = FileOpen(name, FILE_READ|FILE_BIN);
+   if(h == INVALID_HANDLE) return "";
+   ulong size = FileSize(h);
+   if(size == 0 || size > 8 * 1024 * 1024)
+   {
+      FileClose(h);
+      return "";
+   }
+   uchar buf[];
+   ArrayResize(buf, (int)size);
+   int got = (int)FileReadArray(h, buf, 0, (int)size);
+   FileClose(h);
+   if(got <= 0) return "";
+   string text = CharArrayToString(buf, 0, got, CP_UTF8);
+   StringTrimLeft(text);
+   StringTrimRight(text);
+   return text;
+}
+
+bool FileWriteUtf8(const string name, const string text)
+{
+   int h = FileOpen(name, FILE_WRITE|FILE_BIN);
+   if(h == INVALID_HANDLE) return false;
+   uchar buf[];
+   int n = StringToCharArray(text, buf, 0, -1, CP_UTF8);
+   if(n > 0) n--;                                   // drop the terminating null
+   bool ok = (n <= 0) ? true : (FileWriteArray(h, buf, 0, n) == (uint)n);
+   FileClose(h);
+   return ok;
+}
+
+void FileDeleteQuiet(const string name)
+{
+   ResetLastError();
+   FileDelete(name);
+}
+
+void ProcessFileInbox()
+{
+   string found = "";
+   long handle = FileFindFirst(InDirPath() + "\\*.json", found);
+   if(handle == INVALID_HANDLE) return;
+
+   string batch[8];
+   int count = 0;
+   do
+   {
+      string base = FileBaseName(found);
+      int len = StringLen(base);
+      if(len > 5 && StringSubstr(base, len - 5) == ".json" && count < 8)
+         batch[count++] = base;
+   }
+   while(FileFindNext(handle, found) && count < 8);
+   FileFindClose(handle);
+
+   for(int i = 0; i < count; i++)
+   {
+      string reqPath = InDirPath() + "\\" + batch[i];
+      string body = FileReadUtf8(reqPath);
+      if(StringLen(body) == 0)
+      {
+         FileDeleteQuiet(reqPath);
+         continue;
+      }
+      if(InpVerbose) PrintFormat("[trade-mcp] file request %s", batch[i]);
+      string resp = HandleLineToString(body);
+      string resPath = OutDirPath() + "\\" + batch[i];
+      if(!FileWriteUtf8(resPath, resp))
+      {
+         g_errors++;
+         PrintFormat("[trade-mcp] cannot write %s err=%d", resPath, GetLastError());
+      }
+      FileDeleteQuiet(reqPath);
+   }
+}
+
+void WriteStatusFile(const bool alive = true)
+{
+   CJson o;
+   o.Bool("alive", alive);
+   o.Int("updated_at", (long)TimeLocal());
+   o.Str("ea", "TradeMCPConnector");
+   o.Str("version", EA_VERSION);
+   o.Str("transport", g_fileMode ? "file" : "socket");
+   o.Str("symbol", _Symbol);
+   o.Str("timeframe", EnumToString((ENUM_TIMEFRAMES)Period()));
+   o.Int("login", (long)AccountInfoInteger(ACCOUNT_LOGIN));
+   o.Str("server", AccountInfoString(ACCOUNT_SERVER));
+   o.Str("company", AccountInfoString(ACCOUNT_COMPANY));
+   o.Str("currency", AccountInfoString(ACCOUNT_CURRENCY));
+   o.Int("leverage", (long)AccountInfoInteger(ACCOUNT_LEVERAGE));
+   o.Bool("terminal_connected", (bool)TerminalInfoInteger(TERMINAL_CONNECTED));
+   o.Bool("trade_allowed", (bool)TerminalInfoInteger(TERMINAL_TRADE_ALLOWED));
+   o.Bool("ea_trading_allowed", (bool)MQLInfoInteger(MQL_TRADE_ALLOWED));
+   o.Bool("ea_allow_trading_input", InpAllowTrading);
+   o.Int("build", (long)TerminalInfoInteger(TERMINAL_BUILD));
+   o.Str("data_path", TerminalInfoString(TERMINAL_DATA_PATH));
+   o.Int("requests", g_requests);
+   o.Int("errors", g_errors);
+   FileWriteUtf8(InpFileDir + "\\status.json", o.ToString());
+}
+
+//+------------------------------------------------------------------+
 //| Lifecycle                                                        |
 //+------------------------------------------------------------------+
 int OnInit()
@@ -973,6 +1124,20 @@ int OnInit()
    trade.SetExpertMagicNumber(InpMagic);
    trade.SetDeviationInPoints(InpDeviation);
    trade.SetTypeFillingBySymbol(_Symbol);
+
+   g_fileMode = (InpTransport == TRANSPORT_FILE);
+
+   if(g_fileMode)
+   {
+      FileEnsureDirs();
+      g_lastStatus = GetTickCount();
+      WriteStatusFile(true);
+      EventSetMillisecondTimer((int)MathMax(InpFilePollMs, 20));
+      PrintFormat("[trade-mcp] %s file transport | folder=MQL5\\Files\\%s | trading=%s | chart=%s %s",
+                  EA_VERSION, InpFileDir, InpAllowTrading ? "ENABLED" : "disabled",
+                  _Symbol, EnumToString((ENUM_TIMEFRAMES)Period()));
+      return INIT_SUCCEEDED;
+   }
 
    if(InpTimerMs < 20) Print("[trade-mcp] warning: InpTimerMs is very small, CPU load may rise");
    EventSetMillisecondTimer((int)MathMax(InpTimerMs, 20));
@@ -988,6 +1153,13 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+   if(g_fileMode)
+   {
+      WriteStatusFile(false);
+      PrintFormat("[trade-mcp] file transport stopped (reason=%d, requests=%d, errors=%d)",
+                  reason, g_requests, g_errors);
+      return;
+   }
    if(g_socket != SOCK_NONE)
    {
       SendRaw("{\"type\":\"bye\",\"reason\":\"ea_stopped\"}\n");
@@ -999,6 +1171,18 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
+   if(g_fileMode)
+   {
+      ProcessFileInbox();
+      uint stamp = GetTickCount();
+      if(stamp - g_lastStatus >= (uint)MathMax(200, InpStatusMs))
+      {
+         WriteStatusFile(true);
+         g_lastStatus = stamp;
+      }
+      return;
+   }
+
    if(g_socket == SOCK_NONE)
    {
       uint now = GetTickCount();

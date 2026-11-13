@@ -41,6 +41,20 @@ CREATE TABLE IF NOT EXISTS notes (
     kind       TEXT,
     text       TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS agents (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    symbols     TEXT NOT NULL,
+    max_lot     REAL NOT NULL,
+    max_risk    REAL NOT NULL,
+    mode        TEXT NOT NULL,
+    hours       TEXT,
+    style       TEXT,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    created_at  REAL NOT NULL,
+    last_run    REAL,
+    last_result TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_trades_created ON trades(created_at);
 """
 
@@ -152,3 +166,77 @@ class Store:
                 "SELECT * FROM notes ORDER BY created_at DESC LIMIT ?", (limit,)
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # --------------------------------------------------------------- agents
+    def create_agent(self, spec: dict[str, Any]) -> dict[str, Any]:
+        aid = uuid.uuid4().hex[:10]
+        self._conn.execute(
+            "INSERT INTO agents (id, name, symbols, max_lot, max_risk, mode, hours, style, "
+            "enabled, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                aid,
+                str(spec.get("name") or "agent"),
+                ",".join(spec.get("symbols") or []),
+                float(spec.get("max_lot") or 0.01),
+                float(spec.get("max_risk") or 0.5),
+                str(spec.get("mode") or "advisory"),
+                str(spec.get("hours") or ""),
+                str(spec.get("style") or ""),
+                1 if spec.get("enabled", True) else 0,
+                time.time(),
+            ),
+        )
+        self._conn.commit()
+        return self.get_agent(aid) or {}
+
+    def get_agent(self, agent_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
+        if row is None:
+            return None
+        return self._agent_row(row)
+
+    def list_agents(self) -> list[dict[str, Any]]:
+        rows = self._conn.execute("SELECT * FROM agents ORDER BY created_at").fetchall()
+        return [self._agent_row(r) for r in rows]
+
+    def update_agent(self, agent_id: str, changes: dict[str, Any]) -> dict[str, Any] | None:
+        current = self.get_agent(agent_id)
+        if current is None:
+            return None
+        merged = {**current, **{k: v for k, v in changes.items() if v is not None}}
+        self._conn.execute(
+            "UPDATE agents SET name=?, symbols=?, max_lot=?, max_risk=?, mode=?, hours=?, "
+            "style=?, enabled=? WHERE id=?",
+            (
+                merged["name"],
+                ",".join(merged.get("symbols") or []),
+                float(merged.get("max_lot") or 0.01),
+                float(merged.get("max_risk") or 0.5),
+                merged.get("mode") or "advisory",
+                merged.get("hours") or "",
+                merged.get("style") or "",
+                1 if merged.get("enabled") else 0,
+                agent_id,
+            ),
+        )
+        self._conn.commit()
+        return self.get_agent(agent_id)
+
+    def delete_agent(self, agent_id: str) -> None:
+        self._conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
+        self._conn.commit()
+
+    def mark_agent_run(self, agent_id: str, result: dict[str, Any] | str) -> None:
+        text = result if isinstance(result, str) else json.dumps(result, default=str)
+        self._conn.execute(
+            "UPDATE agents SET last_run = ?, last_result = ? WHERE id = ?",
+            (time.time(), text[:8000], agent_id),
+        )
+        self._conn.commit()
+
+    @staticmethod
+    def _agent_row(row: sqlite3.Row) -> dict[str, Any]:
+        data = dict(row)
+        data["symbols"] = [s for s in str(data.get("symbols") or "").split(",") if s]
+        data["enabled"] = bool(data.get("enabled"))
+        return data

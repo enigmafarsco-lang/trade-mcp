@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Trade Console — trade-mcp</title>
+<style>
+  :root{
+    --bg:#0b0f14; --panel:#121924; --panel2:#0f1620; --line:#1f2a38;
+    --txt:#e6edf5; --dim:#8b9bb0; --acc:#4ea1ff; --ok:#33d17a; --warn:#f5a623; --bad:#ff5c5c;
+    --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:Vazirmatn,system-ui,Tahoma,sans-serif;font-size:14px}
+  a{color:var(--acc);text-decoration:none}
+  header{display:flex;align-items:center;gap:14px;padding:12px 18px;background:var(--panel2);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+  header h1{font-size:16px;margin:0;font-weight:600;letter-spacing:.2px}
+  .spacer{flex:1}
+  .badge{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;background:#16202e;border:1px solid var(--line);font-size:12px;color:var(--dim)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--bad)}
+  .dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)}
+  nav{display:flex;gap:6px;padding:10px 18px;background:var(--panel2);border-bottom:1px solid var(--line);overflow-x:auto;position:sticky;top:57px;z-index:4}
+  nav button{background:transparent;border:1px solid transparent;color:var(--dim);padding:8px 14px;border-radius:10px;cursor:pointer;font-family:inherit;font-size:13px;white-space:nowrap}
+  nav button:hover{color:var(--txt);background:#16202e}
+  nav button.active{color:#fff;background:#1b2942;border-color:#26405f}
+  main{padding:18px;max-width:1240px;margin:0 auto}
+  section{display:none} section.active{display:block}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:14px}
+  .card h2{margin:0 0 10px;font-size:14px;font-weight:600;color:#cfe0f5}
+  .grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+  .kpi{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:12px}
+  .kpi .k{font-size:11px;color:var(--dim);margin-bottom:6px}
+  .kpi .v{font-family:var(--mono);font-size:16px}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th,td{text-align:right;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th{color:var(--dim);font-weight:500;font-size:11.5px}
+  tbody tr:hover{background:#0e1622}
+  input,select,textarea{background:#0c141e;border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:8px 10px;font-family:inherit;font-size:13px;width:100%}
+  label{display:block;font-size:11.5px;color:var(--dim);margin:0 0 5px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+  .row > div{flex:1;min-width:120px}
+  button.primary{background:#1f6feb;border:1px solid #3b82f6;color:#fff;padding:9px 16px;border-radius:10px;cursor:pointer;font-family:inherit;font-size:13px}
+  button.primary:hover{background:#2b7cf0}
+  button.ghost{background:#16202e;border:1px solid var(--line);color:var(--txt);padding:7px 12px;border-radius:9px;cursor:pointer;font-family:inherit;font-size:12px}
+  button.ghost:hover{border-color:#2c4259}
+  button.danger{color:#ffb4b4;border-color:#4a2028}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;border:1px solid var(--line)}
+  .pill.ok{color:var(--ok);border-color:#1f4b36} .pill.bad{color:var(--bad);border-color:#4a2028}
+  .pill.warn{color:var(--warn);border-color:#4a3a12}
+  pre{white-space:pre-wrap;background:#0a1018;border:1px solid var(--line);border-radius:10px;padding:10px;font-family:var(--mono);font-size:12px;direction:ltr;text-align:left;overflow:auto}
+  .muted{color:var(--dim);font-size:12px}
+  .chat{white-space:pre-wrap;line-height:1.9}
+  ul.news{list-style:none;margin:0;padding:0}
+  ul.news li{padding:10px 0;border-bottom:1px solid var(--line)}
+  ul.news .src{font-size:11px;color:var(--dim);margin-inline-start:6px}
+  .toast{position:fixed;inset-inline-start:16px;bottom:16px;background:#16202e;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-size:12.5px;opacity:0;transform:translateY(8px);transition:.25s}
+  .toast.show{opacity:1;transform:none}
+  .spark{width:100%;height:90px;display:block;background:#0a1018;border:1px solid var(--line);border-radius:10px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🛰️ Trade Console</h1>
+  <span class="badge"><span class="dot" id="dot-ea"></span><span id="ea-label">در حال بررسی…</span></span>
+  <span class="badge">نماد: <b id="sym-label">—</b></span>
+  <span class="badge">قیمت: <b id="px-label" style="font-family:var(--mono)">—</b></span>
+  <span class="badge" id="trading-badge">معامله: —</span>
+  <span class="spacer"></span>
+  <button class="ghost" onclick="refreshAll()">به‌روزرسانی</button>
+</header>
+
+<nav>
+  <button class="active" data-tab="overview">نمای کلی</button>
+  <button data-tab="analysis">تحلیل</button>
+  <button data-tab="agents">ایجنت‌ها</button>
+  <button data-tab="news">اخبار</button>
+  <button data-tab="journal">ژورنال</button>
+  <button data-tab="settings">تنظیمات و OpenCode</button>
+</nav>
+
+<main>
+  <!-- overview -->
+  <section id="tab-overview" class="active">
+    <div class="card">
+      <h2>حساب</h2>
+      <div class="grid" id="kpis"><div class="muted">در حال بارگذاری…</div></div>
+    </div>
+    <div class="card">
+      <h2>پوزیشن‌های باز</h2>
+      <table><thead><tr><th>تیکت</th><th>نماد</th><th>جهت</th><th>حجم</th><th>ورود</th><th>SL</th><th>TP</th><th>سود</th></tr></thead>
+      <tbody id="pos-body"><tr><td colspan="8" class="muted">—</td></tr></tbody></table>
+    </div>
+    <div class="card">
+      <h2>پیشنهادهای اخیر</h2>
+      <table><thead><tr><th>شناسه</th><th>نماد</th><th>وضعیت</th><th>مبلغ/حجم</th><th>عملیات</th></tr></thead>
+      <tbody id="prop-body"><tr><td colspan="5" class="muted">—</td></tr></tbody></table>
+    </div>
+  </section>
+
+  <!-- analysis -->
+  <section id="tab-analysis">
+    <div class="card">
+      <h2>تحلیل چند تایم‌فریمی</h2>
+      <div class="row">
+        <div style="max-width:160px"><label>نماد</label><input id="an-symbol" value="XAUUSD" /></div>
+        <div style="max-width:220px"><label>تایم‌فریم‌ها</label><input id="an-tfs" value="M15,H1,H4" /></div>
+        <div style="max-width:120px"><button class="primary" onclick="runAnalysis()">تحلیل کن</button></div>
+      </div>
+    </div>
+    <div class="card"><h2>خلاصه</h2><div id="an-summary" class="chat muted">هنوز تحلیلی اجرا نشده است.</div>
+      <div class="grid" id="an-kpis" style="margin-top:12px"></div>
+      <div id="an-warn" class="muted" style="margin-top:10px"></div>
+    </div>
+    <div class="card"><h2>تایم‌فریم‌ها</h2>
+      <table><thead><tr><th>TF</th><th>روند</th><th>قدرت</th><th>RSI</th><th>ADX</th><th>ATR</th><th>وضعیت نوسان</th></tr></thead>
+      <tbody id="an-tf-body"><tr><td colspan="7" class="muted">—</td></tr></tbody></table>
+    </div>
+    <div class="card"><h2>سناریو</h2><pre id="an-scenario">—</pre></div>
+    <div class="card"><h2>نمودار</h2><canvas class="spark" id="spark" width="1000" height="180"></canvas></div>
+  </section>
+
+  <!-- agents -->
+  <section id="tab-agents">
+    <div class="card">
+      <h2>ایجنت جدید</h2>
+      <div class="row">
+        <div style="max-width:180px"><label>نام</label><input id="ag-name" value="اسکالپ طلا" /></div>
+        <div style="max-width:200px"><label>نمادها (با کاما)</label><input id="ag-symbols" value="XAUUSD" /></div>
+        <div style="max-width:110px"><label>حداکثر لات</label><input id="ag-lot" value="0.02" /></div>
+        <div style="max-width:110px"><label>ریسک ٪</label><input id="ag-risk" value="0.5" /></div>
+        <div style="max-width:150px"><label>ساعت مجاز</label><input id="ag-hours" placeholder="08:00-20:00" /></div>
+        <div style="max-width:150px"><label>اختیار</label>
+          <select id="ag-mode">
+            <option value="advisory">مشورتی</option>
+            <option value="guarded">خودکار در محدوده</option>
+            <option value="auto">خودکار کامل</option>
+          </select>
+        </div>
+        <div style="max-width:120px"><button class="primary" onclick="createAgent()">افزودن</button></div>
+      </div>
+      <div class="muted" style="margin-top:8px">«مشورتی» فقط پیشنهاد می‌سازد؛ «خودکار» داخل همین محدوده‌ها خودش تأیید می‌کند (و فقط اگر TRADE_MCP_ALLOW_TRADING=true باشد).</div>
+    </div>
+    <div class="card">
+      <h2>ایجنت‌ها</h2>
+      <div class="row" style="margin-bottom:10px">
+        <div style="max-width:150px"><label>فاصله چرخه (ثانیه)</label><input id="sch-int" value="300" /></div>
+        <div style="max-width:200px">
+          <button class="ghost" onclick="toggleScheduler(true)">شروع چرخه خودکار</button>
+          <button class="ghost" onclick="toggleScheduler(false)">توقف</button>
+        </div>
+        <div class="muted" id="sch-state" style="align-self:center"></div>
+      </div>
+      <table><thead><tr><th>نام</th><th>نمادها</th><th>لات</th><th>ریسک</th><th>اختیار</th><th>فعال</th><th>آخرین اجرا</th><th>عملیات</th></tr></thead>
+      <tbody id="ag-body"><tr><td colspan="8" class="muted">—</td></tr></tbody></table>
+    </div>
+    <div class="card"><h2>گزارش اجرا</h2><div id="ag-report" class="chat muted">—</div></div>
+  </section>
+
+  <!-- news -->
+  <section id="tab-news">
+    <div class="card">
+      <h2>سرخط‌ها <button class="ghost" onclick="loadNews()">بازخوانی</button></h2>
+      <ul class="news" id="news-list"><li class="muted">در حال بارگذاری…</li></ul>
+    </div>
+  </section>
+
+  <!-- journal -->
+  <section id="tab-journal">
+    <div class="card">
+      <h2>یادداشت جدید</h2>
+      <div class="row">
+        <div><label>متن</label><input id="jr-text" placeholder="مثلاً: ستاپ پولبک روی H1، منتظر بسته شدن کندل" /></div>
+        <div style="max-width:120px"><label>نماد</label><input id="jr-symbol" value="XAUUSD" /></div>
+        <div style="max-width:120px"><button class="primary" onclick="addNote()">ثبت</button></div>
+      </div>
+    </div>
+    <div class="card"><h2>یادداشت‌ها</h2><table><thead><tr><th>زمان</th><th>نماد</th><th>نوع</th><th>متن</th></tr></thead><tbody id="jr-body"><tr><td colspan="4" class="muted">—</td></tr></tbody></table></div>
+    <div class="card"><h2>معاملات ثبت‌شده</h2><table><thead><tr><th>زمان</th><th>نماد</th><th>جهت</th><th>حجم</th><th>تیکت</th></tr></thead><tbody id="tr-body"><tr><td colspan="5" class="muted">—</td></tr></tbody></table></div>
+  </section>
+
+  <!-- settings -->
+  <section id="tab-settings">
+    <div class="card"><h2>پیکربندی فعال</h2><pre id="cfg-json">—</pre></div>
+    <div class="card">
+      <h2>اتصال OpenCode به همین ابزارها</h2>
+      <div class="muted" style="line-height:2">
+        این کنسول و OpenCode هر دو به یک هسته وصل می‌شوند: OpenCode از راه MCP (stdio) و این صفحه از راه HTTP محلی.
+        برای اینکه OpenCode هم همین ابزارها را ببیند، در فایل <code>~/.config/opencode/opencode.json</code> این بلوک را داشته باش:
+      </div>
+      <pre>{
+  "mcp": {
+    "servers": {
+      "trade": {
+        "type": "local",
+        "command": ["/ABS/PATH/.venv/bin/trade-mcp", "serve"],
+        "environment": {
+          "TRADE_MCP_BACKEND": "file",
+          "TRADE_MCP_FILES_DIR": "/media/.../MetaTrader 5/MQL5/Files"
+        }
+      }
+    }
+  }
+}</pre>
+      <div class="muted">سپس در OpenCode با <code>/mcps</code> بررسی کن که <code>trade</code> وصل است.</div>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const nf = (v, d = 2) => (v === null || v === undefined || v === "") ? "—"
+  : Number(v).toLocaleString("en-US", {minimumFractionDigits: d, maximumFractionDigits: d});
+
+function toast(msg) {
+  const el = $("toast"); el.textContent = msg; el.classList.add("show");
+  clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove("show"), 2600);
+}
+async function api(path, opts) {
+  const res = await fetch(path, Object.assign({headers: {"Content-Type": "application/json"}}, opts || {}));
+  let data = {};
+  try { data = await res.json(); } catch (e) { data = {ok: false, message: "پاسخ نامعتبر"}; }
+  if (!res.ok && !data.message) data.message = "HTTP " + res.status;
+  return data;
+}
+document.querySelectorAll("nav button").forEach((b) => {
+  b.onclick = () => {
+    document.querySelectorAll("nav button").forEach((x) => x.classList.remove("active"));
+    document.querySelectorAll("section").forEach((s) => s.classList.remove("active"));
+    b.classList.add("active");
+    $("tab-" + b.dataset.tab).classList.add("active");
+    if (b.dataset.tab === "news") loadNews();
+    if (b.dataset.tab === "journal") loadJournal();
+    if (b.dataset.tab === "settings") loadSettings();
+    if (b.dataset.tab === "agents") loadAgents();
+  };
+});
+
+/* ---------------- overview ---------------- */
+async function loadOverview() {
+  const d = await api("/api/overview");
+  const st = d.status || {};
+  const connected = !!st.ea_connected;
+  $("dot-ea").className = "dot " + (connected ? "ok" : "bad");
+  $("ea-label").textContent = connected ? "MT5 وصل است" : "MT5 قطع است";
+  if (connected && st.ea_hello) {
+    $("sym-label").textContent = st.ea_hello.symbol || d.symbol || "—";
+  }
+  if (d.tick) $("px-label").textContent = nf(d.tick.bid, 2);
+  const acct = d.account || {};
+  const kpis = [];
+  if (connected) {
+    kpis.push(["بالانس", nf(acct.balance, 2) + " " + (acct.currency || "")]);
+    kpis.push(["اکوییتی", nf(acct.equity, 2)]);
+    kpis.push(["مارجین آزاد", nf(acct.margin_free, 2)]);
+    kpis.push(["لوریج", "1:" + (acct.leverage || "—")]);
+    kpis.push(["سود شناور", nf(acct.profit, 2)]);
+    const t = st.ea_hello || {};
+    $("trading-badge").textContent = "معامله: " + (t.trade_allowed ? "مجاز" : "بسته") +
+      (t.ea_allow_trading_input ? " / EA: مجاز" : " / EA: بسته");
+  } else {
+    kpis.push(["علت", st.reason || "بدون اتصال"]);
+  }
+  $("kpis").innerHTML = kpis.map(([k, v]) =>
+    `<div class="kpi"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+
+  const pos = d.positions || [];
+  $("pos-body").innerHTML = pos.length ? pos.map((p) => `<tr>
+      <td>${p.ticket ?? "—"}</td><td>${p.symbol ?? "—"}</td>
+      <td>${(p.type ?? p.side ?? "")}</td><td>${nf(p.volume, 2)}</td>
+      <td>${nf(p.price_open ?? p.open_price, 2)}</td><td>${nf(p.sl, 2)}</td><td>${nf(p.tp, 2)}</td>
+      <td style="color:${Number(p.profit) >= 0 ? "var(--ok)" : "var(--bad)"}">${nf(p.profit, 2)}</td>
+    </tr>`).join("") : `<tr><td colspan="8" class="muted">پوزیشن بازی نیست</td></tr>`;
+
+  const props = d.proposals || [];
+  $("prop-body").innerHTML = props.length ? props.map((p) => {
+    const pending = p.status === "pending";
+    return `<tr><td>${p.id}</td><td>${p.symbol || "—"}</td>
+      <td><span class="pill ${p.status === "executed" ? "ok" : pending ? "warn" : ""}">${p.status}</span></td>
+      <td>${p.side || ""} ${p.volume ?? ""}</td>
+      <td>${pending ? `<button class="ghost" onclick="confirmProp('${p.id}')">تأیید</button>` : "—"}</td></tr>`;
+  }).join("") : `<tr><td colspan="5" class="muted">پیشنهادی نیست</td></tr>`;
+}
+async function confirmProp(id) {
+  const d = await api("/api/proposals/" + id + "/confirm", {method: "POST", body: "{}"});
+  toast(d.ok ? "سفارش ثبت شد" : (d.message || d.error || "رد شد"));
+  loadOverview();
+}
+
+/* ---------------- analysis ---------------- */
+async function runAnalysis() {
+  $("an-summary").textContent = "در حال تحلیل…";
+  const sym = $("an-symbol").value.trim() || "XAUUSD";
+  const tfs = $("an-tfs").value.trim();
+  const d = await api(`/api/analysis?symbol=${encodeURIComponent(sym)}&timeframes=${encodeURIComponent(tfs)}`);
+  if (!d.ok) { $("an-summary").textContent = d.message || d.error || "تحلیل نشد"; return; }
+  $("an-summary").textContent = d.summary_fa || "—";
+  const bias = d.bias || {};
+  const sc = d.scenario || {};
+  $("an-kpis").innerHTML = [
+    ["سوگیری", bias.bias || "—"],
+    ["هم‌راستایی", nf(bias.alignment, 2)],
+    ["اقدام پیشنهادی", ({buy: "خرید", sell: "فروش", wait: "انتظار"})[sc.action] || sc.action || "—"],
+    ["اطمینان", sc.confidence ?? "—"],
+    ["ورود", nf(sc.entry_reference, 2)],
+    ["حد ضرر", nf(sc.stop_loss, 2)],
+  ].map(([k, v]) => `<div class="kpi"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+  $("an-warn").innerHTML = (d.warnings || []).map((w) => `<div>⚠️ ${w}</div>`).join("");
+  $("an-tf-body").innerHTML = Object.entries(d.timeframes || {}).map(([tf, p]) => `<tr>
+      <td>${tf}</td><td>${p.trend || "—"}</td><td>${p.strength ?? "—"}</td>
+      <td>${nf(p.rsi14, 1)}</td><td>${nf(p.adx14, 1)}</td><td>${nf(p.atr, 2)}</td>
+      <td>${p.regime || "—"}</td></tr>`).join("");
+  $("an-scenario").textContent = JSON.stringify(sc, null, 2);
+  drawSpark(sym);
+}
+async function drawSpark(sym) {
+  const d = await api(`/api/candles?symbol=${encodeURIComponent(sym)}&tf=M15&count=120`);
+  const cv = $("spark"); if (!cv) return;
+  const ctx = cv.getContext("2d");
+  const bars = (d.bars || []).map((b) => Number(b.close)).filter((x) => !isNaN(x));
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  if (bars.length < 2) return;
+  const min = Math.min(...bars), max = Math.max(...bars), pad = 10;
+  const x = (i) => pad + (i * (cv.width - pad * 2)) / (bars.length - 1);
+  const y = (v) => cv.height - pad - ((v - min) / (max - min || 1)) * (cv.height - pad * 2);
+  ctx.beginPath(); ctx.strokeStyle = "#4ea1ff"; ctx.lineWidth = 1.6;
+  bars.forEach((v, i) => (i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v))));
+  ctx.stroke();
+  ctx.fillStyle = "#8b9bb0"; ctx.font = "12px monospace";
+  ctx.fillText(max.toFixed(2), 6, 16); ctx.fillText(min.toFixed(2), 6, cv.height - 6);
+}
+
+/* ---------------- agents ---------------- */
+async function loadAgents() {
+  const d = await api("/api/agents");
+  const list = d.agents || [];
+  $("sch-state").textContent = d.scheduler && d.scheduler.running
+    ? `چرخه فعال (هر ${d.scheduler.interval}s، ${d.scheduler.runs} اجرا)` : "چرخه خاموش";
+  $("ag-body").innerHTML = list.length ? list.map((a) => `<tr>
+      <td>${a.name}</td><td>${(a.symbols || []).join(", ")}</td>
+      <td>${nf(a.max_lot, 2)}</td><td>${nf(a.max_risk, 2)}٪</td>
+      <td>${({advisory: "مشورتی", guarded: "محدوده‌دار", auto: "خودکار"})[a.mode] || a.mode}</td>
+      <td><span class="pill ${a.enabled ? "ok" : "bad"}">${a.enabled ? "روشن" : "خاموش"}</span></td>
+      <td class="muted">${a.last_run ? new Date(a.last_run * 1000).toLocaleString("fa-IR") : "—"}</td>
+      <td>
+        <button class="ghost" onclick="runAgent('${a.id}')">اجرا</button>
+        <button class="ghost" onclick="agentAction('${a.id}','toggle')">${a.enabled ? "خاموش" : "روشن"}</button>
+        <button class="ghost danger" onclick="agentAction('${a.id}','delete')">حذف</button>
+      </td></tr>`).join("") : `<tr><td colspan="8" class="muted">ایجنتي تعریف نشده</td></tr>`;
+}
+async function createAgent() {
+  const payload = {
+    name: $("ag-name").value, symbols: $("ag-symbols").value,
+    max_lot: Number($("ag-lot").value), max_risk: Number($("ag-risk").value),
+    hours: $("ag-hours").value, mode: $("ag-mode").value
+  };
+  const d = await api("/api/agents", {method: "POST", body: JSON.stringify(payload)});
+  toast(d.ok ? "ایجنت اضافه شد" : (d.message || d.error));
+  loadAgents();
+}
+async function runAgent(id) {
+  $("ag-report").textContent = "در حال اجرا…";
+  const d = await api("/api/agents/" + id, {method: "POST", body: JSON.stringify({action: "run"})});
+  const r = d.report || {};
+  $("ag-report").textContent = (r.summary_fa || d.message || "—") +
+    "\n\n" + JSON.stringify({errors: r.errors, used_llm: r.used_llm, duration_ms: r.duration_ms}, null, 2);
+  loadAgents(); loadOverview();
+}
+async function agentAction(id, action) {
+  const d = await api("/api/agents/" + id, {method: "POST", body: JSON.stringify({action})});
+  if (!d.ok) toast(d.message || d.error);
+  loadAgents();
+}
+async function toggleScheduler(on) {
+  const d = await api("/api/scheduler", {method: "POST",
+    body: JSON.stringify({on, interval: Number($("sch-int").value) || 300})});
+  toast(d.ok ? (on ? "چرخه خودکار روشن شد" : "چرخه متوقف شد") : (d.message || d.error));
+  loadAgents();
+}
+
+/* ---------------- news ---------------- */
+async function loadNews() {
+  const d = await api("/api/news");
+  const items = d.items || [];
+  $("news-list").innerHTML = items.length ? items.map((n) => `<li>
+      <a href="${n.link}" target="_blank" rel="noreferrer">${n.title}</a>
+      <span class="src">${n.source} · ${n.published || ""}</span>
+    </li>`).join("") : `<li class="muted">فیدی برنگشت (فیدها را با TRADE_MCP_NEWS_FEEDS عوض کن)</li>`;
+}
+
+/* ---------------- journal ---------------- */
+async function loadJournal() {
+  const d = await api("/api/journal");
+  $("jr-body").innerHTML = (d.notes || []).length ? d.notes.map((n) => `<tr>
+      <td class="muted">${new Date(n.created_at * 1000).toLocaleString("fa-IR")}</td>
+      <td>${n.symbol || "—"}</td><td>${n.kind || ""}</td><td>${n.text}</td></tr>`).join("")
+    : `<tr><td colspan="4" class="muted">خالی</td></tr>`;
+  $("tr-body").innerHTML = (d.trades || []).length ? d.trades.map((t) => `<tr>
+      <td class="muted">${new Date(t.created_at * 1000).toLocaleString("fa-IR")}</td>
+      <td>${t.symbol || "—"}</td><td>${t.side || ""}</td><td>${nf(t.volume, 2)}</td>
+      <td>${t.ticket ?? "—"}</td></tr>`).join("") : `<tr><td colspan="5" class="muted">خالی</td></tr>`;
+}
+async function addNote() {
+  const text = $("jr-text").value.trim();
+  if (!text) return;
+  await api("/api/journal", {method: "POST",
+    body: JSON.stringify({text, symbol: $("jr-symbol").value.trim()})});
+  $("jr-text").value = ""; loadJournal(); toast("ثبت شد");
+}
+
+/* ---------------- settings ---------------- */
+async function loadSettings() {
+  const d = await api("/api/settings");
+  $("cfg-json").textContent = JSON.stringify(d, null, 2);
+}
+
+async function refreshAll() {
+  await loadOverview();
+  if ($("tab-analysis").classList.contains("active")) runAnalysis();
+  if ($("tab-agents").classList.contains("active")) loadAgents();
+  if ($("tab-journal").classList.contains("active")) loadJournal();
+}
+
+refreshAll();
+setInterval(loadOverview, 15000);
+</script>
+</body>
+</html>
