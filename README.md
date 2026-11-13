@@ -279,3 +279,10 @@ Quick start: `python3 -m venv .venv && .venv/bin/pip install -e . && .venv/bin/t
 Not financial advice. Test on a demo account first.
 
 </details>
+
+## ترمینال آموزشی دمو در کروم
+
+تب جدید کنسول شامل نمودار کندلی M15 و EMA20، سیگنال آزمایشی پولبک/شکست،
+بودجهٔ مستقل، حجم مبتنی بر ریسک، هدف سود به ارز حساب و بک‌تست آموزشی است.
+این بخش هیچ سفارشی ارسال نمی‌کند و جایگزین کامل MT5 نیست.
+راهنما و محدودیت‌ها: [docs/DEMO-TRAINING.md](docs/DEMO-TRAINING.md).

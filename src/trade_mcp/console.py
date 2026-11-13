@@ -33,6 +33,7 @@ from .config import Config
 from .execution import confirm
 from .news import fetch_news
 from .store import Store
+from .training import backtest, training_snapshot
 
 WEB_DIR = Path(__file__).with_name("web")
 
@@ -201,6 +202,25 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path in {"/", "/index.html"}:
                 return self._index()
+            if path == "/api/training/backtest":
+                with self.state.lock:
+                    mt5 = self.state.app.mt5
+                    symbol = mt5.resolve_symbol(query.get("symbol") or "XAUUSD")
+                    spec = mt5.symbol_info(symbol, fresh=True)
+                    tick = mt5.tick(symbol)
+                    result = backtest(mt5.candles(symbol, "M15", 1500)[:-1],
+                                      mt5.candles(symbol, "H1", 1500)[:-1], spec=spec,
+                                      budget=float(query.get("budget", 100)),
+                                      risk_percent=float(query.get("risk", 1)),
+                                      strategy=query.get("strategy", "pullback"),
+                                      commission=float(query.get("commission", 0)),
+                                      slippage=float(query.get("slippage", 0)),
+                                      spread=max(0, tick["ask"]-tick["bid"]))
+                return self._json(result)
+            if path == "/api/training":
+                with self.state.lock:
+                    result = training_snapshot(self.state.app.mt5, query)
+                return self._json(result)
             if path == "/api/settings":
                 return self._json(self._settings())
             if path == "/api/overview":

@@ -71,6 +71,7 @@
 
 <nav>
   <button class="active" data-tab="overview">نمای کلی</button>
+  <button data-tab="training">ترمینال آموزشی دمو</button>
   <button data-tab="analysis">تحلیل</button>
   <button data-tab="agents">ایجنت‌ها</button>
   <button data-tab="news">اخبار</button>
@@ -98,6 +99,25 @@
   </section>
 
   <!-- analysis -->
+  <section id="tab-training">
+    <div class="card"><h2>ترمینال آموزشی • فقط دمو • بدون ارسال سفارش</h2>
+    <p>بودجهٔ تمرینی مستقل از موجودی حساب است. سود و زیان تخمینی به ارز حساب هستند؛ هدف و فاصلهٔ ضرر، واحد قیمت نماد دارند.</p>
+    <div class="row">
+    <div><label>نماد</label><input id="tr-symbol" value="XAUUSD"></div>
+    <div><label>بودجهٔ تمرینی</label><input id="tr-budget" type="number" value="100" min="1"></div>
+    <div><label>ریسک هر معامله ٪</label><input id="tr-risk" type="number" value="1" min="0.01" step="0.1"></div>
+    <div><label>فاصلهٔ SL در قیمت (خالی = ATR)</label><input id="tr-distance" type="number" step="0.01"></div>
+    <div><label>فاصلهٔ TP در قیمت</label><input id="tr-target" type="number" value="1" step="0.01"></div>
+    <div><label>هدف سود به ارز حساب (اختیاری؛ مقدم بر فاصلهٔ TP)</label><input id="tr-target_money" type="number" step="0.01" placeholder="مثلاً 1 دلار برای حساب USD"></div>
+    <div><label>کمیسیون رفت‌وبرگشت هر لات</label><input id="tr-commission" type="number" value="0" step="0.01"></div>
+    <div><label>لغزش تخمینی در قیمت</label><input id="tr-slippage" type="number" value="0" step="0.01"></div>
+    <div><label>استراتژی آزمایشی</label><select id="tr-strategy"><option value="pullback">پولبک روند</option><option value="breakout">شکست ۲۰ کندل</option></select></div>
+    </div><p><button class="primary" id="tr-run">تحلیل و محاسبه</button> <button class="ghost" id="tr-backtest">بک‌تست آموزشی • ATR و هدف ۱:۱</button></p>
+    <div id="tr-status" role="status"></div></div>
+    <div class="card"><h2>نمودار M15 • چرخ ماوس: زوم • کشیدن: جابه‌جایی • خط آبی: EMA20</h2>
+    <canvas id="tr-chart" height="400" style="width:100%;touch-action:none"></canvas></div>
+    <div class="card"><h2>سناریو و محاسبات</h2><div id="tr-result"></div></div>
+  </section>
   <section id="tab-analysis">
     <div class="card">
       <h2>تحلیل چند تایم‌فریمی</h2>
@@ -424,6 +444,51 @@ async function refreshAll() {
 
 refreshAll();
 setInterval(loadOverview, 15000);
+
+document.getElementById('tr-backtest').onclick=async()=>{
+ const btn=document.getElementById('tr-backtest'),out=document.getElementById('tr-result');btn.disabled=true;
+ try{const q=new URLSearchParams();for(const k of ['symbol','budget','risk','strategy','commission','slippage'])q.set(k,document.getElementById('tr-'+k).value);
+ const d=await api('/api/training/backtest?'+q);out.replaceChildren();
+ for(const text of ['تعداد معاملات: '+d.trades.length,'خالص نتیجه: '+d.net.toFixed(2),'موجودی نهایی: '+d.ending.toFixed(2),'بیشترین افت سرمایه ٪: '+d.max_drawdown_percent.toFixed(2),'درصد معاملات مثبت: '+(d.win_rate??'نامشخص'),...d.warnings_fa]){const p=document.createElement('p');p.textContent=text;out.append(p);}
+ }catch(e){out.textContent=e.message;}finally{btn.disabled=false;}
+};
+/* Demo training: textContent for all data; no order endpoints. */
+let trainingBars=[], chartCount=80, chartOffset=0, dragStart=null;
+const tc=document.getElementById('tr-chart');
+function trainingChart(){
+ const rect=tc.getBoundingClientRect(); if(!rect.width)return;
+ const ratio=window.devicePixelRatio||1; tc.width=rect.width*ratio;tc.height=400*ratio;
+ const c=tc.getContext('2d');c.scale(ratio,ratio);const w=rect.width,h=400;
+ c.fillStyle='#080d12';c.fillRect(0,0,w,h);
+ const end=trainingBars.length-chartOffset, bars=trainingBars.slice(Math.max(0,end-chartCount),end);
+ if(!bars.length)return;
+ const lo=Math.min(...bars.map(b=>b.low)),hi=Math.max(...bars.map(b=>b.high));
+ const y=v=>350-(v-lo)/(hi-lo||1)*320,dx=(w-85)/bars.length;
+ c.font='11px monospace';
+ for(let i=0;i<=5;i++){const v=lo+(hi-lo)*i/5;c.strokeStyle='#203040';c.beginPath();c.moveTo(0,y(v));c.lineTo(w-80,y(v));c.stroke();c.fillStyle='#92a4b8';c.fillText(v.toFixed(3),w-78,y(v));}
+ let ema=null; const all=trainingBars.map(b=>{ema=ema===null?b.close:b.close*2/21+ema*19/21;return ema;});
+ bars.forEach((b,i)=>{const x=dx*(i+.5);c.strokeStyle=c.fillStyle=b.close>=b.open?'#33d17a':'#ff5c5c';c.beginPath();c.moveTo(x,y(b.high));c.lineTo(x,y(b.low));c.stroke();c.fillRect(x-dx*.3,Math.min(y(b.open),y(b.close)),Math.max(1,dx*.6),Math.max(1,Math.abs(y(b.open)-y(b.close))));});
+ c.strokeStyle='#4ea1ff';c.beginPath();bars.forEach((b,i)=>{const x=dx*(i+.5),v=y(all[end-bars.length+i]);if(i)c.lineTo(x,v);else c.moveTo(x,v);});c.stroke();
+ c.fillStyle='#92a4b8';c.fillText(new Date(bars[0].time*1000).toISOString().slice(0,16),10,385);
+}
+tc.addEventListener('wheel',e=>{e.preventDefault();chartCount=Math.max(20,Math.min(300,chartCount+(e.deltaY>0?10:-10)));trainingChart();},{passive:false});
+tc.addEventListener('pointerdown',e=>{dragStart=e.clientX;tc.setPointerCapture(e.pointerId);});
+tc.addEventListener('pointermove',e=>{if(dragStart===null)return;chartOffset=Math.max(0,Math.min(Math.max(0,trainingBars.length-chartCount),chartOffset+Math.round((e.clientX-dragStart)/5)));dragStart=e.clientX;trainingChart();});
+tc.addEventListener('pointerup',()=>dragStart=null);
+window.addEventListener('resize',trainingChart);
+document.querySelector('[data-tab="training"]').addEventListener('click',()=>requestAnimationFrame(trainingChart));
+document.getElementById('tr-run').onclick=async()=>{
+ const status=document.getElementById('tr-status'), out=document.getElementById('tr-result'),button=document.getElementById('tr-run');
+ status.textContent='در حال خواندن داده از ترمینال…';button.disabled=true;
+ try{
+ const q=new URLSearchParams();for(const key of ['symbol','budget','risk','distance','target','target_money','commission','slippage','strategy']){const v=document.getElementById('tr-'+key).value;if(v)q.set(key,v);}
+ const d=await api('/api/training?'+q);trainingBars=d.bars;chartOffset=0;trainingChart();out.replaceChildren();
+ const fields={'نماد':d.symbol,'سرور واقعی':d.account.server,'نوع حساب':d.account.trade_mode,'ارز حساب':d.account.currency,'سیگنال':({buy:'خرید آزمایشی',sell:'فروش آزمایشی',wait:'صبر'})[d.signal.side],'قیمت ورود سناریو':d.entry,'حد ضرر':d.sl,'حد سود':d.tp,'بودجهٔ زیان':d.plan.risk_money,'حجم محاسبه‌شده':d.plan.volume,'زیان تخمینی با هزینه':d.plan.loss_estimate,'سود تخمینی با هزینه':d.plan.profit_estimate,'نسبت سود به زیان':d.plan.reward_risk,'مارجین ترمینال':d.margin,'اندازهٔ پوینت':d.plan.point,'ارزش پوینت در حجم انتخابی':d.plan.point_value,'ارزش تیک یک لات':d.plan.tick_value_per_lot,'RSI':d.signal.rsi,'ATR':d.signal.atr};
+ for(const [k,v] of Object.entries(fields)){const p=document.createElement('p');p.textContent=k+' : '+(typeof v==='number'?Number(v.toFixed(6)):v??'نامشخص');out.append(p);}
+ for(const text of [d.signal.reason_fa,d.signal.rules_fa,...d.plan.blockers,...d.plan.explanation_fa,...d.warnings_fa].filter(Boolean)){const p=document.createElement('p');p.textContent=text;out.append(p);}
+ status.textContent='محاسبه انجام شد؛ هیچ سفارشی ارسال نشده است.';
+ }catch(e){status.textContent=e.message;}finally{button.disabled=false;}
+};
 </script>
 </body>
 </html>
