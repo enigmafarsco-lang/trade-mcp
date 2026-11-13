@@ -90,9 +90,9 @@ cp .env.example .env                    # و مقادیر را تنظیم کن
 2. در MetaEditor کلید `F7` (Compile) — باید بدون خطا کامپایل شود.
 3. در MT5 یک چارت باز کن و از پنجره‌ی Navigator اکسپرت را روی چارت بکش.
 4. تیک **Allow Algo Trading** را بزن (در تنظیمات اکسپرت و دکمه‌ی AutoTrading در نوار ابزار).
-5. در تب **Inputs** مقدار `InpTransport` را روی `file` بگذار (مسیر پیشنهادی) یا
-   `socket` اگر فهرست مجاز MT5 را درست کرده‌ای.
-6. تب **Experts** باید بنویسد: `[trade-mcp] 1.20 file transport | folder=MQL5\Files\trade-mcp`.
+5. در تب **Inputs** تیک `InpUseFiles` را روشن بگذار (مسیر پیشنهادی). برای سوکت آن را
+   خاموش کن و `InpHost`/`InpPort` را بده — سوکت به فهرست مجاز MT5 نیاز دارد.
+6. تب **Experts** باید بنویسد: `[trade-mcp] 1.21 file transport | folder=MQL5\Files\trade-mcp`.
 
 جزئیات و مشکلات رایج: [docs/SETUP-LINUX-MT5.md](docs/SETUP-LINUX-MT5.md).
 

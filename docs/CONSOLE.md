@@ -114,6 +114,6 @@ export TRADE_MCP_LLM_API_KEY="sk-..."
 |---|---|
 | صفحه باز نمی‌شود | `ss -ltnp | grep 8790`؛ اگر چیزی نیست لاگ کنسول را ببین |
 | `address already in use` | کنسول دیگری بالاست: `pkill -f "trade-mcp console"` |
-| «MT5 قطع است» | اکسپرت با `InpTransport=file` روی چارت و Algo Trading روشن باشد |
+| «MT5 قطع است» | اکسپرت با `InpUseFiles=true` روی چارت و Algo Trading روشن باشد |
 | ایجنت چیزی نمی‌کند | در تب ایجنت‌ها `mode` و `hours` و `enabled` را چک کن؛ گزارش اجرا دلیل را می‌گوید |
 | معامله انجام نمی‌شود | `TRADE_MCP_ALLOW_TRADING=true` و `InpAllowTrading=true` هر دو لازم‌اند |

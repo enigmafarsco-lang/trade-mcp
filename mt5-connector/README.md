@@ -16,16 +16,16 @@
 2. در MetaEditor `F7` بزن. باید بدون خطا کامپایل شود.
 3. در MT5 چارت را باز کن، اکسپرت را از Navigator روی چارت بکش.
 4. در دیالوگ: **Allow Algo Trading** ✔ — و دکمه‌ی **AutoTrading** نوار ابزار سبز باشد.
-5. در تب **Inputs** مقدار `InpTransport` را انتخاب کن: `file` (پیشنهادی) یا `socket`.
+5. در تب **Inputs**: `InpUseFiles = true` (پوشه‌ی مشترک، پیشنهادی) یا `false` برای سوکت.
 6. تب **Experts** باید نشان دهد — حالت فایل:
-   `[trade-mcp] 1.20 file transport | folder=MQL5\Files\trade-mcp`
+   `[trade-mcp] 1.21 file transport | folder=MQL5\Files\trade-mcp`
    و حالت سوکت: `[trade-mcp] connected to 127.0.0.1:8787`.
 
 ## ورودی‌ها
 
 | ورودی | پیش‌فرض | توضیح |
 |---|---|---|
-| `InpTransport` | `file` | `file` = پوشه‌ی مشترک، `socket` = TCP |
+| `InpUseFiles` | `true` | `true` = پوشه‌ی مشترک، `false` = TCP |
 | `InpFileDir` | `trade-mcp` | زیرپوشه‌ی `MQL5/Files` برای پل فایلی |
 | `InpFilePollMs` | `150` | دوره‌ی خواندن `in/` (ms) |
 | `InpStatusMs` | `1000` | دوره‌ی به‌روزرسانی `status.json` (ms) |

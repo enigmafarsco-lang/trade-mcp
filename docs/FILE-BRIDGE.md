@@ -42,7 +42,7 @@ MQL5/Files/trade-mcp/
 
 | ورودی | مقدار |
 |---|---|
-| `InpTransport` | `file` |
+| `InpUseFiles` | `true` |
 | `InpFileDir` | `trade-mcp` |
 | `InpFilePollMs` | `150` |
 | `InpStatusMs` | `1000` |
@@ -76,7 +76,7 @@ export TRADE_MCP_FILES_DIR="/path/to/MetaTrader 5/MQL5/Files"
 ```
   backend     : file
   files dir   : /media/.../MetaTrader 5/MQL5/Files
-  [ OK ] EA connected: {'ea': 'TradeMCPConnector', 'version': '1.20', 'transport': 'file', ...}
+  [ OK ] EA connected: {'ea': 'TradeMCPConnector', 'version': '1.21', 'transport': 'file', ...}
 ```
 
 مسیر پوشه در دو حالت رایج:
@@ -89,7 +89,7 @@ export TRADE_MCP_FILES_DIR="/path/to/MetaTrader 5/MQL5/Files"
 
 | نشانه | معنی | کار |
 |---|---|---|
-| `no status.json yet` | اکسپرت اجرا نشده یا `InpTransport` روی `socket` است | اکسپرت را دوباره با `file` بگذار؛ Algo Trading را روشن کن |
+| `no status.json yet` | اکسپرت اجرا نشده یا `InpUseFiles` خاموش است | اکسپرت را با `InpUseFiles=true` بگذار؛ Algo Trading را روشن کن |
 | `status.json is stale (Ns old)` | ترمینال بسته شده یا تایمر اکسپرت مرده | MT5 را باز کن، اکسپرت را Remove/دوباره Attach کن |
 | `EA heartbeat is alive but it is not draining the inbox` | اکسپرت زنده است ولی `OnTimer` درخواست‌ها را برنمی‌دارد | احتمالاً یک نسخه‌ی قدیمی از اکسپرت روی چارت است؛ دوباره کامپایل و Attach کن |
 | `files_dir_missing` | مسیر اشتباه است | با `discover` مسیر را پیدا کن |
@@ -97,6 +97,25 @@ export TRADE_MCP_FILES_DIR="/path/to/MetaTrader 5/MQL5/Files"
 
 نکته‌ی مهم: اگر MT5 را در حالت **portable** اجرا کنی، پوشه‌ی `MQL5/Files` همان پوشه‌ی
 نصب است؛ در حالت عادی (نصب در Program Files) در `AppData` است. هر دو در جدول بالا هست.
+
+## اگر MetaEditor با «fatal compiler error: unknown error» کرش کرد
+
+این پیام خطای کد نیست؛ یعنی خودِ کامپایلر از کار افتاده. به ترتیب:
+
+1. MetaEditor را کامل ببند (`pkill -f metaeditor64`) و `MQL5/Experts/TradeMCPConnector.ex5`
+   قدیمی را پاک کن، بعد `F4` و دوباره `F7`.
+2. مطمئن شو نسخه‌ی ۱.۱۰ (که قبلاً کامپایل شده بود) هم کرش می‌کند یا نه:
+
+```bash
+MT5="/path/to/MetaTrader 5"; cd /path/to/trade-mcp && \
+  git show fe4407a:mt5-connector/TradeMCPConnector.mq5 > "$MT5/MQL5/Experts/TradeMCPv110.mq5"
+```
+
+اگر ۱.۱۰ هم کرش کرد ⇒ مشکل محیط است: `wineserver -k` و باز کردن دوباره‌ی MT5.
+اگر ۱.۱۰ سالم کامپایل شد ⇒ ساختاری در نسخه‌ی جدید مشکل دارد؛ متن خطاها را بفرست.
+
+نسخه‌ی ۱.۲۱ عمداً بدون `enum` سفارشی، بدون آرگومان پیش‌فرض و بدون `do-while` نوشته شد
+تا کمترین سطح تماس با پارسر کامپایلر را داشته باشد.
 
 ## امنیت
 
