@@ -507,7 +507,7 @@ def analyze_symbol(
     for tf in tfs:
         try:
             bars = mt5.candles(symbol, tf, bars_count)
-            profiles[tf] = profile(bars, tf, digits)
+            profiles[tf] = profile(bars[:-1], tf, digits)  # exclude the forming candle
         except Exception as exc:  # noqa: BLE001 - surface per-timeframe failures
             errors[tf] = str(exc)
 

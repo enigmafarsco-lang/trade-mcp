@@ -25,7 +25,7 @@ trade-mcp = "trade_mcp.__main__:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-trade_mcp = ["web/*.html"]
+trade_mcp = ["web/*.html", "web/*.js", "web/*.css"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
