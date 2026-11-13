@@ -78,12 +78,18 @@ class Config:
     # transport
     host: str = "127.0.0.1"
     port: int = 8787
-    backend: str = "bridge"  # "bridge" (socket) | "file" (shared files) | "mock"
+    backend: str = "bridge"  # "bridge" (socket) | "file" (shared files) | "native" (MT5 MCP) | "mock"
     timeout: float = 20.0
 
     # file transport (backend="file")
     files_dir: str | None = None
     file_stale_after: float = 8.0
+
+    # native transport (backend="native"): MetaTrader's own MCP server
+    mcp_url: str = "http://127.0.0.1:22346/mcp"
+    mcp_token: str = ""
+    mcp_marketdata_url: str = "https://www.metatrader.com/mcp"
+    mcp_marketdata_token: str = ""
 
     # local console app + built-in agent
     console_host: str = "127.0.0.1"
@@ -123,6 +129,19 @@ class Config:
             timeout=_env_float("TIMEOUT", 20.0),
             files_dir=(_env("FILES_DIR") or "").strip() or None,
             file_stale_after=_env_float("FILE_STALE_AFTER", 8.0),
+            mcp_url=(_env("MCP_URL") or "http://127.0.0.1:22346/mcp").strip(),
+            mcp_token=(
+                (_env("MCP_TOKEN") or "").strip()
+                or (os.environ.get("MT5_MCP_TOKEN") or "").strip()
+                or (os.environ.get("MT5_MCP_TOKEN_TERMINAL") or "").strip()
+            ),
+            mcp_marketdata_url=(
+                _env("MCP_MARKETDATA_URL") or "https://www.metatrader.com/mcp"
+            ).strip(),
+            mcp_marketdata_token=(
+                (_env("MCP_MARKETDATA_TOKEN") or "").strip()
+                or (os.environ.get("MT5_MCP_TOKEN_MARKETDATA") or "").strip()
+            ),
             console_host=(_env("CONSOLE_HOST", "127.0.0.1") or "127.0.0.1").strip(),
             console_port=_env_int("CONSOLE_PORT", 8790),
             llm_base_url=(_env("LLM_BASE_URL") or "").strip(),
@@ -145,7 +164,9 @@ class Config:
             deviation_points=_env_int("DEVIATION", 30),
             journal_path=str(Path(_env("JOURNAL", "~/.local/share/trade-mcp/journal.sqlite3") or "~/.local/share/trade-mcp/journal.sqlite3").expanduser()),
         )
-        if cfg.backend not in {"bridge", "file", "mock"}:
+        if cfg.backend == "mcp":  # friendly alias
+            cfg.backend = "native"
+        if cfg.backend not in {"bridge", "file", "native", "mock"}:
             cfg.backend = "bridge"
         if cfg.port <= 0:
             cfg.port = 8787

@@ -129,11 +129,78 @@ unset K
 آن سرویس ابری است و کلیدش به حساب MQL5.com گره می‌خورد. برای تب اخبار نیازی به آن
 نیست — `news.py` با RSS کار می‌کند و همین کافی است.
 
-## ۴) بعدش چه می‌شود
+## ۴) بک‌اند `native` (پیاده‌سازی شده)
 
-با فهرست ابزارها، بک‌اند `native` در `trade_mcp` ساخته می‌شود که همان رابط
-`Bridge.request(cmd, **params)` را با فراخوانی ابزارهای MCP پر می‌کند
-(`account_info`, `symbols_list`, `rates`, `positions`, `trade_open`, …). در آن حالت
-کنسول و ابزارهای MCP پروژه بدون اکسپرت کار می‌کنند و پل فایلی/سوکت فقط بک‌اپ می‌ماند.
+`src/trade_mcp/bridge/native.py` همان قرارداد `Bridge.request(cmd, **params)` را روی
+ابزارهای MCP ترمینال پیاده می‌کند؛ نه اکسپرتی لازم است، نه کامپایلی، نه فایل اکسپورت‌شده:
+
+| دستور داخلی | ابزار MCP |
+|---|---|
+| `ping` | `get_time_information` |
+| `terminal_info` | `terminal_get_info` |
+| `account_info` | `get_trading_account_info` |
+| `symbols_list` / `symbol_info` | `get_marketwatch_symbols` |
+| `symbol_select` | `add_marketwatch_symbol` / `remove_marketwatch_symbol` |
+| `tick` | `get_marketwatch_symbols` (quote همان نماد) |
+| `rates` | `get_chart_history` |
+| `positions` / `orders` | `get_trading_open_positions` |
+| `history_deals` | `get_trading_history_orders` |
+| `calc_order` | `trade_order_calc_margin` |
+| `trade_open` | `trade_send_market_order` |
+| `trade_modify` | `trade_modify_sl_tp` |
+| `trade_close` | `trade_close_single_position` |
+
+نکته‌ها:
+
+* تیکت‌ها در MCP رشته‌ی دهدهی‌اند و در قرارداد ما عدد؛ تبدیل در همان فایل انجام می‌شود.
+* `trade_close_all` پشتیبانی نمی‌شود (ابزارش وجود ندارد) و `trade_close` فقط
+  بستن کامل است — اگر حجم جزئی بدهید صریحاً `partial_close_unsupported` برمی‌گردد،
+  نه اینکه بی‌صدا کل پوزیشن بسته شود.
+* `magic` و `deviation` در ابزارهای MCP وجود ندارند، پس نادیده گرفته می‌شوند؛
+  کامنت (`trade-mcp`) پاس داده می‌شود.
+* شکل پاسخ ابزارها مستند نیست، بنابراین خواندن فیلدها با جست‌وجوی بازگشتی و
+  بی‌توجه به بزرگی/کوچکی حروف است (`native.find`). برای کالیبره‌کردن:
+
+```bash
+read -rsp 'terminal key: ' TK; echo
+.venv/bin/python scripts/mt5_mcp_snapshot.py --token "terminal=$TK" --symbol XAUUSD --json /tmp/mt5-snapshot.json
+unset TK
+```
+
+این اسکریپت فقط ابزارهای خواندنی را صدا می‌زند (هیچ سفارشی نمی‌فرستد) و کلیدها و
+مقادیر هر پاسخ را چاپ می‌کند؛ اگر فیلدی در جدول بالا جا افتاده باشد، از همین
+خروجی می‌شود دید و در `native.py` اصلاح کرد.
+
+## ۵) اجرا
+
+```bash
+# کلید را فقط یک بار در همین شل بگذارید (نه در تاریخچه، نه در چت)
+read -rsp 'terminal key: ' TK; echo
+export TRADE_MCP_MCP_TOKEN="$TK"
+unset TK
+
+# ۱) سلامت: هندشیک، حساب، نماد، کندل، پوزیشن
+TRADE_MCP_BACKEND=native TRADE_MCP_MCP_URL=http://127.0.0.1:22346/mcp \
+.venv/bin/trade-mcp doctor --wait 0
+
+# ۲) کنسول محلی
+TRADE_MCP_BACKEND=native .venv/bin/trade-mcp console
+# http://127.0.0.1:8790
+```
+
+`doctor` همیشه کلید را ماسک می‌کند و فقط «set / MISSING» چاپ می‌کند.
+
+اگر خواستید کلید را در فایل بگذارید، `.env` (که در `.gitignore` هست) تنها جای درست است:
+
+```bash
+printf 'TRADE_MCP_BACKEND=native\nTRADE_MCP_MCP_TOKEN=%s\n' "$TK" >> .env
+```
+
+**کلیدهایی که در ترمینال پیست شده‌اند باید عوض شوند:** MT5 → Tools → Options → MCP →
+برای هر سه سرور `Reset`/تولید کلید جدید، چون کلیدهای قبلی در `~/.bash_history` ماندند:
+
+```bash
+history -c && history -w
+```
 
 کد کلاینت: `src/trade_mcp/mcpclient.py` (فقط کتابخانه‌ی استاندارد، بدون `asyncio`).

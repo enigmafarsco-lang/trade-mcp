@@ -159,6 +159,24 @@ TRADE_MCP_FILES_DIR="/media/.../MetaTrader 5/MQL5/Files" \
 | ژورنال | یادداشت و معاملات |
 | تنظیمات | پیکربندی فعال + بلوک آماده‌ی OpenCode |
 
+## بک‌اند `native`: بدون اکسپرت، بدون کامپایل
+
+نسخه‌های جدید MT5 خودشان یک سرور MCP روی `http://127.0.0.1:22346/mcp` بالا می‌آورند
+(۱۰۷ ابزار: حساب، پوزیشن، تاریخچهٔ کندل، مارکت‌واچ، ارسال/بستن سفارش، اخبار، تقویم
+اقتصادی). با `TRADE_MCP_BACKEND=native` همین هسته بدون `TradeMCPFile.mq5` و بدون
+MetaEditor کار می‌کند، و پل فایلی/سوکت فقط بک‌اپ می‌ماند.
+
+```bash
+read -rsp 'terminal key: ' TK; echo          # Tools > Options > MCP > terminal > Copy
+export TRADE_MCP_MCP_TOKEN="$TK"; unset TK
+
+TRADE_MCP_BACKEND=native .venv/bin/trade-mcp doctor --wait 0   # هندشیک + حساب + کندل + پوزیشن
+TRADE_MCP_BACKEND=native .venv/bin/trade-mcp console           # http://127.0.0.1:8790
+```
+
+جزئیات، جدول نگاشت ابزارها، محدودیت‌ها (بستن جزئی پوزیشن ممکن نیست، `magic` ندارد) و
+کالیبراسیون شکل پاسخ‌ها: [`docs/NATIVE-MCP.md`](docs/NATIVE-MCP.md).
+
 ایجنت داخلی بدون هیچ API key کار می‌کند (موتور قاعده‌محور خودِ trade-mcp) و اگر LLM
 سازگار با OpenAI بدهی، تصمیم‌ها را مدل می‌گیرد:
 
@@ -253,7 +271,7 @@ Windows Python, no `MetaTrader5` pip package and no DLL mess under Wine.
 * Hard guard rails: trading off by default, max lot / max risk / max positions /
   max spread / symbol allow-list, 1R price-drift check, proposal expiry,
   stop-widening refused.
-* `--mock` backend and 41 offline tests so you can develop without MetaTrader.
+* `--mock` backend and 90 offline tests so you can develop without MetaTrader.
 * Works with OpenCode, Claude Desktop or any MCP client over stdio.
 
 Quick start: `python3 -m venv .venv && .venv/bin/pip install -e . && .venv/bin/trade-mcp --mock doctor`

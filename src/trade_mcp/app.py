@@ -54,6 +54,23 @@ def build_app(cfg: Config | None = None, backend: str | None = None) -> App:
         bridge = FileBridge(files_dir, timeout=cfg.timeout, stale_after=cfg.file_stale_after)
         bridge.ensure_dirs()
         LOG.info("using FILE backend at %s", bridge.root)
+    elif mode in {"native", "mcp"}:
+        from .bridge.native import NativeBridge
+
+        if not cfg.mcp_token:
+            raise BridgeError(
+                "backend=native needs the terminal's MCP key: enable the internal server in "
+                "MT5 Tools > Options > MCP, copy the key of the 'terminal' endpoint and export "
+                "it as TRADE_MCP_MCP_TOKEN (see docs/NATIVE-MCP.md).",
+                code="mcp_token_missing",
+            )
+        bridge = NativeBridge(
+            cfg.mcp_url,
+            cfg.mcp_token,
+            timeout=max(cfg.timeout, 30.0),
+            default_symbol=cfg.default_symbol,
+        )
+        LOG.info("using NATIVE MCP backend at %s", cfg.mcp_url)
     else:
         from .bridge.server import BridgeServer
 

@@ -82,6 +82,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"  backend     : {backend}")
     if backend == "file":
         print(f"  files dir   : {cfg.files_dir or '(auto-detect)'}")
+    elif backend in {"native", "mcp"}:
+        print(f"  mcp url     : {cfg.mcp_url}")
+        print(f"  mcp key     : {'set' if cfg.mcp_token else 'MISSING (see docs/NATIVE-MCP.md)'}")
     else:
         print(f"  listen      : {cfg.host}:{cfg.port}")
     print(f"  symbol      : {cfg.default_symbol}  timeframes={','.join(cfg.timeframes)}")
@@ -103,12 +106,19 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             print("")
             status = app.mt5.status()
             if not status.get("ea_connected"):
-                print("  [FAIL] no EA connected")
+                if backend in {"native", "mcp"}:
+                    print("  [FAIL] the terminal's MCP server did not answer")
+                else:
+                    print("  [FAIL] no EA connected")
                 print("         - is MetaTrader 5 running (Wine or Windows)?")
                 print("         - is the trade-mcp EA on a chart and AutoTrading on?")
                 if backend == "file":
                     print(f"         - is TradeMCPFile.mq5 on a chart? files dir {status.get('ea_dir')}")
                     print("         - mt5_status/json shows the last heartbeat it wrote")
+                elif backend in {"native", "mcp"}:
+                    print("         - is the internal MCP server enabled in Tools > Options > MCP?")
+                    print(f"         - is the 'terminal' key the one for {cfg.mcp_url}?")
+                    print(f"         - reason: {status.get('reason')}")
                 else:
                     print(f"         - does the EA point at {cfg.host}:{cfg.port}?")
                     print("         - check the terminal's Experts tab for socket errors")
