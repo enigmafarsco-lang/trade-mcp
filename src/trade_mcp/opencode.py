@@ -60,7 +60,7 @@ class OpenCodeClient:
         if (isinstance(result, dict) and str(result.get('version', '')).lstrip('v').startswith('2.')
                 and isinstance(result.get('pid'), int) and isinstance(result.get('urls'), list)):
             self.api_version = 'v2'
-            return {'healthy': True, 'version': result['version'], 'api': 'v2'}
+            return {'healthy': True, 'version': result['version'], 'api': 'v2', 'pid': result['pid']}
         result = self._request('GET', '/global/health')
         if not isinstance(result, dict) or result.get('healthy') is not True:
             raise RuntimeError('OpenCode did not return a supported v1/v2 server identity.')
@@ -126,3 +126,34 @@ class OpenCodeClient:
             return _extract_json(self.chat(messages))
         except (RuntimeError, ValueError, TypeError, AttributeError):
             return None
+
+
+def discover_desktop():
+    """Read the user's private v2 service registration and verify its identity.
+
+    No process is spawned. Secrets are returned in memory only, never logged.
+    """
+    import os
+    import stat
+    from pathlib import Path
+
+    path = Path(os.environ.get('XDG_STATE_HOME') or Path.home()/'.local/state')/'opencode/service.json'
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
+        with os.fdopen(fd, 'r') as stream:
+            metadata = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
+                    or metadata.st_mode & 0o077 or metadata.st_size > 65536):
+                raise ValueError('unsafe registration')
+            record = json.loads(stream.read(65537))
+        url, password, pid = record.get('url'), record.get('password'), record.get('pid')
+        if (not isinstance(url, str) or not isinstance(password, str) or not password
+                or not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0):
+            raise ValueError('invalid registration')
+        client = OpenCodeClient(url, password=password, timeout=5)
+        health = client.health()
+        if health.get('api') != 'v2' or health.get('pid') != pid:
+            raise ValueError('stale registration')
+        return url, password
+    except Exception:
+        raise RuntimeError('Cannot verify the private OpenCode desktop registration. Open the desktop app; expected a current-user-only service.json under XDG_STATE_HOME/opencode or ~/.local/state/opencode. No alternate server was started.') from None

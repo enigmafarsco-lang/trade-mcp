@@ -355,3 +355,26 @@ standard `OPENCODE_PASSWORD` and legacy `OPENCODE_SERVER_PASSWORD` aliases.
 Configured password values are never included in the settings response.
 For successful model decisions reports use `source: opencode` and
 `llm_status: used`, not `llm_status: opencode`.
+
+### Automatic private desktop discovery (recommended for OpenCode 2.2.7)
+
+You do not need to view or copy the server password. Keep the desktop app open:
+
+```bash
+.venv/bin/python scripts/mt5_mcp_connect.py --console --opencode-desktop --opencode-model opencode/big-pickle
+```
+
+This reads only the standard private service registration at
+`$XDG_STATE_HOME/opencode/service.json` (default
+`~/.local/state/opencode/service.json`), following OpenCode's v2 discovery contract.
+It requires a regular, non-symlink, current-user-owned file with no group/other
+permissions. It authenticates to the advertised loopback server and compares the
+server PID with the registration before accepting it. Passwords remain in process
+memory/environment; the source file is not modified and its contents are never
+printed. No process environments, shell histories or credential directories are
+searched. No alternate server is started on failure. Custom release-channel
+registration filenames are not automatically searched.
+
+The desktop is checked before MT5 clipboard setup, avoiding repeated MT5 steps
+when desktop discovery fails. Trading stays disabled unless explicitly enabled by
+the separate demo-trading flag. Do not cat, paste or upload the registration file.

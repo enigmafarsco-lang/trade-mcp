@@ -155,6 +155,7 @@ def main(argv=None) -> int:
     parser.add_argument('--opencode', action='store_true',
                         help='use a local OpenCode v1/v2 server, starting it if needed')
     parser.add_argument('--opencode-model', default='', help='optional provider/model ID')
+    parser.add_argument('--opencode-desktop', action='store_true', help='discover the running desktop from its private service registration; no password prompt or CLI spawn')
     parser.add_argument('--opencode-url', default='', help='attach only to an existing desktop server; never start another server')
     parser.add_argument('--opencode-password-prompt', action='store_true', help='read the existing server password without echo or persistence')
     args = parser.parse_args(argv)
@@ -162,11 +163,23 @@ def main(argv=None) -> int:
         parser.error('--opencode requires --console and cannot be combined with --setup-llm')
     if args.setup_llm and (not args.console or not sys.stdin.isatty()):
         parser.error('--setup-llm requires --console and an interactive terminal')
-    if (args.opencode_url or args.opencode_password_prompt) and not args.console:
+    if (args.opencode_url or args.opencode_password_prompt or args.opencode_desktop) and not args.console:
         parser.error('desktop OpenCode options require --console')
     if args.opencode_password_prompt and not sys.stdin.isatty():
         parser.error('--opencode-password-prompt requires an interactive terminal')
+    if args.opencode_desktop and (args.opencode or args.opencode_url or args.opencode_password_prompt or args.setup_llm):
+        parser.error('--opencode-desktop cannot be combined with other connection modes')
     model_env = {}
+    if args.opencode_desktop:
+        from trade_mcp.opencode import discover_desktop
+        try:
+            desktop_url, desktop_password = discover_desktop()
+        except RuntimeError as exc:
+            print(str(exc))
+            return 4
+        model_env['TRADE_MCP_OPENCODE_URL'] = desktop_url
+        model_env['TRADE_MCP_OPENCODE_PASSWORD'] = desktop_password
+        print('Existing OpenCode desktop verified. Private registration read locally; password hidden. No server started.', flush=True)
     if args.opencode_password_prompt:
         try:
             model_env['TRADE_MCP_OPENCODE_PASSWORD'] = getpass.getpass('OpenCode desktop server password (hidden; not the MT5 key): ')

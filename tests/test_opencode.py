@@ -192,3 +192,37 @@ def test_v227_over_http_with_basic_auth():
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
+
+
+def test_private_desktop_registration_is_discovered_without_printing(tmp_path, monkeypatch, capsys):
+    from trade_mcp.opencode import discover_desktop
+    path = tmp_path/'opencode/service.json'
+    path.parent.mkdir()
+    path.write_text(json.dumps({'url': 'http://127.0.0.1:49374', 'password': 'private-desktop-secret', 'pid': 123}))
+    path.chmod(0o600)
+    monkeypatch.setenv('XDG_STATE_HOME', str(tmp_path))
+    def health(self):
+        assert self.password == 'private-desktop-secret'
+        return {'api': 'v2', 'pid': 123}
+    monkeypatch.setattr(OpenCodeClient, 'health', health)
+    assert discover_desktop() == ('http://127.0.0.1:49374', 'private-desktop-secret')
+    assert not capsys.readouterr().out
+
+
+@pytest.mark.parametrize('case', ['public', 'symlink', 'stale', 'missing'])
+def test_desktop_discovery_fails_closed(tmp_path, monkeypatch, case):
+    from trade_mcp.opencode import discover_desktop
+    path = tmp_path/'opencode/service.json'
+    path.parent.mkdir()
+    if case != 'missing':
+        path.write_text(json.dumps({'url': 'http://127.0.0.1:49374', 'password': 'never-show-me', 'pid': 123}))
+        path.chmod(0o644 if case == 'public' else 0o600)
+    if case == 'symlink':
+        target = path.with_suffix('.target')
+        path.rename(target)
+        path.symlink_to(target)
+    monkeypatch.setenv('XDG_STATE_HOME', str(tmp_path))
+    monkeypatch.setattr(OpenCodeClient, 'health', lambda _: {'api': 'v2', 'pid': 456})
+    with pytest.raises(RuntimeError) as error:
+        discover_desktop()
+    assert 'never-show-me' not in str(error.value)
