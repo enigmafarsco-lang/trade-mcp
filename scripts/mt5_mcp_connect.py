@@ -155,12 +155,24 @@ def main(argv=None) -> int:
     parser.add_argument('--opencode', action='store_true',
                         help='use a local OpenCode v1/v2 server, starting it if needed')
     parser.add_argument('--opencode-model', default='', help='optional provider/model ID')
+    parser.add_argument('--opencode-url', default='', help='attach only to an existing desktop server; never start another server')
+    parser.add_argument('--opencode-password-prompt', action='store_true', help='read the existing server password without echo or persistence')
     args = parser.parse_args(argv)
     if args.opencode and (not args.console or args.setup_llm):
         parser.error('--opencode requires --console and cannot be combined with --setup-llm')
     if args.setup_llm and (not args.console or not sys.stdin.isatty()):
         parser.error('--setup-llm requires --console and an interactive terminal')
+    if (args.opencode_url or args.opencode_password_prompt) and not args.console:
+        parser.error('desktop OpenCode options require --console')
+    if args.opencode_password_prompt and not sys.stdin.isatty():
+        parser.error('--opencode-password-prompt requires an interactive terminal')
     model_env = {}
+    if args.opencode_password_prompt:
+        try:
+            model_env['TRADE_MCP_OPENCODE_PASSWORD'] = getpass.getpass('OpenCode desktop server password (hidden; not the MT5 key): ')
+        except (EOFError, KeyboardInterrupt):
+            print('Cancelled.')
+            return 2
     if args.setup_llm and not configure_llm(model_env):
         return 4
     if args.enable_demo_trading and not args.console:
@@ -212,13 +224,18 @@ def main(argv=None) -> int:
         print('Demo account verified. Execution enabled; each web order still requires confirmation.', flush=True)
     if args.console:
         owned = None
-        if args.opencode:
+        desktop_url = args.opencode_url or env.get("TRADE_MCP_OPENCODE_URL", "")
+        if args.opencode or desktop_url:
             from trade_mcp.opencode import OpenCodeClient
-            endpoint = 'http://127.0.0.1:4096'
-            client = OpenCodeClient(endpoint, password=(os.environ.get('OPENCODE_PASSWORD') or os.environ.get('OPENCODE_SERVER_PASSWORD', '')), timeout=2)
+            endpoint = desktop_url or 'http://127.0.0.1:4096'
+            client = OpenCodeClient(endpoint, password=(env.get('TRADE_MCP_OPENCODE_PASSWORD') or env.get('OPENCODE_PASSWORD') or env.get('OPENCODE_SERVER_PASSWORD', '')), timeout=2)
             try:
                 client.health()
             except RuntimeError:
+                if desktop_url:
+                    print('Cannot authenticate or identify the existing OpenCode server. Check URL, server password and API version.')
+                    print('Attach-only mode: no OpenCode process was started or stopped. Console not started.')
+                    return 4
                 if not shutil.which('opencode'):
                     print('OpenCode CLI not found. Install it and sign in to your provider first.')
                     return 4
@@ -269,7 +286,7 @@ def main(argv=None) -> int:
                         print('Next read-only checks: opencode --version ; opencode serve --help')
                         return 4
             env['TRADE_MCP_OPENCODE_URL'] = endpoint
-            env['TRADE_MCP_OPENCODE_MODEL'] = args.opencode_model
+            env['TRADE_MCP_OPENCODE_MODEL'] = args.opencode_model or env.get('TRADE_MCP_OPENCODE_MODEL', '')
             print('OpenCode connected (API '+(client.api_version or 'detected')+'). Web agents require human confirmation, including existing auto agents.')
             print('Model credentials stay in OpenCode. Use the web model test to verify provider access.')
         try:

@@ -328,3 +328,30 @@ the same journal path. `create_web_agent` creates a disabled advisory agent;
 without enabling the scheduler or confirming anything. The web console's process
 environment is not automatically inherited by an independently launched MCP
 process. Use the console for running agents if that MCP process is not configured.
+
+### Attach to the running desktop app, without starting a CLI server
+
+If the desktop application already owns an authenticated server, use its actual
+loopback URL instead of `--opencode`. Example using an observed desktop port:
+
+```bash
+.venv/bin/python scripts/mt5_mcp_connect.py --console --opencode-url http://127.0.0.1:49374 --opencode-model opencode/big-pickle --opencode-password-prompt
+```
+
+This prompts first for the **OpenCode server password**, hidden and process-only,
+then asks you to click MT5 Copy and press Enter only. The server password is not a
+provider API key and not an MT5 key. Do not guess it or send it in chat. Desktop
+ports may change after restarting the app. This command keeps trading disabled,
+uses native MT5 data after the clipboard check, and opens the web console.
+
+An explicit `--opencode-url` (or inherited `TRADE_MCP_OPENCODE_URL`) means
+**attach-only**: on any connection/authentication failure, no alternate OpenCode
+process is spawned, no desktop process is stopped, and startup fails closed.
+The application server and console remain distinct processes; neither inherits
+configuration changes made to the other after launch.
+
+`TRADE_MCP_OPENCODE_PASSWORD` is accepted by Config and has precedence over the
+standard `OPENCODE_PASSWORD` and legacy `OPENCODE_SERVER_PASSWORD` aliases.
+Configured password values are never included in the settings response.
+For successful model decisions reports use `source: opencode` and
+`llm_status: used`, not `llm_status: opencode`.

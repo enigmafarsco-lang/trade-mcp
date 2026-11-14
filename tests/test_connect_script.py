@@ -190,3 +190,36 @@ def test_console_browser_can_be_disabled_explicitly(monkeypatch):
 def test_startup_diagnostics_do_not_echo_child_secrets(message, expected):
     assert connect.startup_failure_reason(message) == expected
     assert 'secret-key' not in connect.startup_failure_reason(message)
+
+
+def test_desktop_attach_never_spawns_cli(monkeypatch):
+    from trade_mcp.opencode import OpenCodeClient
+    monkeypatch.setattr(connect, 'read_clipboard', configuration)
+    monkeypatch.setattr(connect.subprocess, 'run', lambda *a, **kw: SimpleNamespace(returncode=0, stdout='OK', stderr=''))
+    monkeypatch.setenv('TRADE_MCP_OPENCODE_PASSWORD', 'desktop-password')
+    def health(self):
+        assert self.base_url == 'http://127.0.0.1:49374'
+        assert self.password == 'desktop-password'
+        self.api_version = 'v2'
+        return {'healthy': True}
+    monkeypatch.setattr(OpenCodeClient, 'health', health)
+    monkeypatch.setattr(connect.subprocess, 'Popen', lambda *a, **kw: pytest.fail('Must not spawn desktop server'))
+    def console(command, **kw):
+        assert kw['env']['TRADE_MCP_OPENCODE_URL'] == 'http://127.0.0.1:49374'
+        assert kw['env']['TRADE_MCP_ALLOW_TRADING'] == 'false'
+        assert kw['env']['TRADE_MCP_BACKEND'] == 'native'
+        return 0
+    monkeypatch.setattr(connect.subprocess, 'call', console)
+    assert connect.main(['--console', '--opencode-url', 'http://127.0.0.1:49374']) == 0
+
+
+def test_desktop_attach_failure_does_not_launch_fallback(monkeypatch):
+    from trade_mcp.opencode import OpenCodeClient
+    monkeypatch.setattr(connect, 'read_clipboard', configuration)
+    monkeypatch.setattr(connect.subprocess, 'run', lambda *a, **kw: SimpleNamespace(returncode=0, stdout='OK', stderr=''))
+    def fail(self):
+        raise RuntimeError('unavailable')
+    monkeypatch.setattr(OpenCodeClient, 'health', fail)
+    monkeypatch.setattr(connect.subprocess, 'Popen', lambda *a, **kw: pytest.fail('Must not spawn fallback'))
+    monkeypatch.setattr(connect.subprocess, 'call', lambda *a, **kw: pytest.fail('Must not launch console'))
+    assert connect.main(['--console', '--opencode-url', 'http://127.0.0.1:49374']) == 4
