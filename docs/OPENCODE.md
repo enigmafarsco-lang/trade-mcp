@@ -251,7 +251,7 @@ There are two distinct connections:
 - OpenCode -> trade-mcp MCP tools: coding/operating the application, including
   `list_web_agents`, `create_web_agent`, and `run_web_agent`.
 - trade-mcp web agents -> OpenCode HTTP server: bounded model decisions, with all
-  tools denied in a fresh session. The local execution engine alone validates and
+  tools denied in a fresh v1 session or through stateless v2 text generation. The local execution engine alone validates and
   creates proposals. Every OpenCode proposal requires explicit human confirmation,
   even if an existing agent was previously set to guarded/auto mode.
 
@@ -287,24 +287,38 @@ risk limits or promise a profitable trade.
 
 ### API compatibility and security boundary
 
-This adapter targets the OpenCode **v1 server API**, verified against upstream
-v1.2.15 source: `GET /global/health`, `POST /session`,
+This adapter auto-detects OpenCode v1 and v2. The **v1 server API** was checked
+against upstream v1.2.15 source: `GET /global/health`, `POST /session`,
 `POST /session/{id}/message`, `POST /session/{id}/abort`, `DELETE /session/{id}`.
-It requires an echoed session permission rule denying `*` for pattern `*` before
-sending market context. Incompatible APIs (including versions using different
-`/api/...` routes), unavailable models, invalid decisions and connection failures
+V1 requires an echoed session permission rule denying `*` for pattern `*` before
+sending market context. **V2 support is checked against the v2.2.7 tagged source
+and OpenAPI schema**: `GET /api/info` detects the version, then
+`POST /api/experimental/generate/text` sends `{prompt, model?: {providerID, id}}`
+and reads `data.text`. This is stateless model generation, not an agent session:
+no shell, MCP or repository tools are supplied and no session is created.
+The generation endpoint is experimental and may change in future releases.
+
+V2 requires server authentication and otherwise generates an unknown password.
+When starting an owned server, the launcher generates an ephemeral password and
+passes it to the server and console through their environments only. It is not a
+model-provider key or MT5 key and is never printed or written to a config file.
+For an existing protected server, supply its password securely via
+`OPENCODE_PASSWORD` (preferred) or `OPENCODE_SERVER_PASSWORD` before launching.
+A server on port 4096 with unknown credentials is not replaced or killed.
+
+Unknown APIs, unavailable models, invalid decisions and connection failures
 fail closed: no deterministic decision is substituted for OpenCode.
 
 Only market summaries and whitelisted account metrics are provided, not account
 IDs or terminal keys. The summary can reach the model provider configured in
 OpenCode. Cleanup is attempted after each request, but provider/server retention
 policies still apply. The model has no shell, file, MCP or execution tools in these
-analysis sessions. Do not weaken the deny-all rule to fix a connection error.
+analysis requests. Do not weaken the deny-all rule to fix a connection error.
 No live provider or native MT5 integration is exercised by the offline tests.
 
 For an already managed server, set `TRADE_MCP_OPENCODE_URL` in the console process
 instead of using the launcher flag. Optional `TRADE_MCP_OPENCODE_MODEL` uses
-`provider/model` format. Optional `OPENCODE_SERVER_PASSWORD` uses the default
+`provider/model` format. Optional `OPENCODE_PASSWORD` (legacy alias `OPENCODE_SERVER_PASSWORD`) uses the default
 OpenCode username `opencode`. The URL must be loopback HTTP without embedded
 credentials. OpenCode takes precedence over the direct OpenAI-compatible adapter.
 

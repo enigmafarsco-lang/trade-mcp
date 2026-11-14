@@ -162,6 +162,8 @@ def test_owned_opencode_does_not_inherit_mt5_credentials(monkeypatch):
     stopped = []
     def spawn(command, **kw):
         assert not any(k.startswith(('TRADE_MCP_', 'MT5_MCP_')) for k in kw['env'])
+        assert len(kw['env']['OPENCODE_PASSWORD']) >= 32
+        assert kw['env']['OPENCODE_PASSWORD'] == kw['env']['OPENCODE_SERVER_PASSWORD']
         assert command == ['opencode', 'serve', '--hostname', '127.0.0.1', '--port', '4096']
         return SimpleNamespace(poll=lambda: None, terminate=lambda: stopped.append(True), wait=lambda **kw: 0)
     monkeypatch.setattr(connect.subprocess, 'Popen', spawn)

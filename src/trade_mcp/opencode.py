@@ -1,4 +1,4 @@
-"""OpenCode v1 server adapter. Each request uses a fresh, deny-all session.
+"""OpenCode server adapter: v1 deny-all sessions, v2 stateless text generation.
 
 Only bounded market summaries are sent. No MT5 credentials, MCP tools, repository
 files or account IDs are supplied. Execution stays in the application's executor.
@@ -26,6 +26,7 @@ class OpenCodeClient:
     password: str = field(default="", repr=False)
     timeout: float = 90
     last_session_id: str = ""
+    api_version: str = ""
 
     @property
     def configured(self):
@@ -51,14 +52,41 @@ class OpenCodeClient:
             raise RuntimeError('OpenCode request failed. Check server, API version, authentication and model access.') from None
 
     def health(self):
+        self.api_version = ''
+        try:
+            result = self._request('GET', '/api/info')
+        except RuntimeError:
+            result = None
+        if (isinstance(result, dict) and str(result.get('version', '')).lstrip('v').startswith('2.')
+                and isinstance(result.get('pid'), int) and isinstance(result.get('urls'), list)):
+            self.api_version = 'v2'
+            return {'healthy': True, 'version': result['version'], 'api': 'v2'}
         result = self._request('GET', '/global/health')
         if not isinstance(result, dict) or result.get('healthy') is not True:
-            raise RuntimeError('OpenCode health response is not compatible with the v1 server API.')
-        return {'healthy': True, 'version': result.get('version')}
+            raise RuntimeError('OpenCode did not return a supported v1/v2 server identity.')
+        self.api_version = 'v1'
+        return {'healthy': True, 'version': result.get('version'), 'api': 'v1'}
 
     def chat(self, messages, temperature=0.2):
         del temperature
         self.last_session_id = ''
+        if not self.api_version:
+            self.health()
+        if self.api_version == 'v2':
+            # The v2 stateless generation route has no tools or session agent loop.
+            body = {'prompt': '\n\n'.join(str(m.get('role', 'user'))+': '+str(m.get('content', ''))
+                                           for m in messages)}
+            if self.model:
+                provider, separator, model = self.model.partition('/')
+                if not separator or not provider or not model:
+                    raise RuntimeError('OpenCode model must use provider/model format.')
+                body['model'] = {'providerID': provider, 'id': model}
+            result = self._request('POST', '/api/experimental/generate/text', body)
+            data = result.get('data') if isinstance(result, dict) else None
+            text = data.get('text') if isinstance(data, dict) else None
+            if not isinstance(text, str) or not text.strip():
+                raise RuntimeError('OpenCode v2 returned no valid text.')
+            return text.strip()
         session = self._request('POST', '/session', {
             'title': 'trade-mcp bounded analysis',
             'permission': [{'permission': '*', 'pattern': '*', 'action': 'deny'}],

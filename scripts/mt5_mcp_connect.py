@@ -7,6 +7,7 @@ import getpass
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -152,7 +153,7 @@ def main(argv=None) -> int:
     parser.add_argument('--setup-llm', action='store_true',
                         help='prompt for an OpenAI-compatible model and verify a response; no keys saved')
     parser.add_argument('--opencode', action='store_true',
-                        help='use a local OpenCode v1 server, starting it if needed')
+                        help='use a local OpenCode v1/v2 server, starting it if needed')
     parser.add_argument('--opencode-model', default='', help='optional provider/model ID')
     args = parser.parse_args(argv)
     if args.opencode and (not args.console or args.setup_llm):
@@ -214,7 +215,7 @@ def main(argv=None) -> int:
         if args.opencode:
             from trade_mcp.opencode import OpenCodeClient
             endpoint = 'http://127.0.0.1:4096'
-            client = OpenCodeClient(endpoint, password=os.environ.get('OPENCODE_SERVER_PASSWORD', ''), timeout=2)
+            client = OpenCodeClient(endpoint, password=(os.environ.get('OPENCODE_PASSWORD') or os.environ.get('OPENCODE_SERVER_PASSWORD', '')), timeout=2)
             try:
                 client.health()
             except RuntimeError:
@@ -224,6 +225,14 @@ def main(argv=None) -> int:
                 # The OpenCode process must never inherit the terminal token.
                 child_env = {k: v for k, v in os.environ.items()
                              if not k.startswith(('TRADE_MCP_', 'MT5_MCP_'))}
+                # v2 generates an unknown password unless one is explicitly supplied.
+                # Use an ephemeral shared credential, never a provider or MT5 key.
+                password = client.password or secrets.token_urlsafe(32)
+                client.password = password
+                child_env['OPENCODE_PASSWORD'] = password
+                child_env['OPENCODE_SERVER_PASSWORD'] = password
+                env['OPENCODE_PASSWORD'] = password
+                env['OPENCODE_SERVER_PASSWORD'] = password
                 print('Starting OpenCode on 127.0.0.1:4096; allowing up to 60 seconds.', flush=True)
                 with tempfile.TemporaryFile(mode='w+b') as log:
                     try:
@@ -261,7 +270,7 @@ def main(argv=None) -> int:
                         return 4
             env['TRADE_MCP_OPENCODE_URL'] = endpoint
             env['TRADE_MCP_OPENCODE_MODEL'] = args.opencode_model
-            print('OpenCode connected. Web agents require human confirmation, including existing auto agents.')
+            print('OpenCode connected (API '+(client.api_version or 'detected')+'). Web agents require human confirmation, including existing auto agents.')
             print('Model credentials stay in OpenCode. Use the web model test to verify provider access.')
         try:
             command = [sys.executable, '-m', 'trade_mcp', 'console']
