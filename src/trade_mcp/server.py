@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import math
 import time
 from collections.abc import Callable
 from typing import Any
@@ -545,6 +546,49 @@ def journal_list(limit: int = 20, symbol: str = "") -> dict[str, Any]:
     app = get_app()
     notes = app.store.list_notes(limit=max(1, min(int(limit), 100)), symbol=symbol or None)
     return {"ok": True, "count": len(notes), "notes": notes}
+
+
+# Web agents share the journal with this MCP process when journal paths match.
+@mcp.tool()
+@_safe
+def list_web_agents() -> dict[str, Any]:
+    """List persisted agents and their last reports, also visible in the web console."""
+    return {"ok": True, "agents": get_app().store.list_agents()}
+
+
+@mcp.tool()
+@_safe
+def create_web_agent(name: str, symbols: list[str], max_risk: float = 0.5,
+                     max_lot: float = 0.01) -> dict[str, Any]:
+    """Create a disabled advisory web agent. Never starts a loop or places a trade."""
+    app = get_app()
+    if not symbols or not all(math.isfinite(v) and v > 0 for v in (max_risk, max_lot)):
+        return {"ok": False, "error": "invalid_agent_limits"}
+    agent = app.store.create_agent({
+        "name": name[:60], "symbols": [s.strip().upper() for s in symbols[:8]],
+        "max_risk": min(max_risk, app.cfg.max_risk_percent),
+        "max_lot": min(max_lot, app.cfg.max_lot), "mode": "advisory", "enabled": False,
+    })
+    return {"ok": True, "agent": agent}
+
+
+@mcp.tool()
+@_safe
+def run_web_agent(agent_id: str) -> dict[str, Any]:
+    """Run one OpenCode-backed analysis, producing proposals only. Never confirms.
+
+    Requires OPENCODE_URL in this MCP process. View the saved report and any pending
+    proposals in the web console using the same journal. No scheduler is enabled.
+    """
+    from .agents import AgentEngine
+    app = get_app()
+    if not app.cfg.opencode_url:
+        return {"ok": False, "error": "opencode_not_configured_in_this_process"}
+    agent = app.store.get_agent(agent_id)
+    if not agent:
+        return {"ok": False, "error": "unknown_agent"}
+    report = AgentEngine(cfg=app.cfg, mt5=app.mt5, store=app.store).run({**agent, "mode": "advisory"})
+    return {"ok": True, "report": report}
 
 
 # ---------------------------------------------------------------------- prompts

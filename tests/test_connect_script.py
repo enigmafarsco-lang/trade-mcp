@@ -128,3 +128,42 @@ def test_model_setup_rejects_remote_plain_http(monkeypatch):
     answers = iter(['http://provider.example/v1', 'test-model'])
     monkeypatch.setattr('builtins.input', lambda _: next(answers))
     assert not connect.configure_llm({})
+
+
+def test_opencode_launcher_reuses_server_and_passes_config(monkeypatch):
+    from trade_mcp.opencode import OpenCodeClient
+    monkeypatch.setattr(connect, 'read_clipboard', configuration)
+    monkeypatch.setattr(connect.subprocess, 'run', lambda *a, **kw: SimpleNamespace(returncode=0, stdout='OK', stderr=''))
+    monkeypatch.setattr(OpenCodeClient, 'health', lambda self: {'healthy': True})
+    def launch(command, **kw):
+        assert kw['env']['TRADE_MCP_OPENCODE_URL'] == 'http://127.0.0.1:4096'
+        assert kw['env']['TRADE_MCP_OPENCODE_MODEL'] == 'opencode/big-pickle'
+        assert kw['env']['TRADE_MCP_ALLOW_TRADING'] == 'false'
+        assert kw['env']['TRADE_MCP_MCP_TOKEN'] == KEY
+        return 0
+    monkeypatch.setattr(connect.subprocess, 'call', launch)
+    assert connect.main(['--console', '--opencode', '--opencode-model', 'opencode/big-pickle']) == 0
+
+
+def test_owned_opencode_does_not_inherit_mt5_credentials(monkeypatch):
+    from trade_mcp.opencode import OpenCodeClient
+    monkeypatch.setenv('TRADE_MCP_MCP_TOKEN', 'inherited-secret')
+    monkeypatch.setenv('MT5_MCP_TOKEN', 'another-secret')
+    monkeypatch.setattr(connect, 'read_clipboard', configuration)
+    monkeypatch.setattr(connect.subprocess, 'run', lambda *a, **kw: SimpleNamespace(returncode=0, stdout='OK', stderr=''))
+    checks = iter([False, True])
+    def health(self):
+        if not next(checks):
+            raise RuntimeError('not running')
+        return {'healthy': True}
+    monkeypatch.setattr(OpenCodeClient, 'health', health)
+    monkeypatch.setattr(connect.shutil, 'which', lambda _: '/usr/bin/opencode')
+    stopped = []
+    def spawn(command, **kw):
+        assert not any(k.startswith(('TRADE_MCP_', 'MT5_MCP_')) for k in kw['env'])
+        assert command == ['opencode', 'serve', '--hostname', '127.0.0.1', '--port', '4096']
+        return SimpleNamespace(poll=lambda: None, terminate=lambda: stopped.append(True), wait=lambda **kw: 0)
+    monkeypatch.setattr(connect.subprocess, 'Popen', spawn)
+    monkeypatch.setattr(connect.subprocess, 'call', lambda *a, **kw: 0)
+    assert connect.main(['--console', '--opencode']) == 0
+    assert stopped == [True]

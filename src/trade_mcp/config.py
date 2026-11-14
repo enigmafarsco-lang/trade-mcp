@@ -94,6 +94,9 @@ class Config:
     # local console app + built-in agent
     console_host: str = "127.0.0.1"
     console_port: int = 8790
+    opencode_url: str = ""
+    opencode_model: str = ""
+    opencode_password: str = field(default="", repr=False)
     llm_base_url: str = ""
     llm_api_key: str = ""
     llm_model: str = ""
@@ -145,6 +148,9 @@ class Config:
             ),
             console_host=(_env("CONSOLE_HOST", "127.0.0.1") or "127.0.0.1").strip(),
             console_port=_env_int("CONSOLE_PORT", 8790),
+            opencode_url=(_env("OPENCODE_URL") or "").strip(),
+            opencode_model=(_env("OPENCODE_MODEL") or "").strip(),
+            opencode_password=os.environ.get("OPENCODE_SERVER_PASSWORD", ""),
             llm_base_url=(_env("LLM_BASE_URL") or "").strip(),
             llm_api_key=(_env("LLM_API_KEY") or "").strip(),
             llm_model=(_env("LLM_MODEL") or "").strip(),

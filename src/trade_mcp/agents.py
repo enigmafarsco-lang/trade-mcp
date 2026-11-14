@@ -52,6 +52,9 @@ class LLMClient:
 
     @classmethod
     def from_config(cls, cfg: Config) -> LLMClient:
+        if cfg.opencode_url:
+            from .opencode import OpenCodeClient
+            return OpenCodeClient(cfg.opencode_url, cfg.opencode_model, cfg.opencode_password)
         return cls(
             base_url=cfg.llm_base_url,
             api_key=cfg.llm_api_key,
@@ -155,9 +158,11 @@ def compact_context(analysis: dict[str, Any]) -> dict[str, Any]:
             "tp2": scenario.get("take_profit_2"),
             "confidence": scenario.get("confidence"),
             "reason": scenario.get("reason"),
+            "sizing": scenario.get("sizing"),
         },
         "warnings": analysis.get("warnings"),
-        "account": analysis.get("account"),
+        "account": {k: (analysis.get("account") or {}).get(k)
+                    for k in ("currency", "balance", "equity", "margin_free", "leverage")},
     }
 
 
@@ -196,7 +201,8 @@ class AgentEngine:
             "proposals": [],
             "errors": [],
             "decisions": [],
-            "used_llm": bool(self.llm.configured),
+            "used_llm": False,
+            "model_backend": "opencode" if self.cfg.opencode_url else "openai-compatible",
         }
 
         if not _now_in_window(agent.get("hours") or ""):
@@ -238,10 +244,12 @@ class AgentEngine:
             "reason": decision.get("reason"),
             "source": decision.get("source"),
             "wait_reasons": decision.get("wait_reasons", []),
-            "llm_status": decision.get("llm_status", "used" if decision.get("source") == "llm" else "unknown"),
+            "llm_status": decision.get("llm_status", "used" if decision.get("source") in {"llm", "opencode"} else "unknown"),
         }
         report["decisions"].append(entry)
 
+        if decision.get("source") in {"llm", "opencode"}:
+            report["used_llm"] = True
         action = str(decision.get("action") or "wait").lower()
         if action not in {"buy", "sell"}:
             entry["note"] = "بدون معامله"
@@ -312,8 +320,11 @@ class AgentEngine:
                     },
                 ]
             )
-            if payload:
-                return self._sanitise(payload, scenario, source="llm")
+            if payload and payload.get('action') in {'buy', 'sell', 'wait'}:
+                return self._sanitise(payload, scenario, source="opencode" if self.cfg.opencode_url else "llm")
+            if self.cfg.opencode_url:
+                return {"action": "wait", "confidence": 0, "source": "opencode_error",
+                        "llm_status": "failed", "reason": "OpenCode پاسخ تصمیم معتبر نداد؛ سفارشی ایجاد نشد و قواعد جایگزین اجرا نشدند."}
 
         # Deterministic fallback: trust the scenario engine.
         action = str(scenario.get("action") or "wait").lower()
@@ -368,6 +379,8 @@ class AgentEngine:
     def _auto_confirm_blockers(
         self, agent: dict[str, Any], analysis: dict[str, Any], mode: str
     ) -> list[str]:
+        if self.cfg.opencode_url:
+            return ["OpenCode: explicit human confirmation required"]
         if mode == "advisory":
             return ["mode=advisory: waiting for your confirmation"]
         if not self.cfg.allow_trading:

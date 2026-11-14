@@ -190,3 +190,24 @@ def test_watch_selected_and_automatic_stop_preview(mock_app):
         assert d['auto_sl'] and d['ok'] and d['blocked']
         assert d['preview']['stop_loss'] > 0
         assert mock_app.mt5.positions() == []
+
+
+def test_opencode_web_model_test_and_redacted_settings(mock_app, monkeypatch):
+    from trade_mcp.opencode import OpenCodeClient
+    mock_app.cfg = mock_app.cfg.with_overrides(opencode_url='http://127.0.0.1:4096',
+                                               opencode_password='never-show-this')
+    calls = []
+    def chat(self, messages):
+        calls.append(messages)
+        return 'OK'
+    monkeypatch.setattr(OpenCodeClient, 'chat', chat)
+    with console(mock_app) as base:
+        with urlopen(base+'/api/settings') as r:
+            raw = r.read().decode()
+        assert 'never-show-this' not in raw
+        assert json.loads(raw)['llm']['backend'] == 'opencode'
+        req = Request(base+'/api/model-test', data=b'{}', headers={'Content-Type': 'application/json'})
+        with urlopen(req) as r:
+            assert json.load(r) == {'ok': True, 'backend': 'opencode'}
+        assert len(calls) == 1
+        assert mock_app.mt5.positions() == []

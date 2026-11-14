@@ -231,6 +231,7 @@
 
   <!-- settings -->
   <section id="tab-settings">
+    <div class="card"><h2>اتصال مدل و OpenCode</h2><p>در حالت OpenCode، ایجنت‌های همین وب از مدل سرور محلی استفاده می‌کنند. ابزارهای مدل مسدودند؛ محاسبات و اجرای سفارش در هستهٔ برنامه می‌مانند. همهٔ پیشنهادهای OpenCode به تأیید شما نیاز دارند. آزمایش اتصال یک درخواست مدل می‌فرستد و ممکن است هزینه داشته باشد.</p><button id="model-test" class="primary">آزمایش پاسخ واقعی مدل</button><p id="model-test-result" role="status"></p></div>
     <div class="card"><h2>پیکربندی فعال</h2><pre id="cfg-json">—</pre></div>
     <div class="card">
       <h2>اتصال OpenCode به همین ابزارها</h2>
@@ -405,7 +406,7 @@ async function runAgent(id) {
   const d = await api("/api/agents/" + id, {method: "POST", body: JSON.stringify({action: "run"})});
   const r = d.report || {};
   $("ag-report").textContent = (r.summary_fa || d.message || "—") +
-    "\n\n" + JSON.stringify({errors: r.errors, used_llm: r.used_llm, duration_ms: r.duration_ms}, null, 2);
+    "\n\n" + JSON.stringify({errors: r.errors, used_llm: r.used_llm, model_backend:r.model_backend, decisions:r.decisions, duration_ms: r.duration_ms}, null, 2);
   loadAgents(); loadOverview();
 }
 async function agentAction(id, action) {
@@ -451,6 +452,11 @@ async function addNote() {
 }
 
 /* ---------------- settings ---------------- */
+$("model-test").onclick=async()=>{
+  const b=$("model-test"),out=$("model-test-result");b.disabled=true;out.textContent="در انتظار پاسخ واقعی مدل…";
+  try{const d=await api('/api/model-test',{method:'POST',body:'{}'});out.textContent=d.ok?'پاسخ مدل دریافت شد؛ هیچ سفارش یا معامله‌ای ایجاد نشد.':'اتصال مدل تأیید نشد: '+d.error;}
+  catch(_){out.textContent='آزمایش ناموفق؛ سرور و دسترسی مدل را بررسی کنید.';}finally{b.disabled=false;}
+};
 async function loadSettings() {
   const d = await api("/api/settings");
   $("cfg-json").textContent = `بک‌اند: ${d.backend}\nبودجهٔ مشترک تحلیل و ایجنت: ${d.training_budget} (ارز حساب)\nسقف ریسک: ${d.max_risk_percent}%\nمعامله: ${d.trading?'فعال':'غیرفعال'}\nمدل زبانی: ${d.llm.configured?d.llm.model:'پیکربندی نشده؛ تحلیل قاعده‌محور است'}\n\n`+JSON.stringify(d,null,2);

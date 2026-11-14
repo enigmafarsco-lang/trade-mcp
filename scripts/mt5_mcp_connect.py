@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from urllib.parse import urlparse
 
 
@@ -122,7 +123,12 @@ def main(argv=None) -> int:
                         help='enable execution only after a fresh demo-account check; requires --console')
     parser.add_argument('--setup-llm', action='store_true',
                         help='prompt for an OpenAI-compatible model and verify a response; no keys saved')
+    parser.add_argument('--opencode', action='store_true',
+                        help='use a local OpenCode v1 server, starting it if needed')
+    parser.add_argument('--opencode-model', default='', help='optional provider/model ID')
     args = parser.parse_args(argv)
+    if args.opencode and (not args.console or args.setup_llm):
+        parser.error('--opencode requires --console and cannot be combined with --setup-llm')
     if args.setup_llm and (not args.console or not sys.stdin.isatty()):
         parser.error('--setup-llm requires --console and an interactive terminal')
     model_env = {}
@@ -176,7 +182,52 @@ def main(argv=None) -> int:
         env['TRADE_MCP_ALLOW_TRADING'] = 'true'
         print('Demo account verified. Execution enabled; each web order still requires confirmation.', flush=True)
     if args.console:
-        return subprocess.call([sys.executable, '-m', 'trade_mcp', 'console', '--no-browser'], env=env)
+        owned = None
+        if args.opencode:
+            from trade_mcp.opencode import OpenCodeClient
+            endpoint = 'http://127.0.0.1:4096'
+            client = OpenCodeClient(endpoint, password=os.environ.get('OPENCODE_SERVER_PASSWORD', ''), timeout=2)
+            try:
+                client.health()
+            except RuntimeError:
+                if not shutil.which('opencode'):
+                    print('OpenCode CLI not found. Install it and sign in to your provider first.')
+                    return 4
+                # The OpenCode process must never inherit the terminal token.
+                child_env = {k: v for k, v in os.environ.items()
+                             if not k.startswith(('TRADE_MCP_', 'MT5_MCP_'))}
+                owned = subprocess.Popen(['opencode', 'serve', '--hostname', '127.0.0.1', '--port', '4096'],
+                                         env=child_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                ready = False
+                for _ in range(40):
+                    if owned.poll() is not None:
+                        break
+                    try:
+                        client.health()
+                        ready = True
+                        break
+                    except RuntimeError:
+                        time.sleep(.25)
+                if not ready:
+                    if owned.poll() is None:
+                        owned.terminate()
+                        owned.wait(timeout=10)
+                    print('OpenCode v1 server did not start. Check port 4096 and your OpenCode installation.')
+                    return 4
+            env['TRADE_MCP_OPENCODE_URL'] = endpoint
+            env['TRADE_MCP_OPENCODE_MODEL'] = args.opencode_model
+            print('OpenCode connected. Web agents require human confirmation, including existing auto agents.')
+            print('Model credentials stay in OpenCode. Use the web model test to verify provider access.')
+        try:
+            return subprocess.call([sys.executable, '-m', 'trade_mcp', 'console', '--no-browser'], env=env)
+        finally:
+            if owned is not None and owned.poll() is None:
+                owned.terminate()
+                try:
+                    owned.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    owned.kill()
+                    owned.wait()
     return 0
 
 
