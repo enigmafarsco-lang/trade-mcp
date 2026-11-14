@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trade-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server that gives OpenCode (or any MCP client) live MetaTrader 5 data and guarded order execution - no Windows Python under Wine required."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -23,6 +23,9 @@ trade-mcp = "trade_mcp.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+trade_mcp = ["web/*.html", "web/*.js", "web/*.css"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

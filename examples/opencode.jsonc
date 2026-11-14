@@ -19,6 +19,9 @@
         // trade_mt5_status, trade_analyze_market, ... as native tools.
         "codemode": false,
         "environment": {
+          "TRADE_MCP_BACKEND": "file",
+          // Point this at the terminal's MQL5/Files folder (`trade-mcp discover`).
+          "TRADE_MCP_FILES_DIR": "/media/joshua/Linux/Trade/MT5/prefix/drive_c/Program Files/MetaTrader 5/MQL5/Files",
           "TRADE_MCP_ALLOW_TRADING": "false",
           "TRADE_MCP_SYMBOL": "XAUUSD",
           "TRADE_MCP_TIMEFRAMES": "M15,H1,H4",

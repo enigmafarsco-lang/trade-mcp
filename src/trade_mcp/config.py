@@ -78,8 +78,29 @@ class Config:
     # transport
     host: str = "127.0.0.1"
     port: int = 8787
-    backend: str = "bridge"  # "bridge" | "mock"
+    backend: str = "bridge"  # "bridge" (socket) | "file" (shared files) | "native" (MT5 MCP) | "mock"
     timeout: float = 20.0
+
+    # file transport (backend="file")
+    files_dir: str | None = None
+    file_stale_after: float = 8.0
+
+    # native transport (backend="native"): MetaTrader's own MCP server
+    mcp_url: str = "http://127.0.0.1:22346/mcp"
+    mcp_token: str = ""
+    mcp_marketdata_url: str = "https://www.metatrader.com/mcp"
+    mcp_marketdata_token: str = ""
+
+    # local console app + built-in agent
+    console_host: str = "127.0.0.1"
+    console_port: int = 8790
+    opencode_url: str = ""
+    opencode_model: str = ""
+    opencode_password: str = field(default="", repr=False)
+    llm_base_url: str = ""
+    llm_api_key: str = ""
+    llm_model: str = ""
+    news_feeds: tuple[str, ...] = ()
 
     # instrument defaults
     default_symbol: str = DEFAULT_SYMBOL
@@ -88,6 +109,7 @@ class Config:
     # trading guard rails
     allow_trading: bool = False
     max_lot: float = 0.10
+    training_budget: float = 100.0  # shared conservative sizing cap; account currency
     max_risk_percent: float = 1.0
     max_open_positions: int = 3
     max_spread_points: float = 60.0
@@ -109,12 +131,37 @@ class Config:
             port=_env_int("PORT", 8787),
             backend=(_env("BACKEND", "bridge") or "bridge").strip().lower(),
             timeout=_env_float("TIMEOUT", 20.0),
+            files_dir=(_env("FILES_DIR") or "").strip() or None,
+            file_stale_after=_env_float("FILE_STALE_AFTER", 8.0),
+            mcp_url=(_env("MCP_URL") or "http://127.0.0.1:22346/mcp").strip(),
+            mcp_token=(
+                (_env("MCP_TOKEN") or "").strip()
+                or (os.environ.get("MT5_MCP_TOKEN") or "").strip()
+                or (os.environ.get("MT5_MCP_TOKEN_TERMINAL") or "").strip()
+            ),
+            mcp_marketdata_url=(
+                _env("MCP_MARKETDATA_URL") or "https://www.metatrader.com/mcp"
+            ).strip(),
+            mcp_marketdata_token=(
+                (_env("MCP_MARKETDATA_TOKEN") or "").strip()
+                or (os.environ.get("MT5_MCP_TOKEN_MARKETDATA") or "").strip()
+            ),
+            console_host=(_env("CONSOLE_HOST", "127.0.0.1") or "127.0.0.1").strip(),
+            console_port=_env_int("CONSOLE_PORT", 8790),
+            opencode_url=(_env("OPENCODE_URL") or "").strip(),
+            opencode_model=(_env("OPENCODE_MODEL") or "").strip(),
+            opencode_password=os.environ.get("OPENCODE_SERVER_PASSWORD", ""),
+            llm_base_url=(_env("LLM_BASE_URL") or "").strip(),
+            llm_api_key=(_env("LLM_API_KEY") or "").strip(),
+            llm_model=(_env("LLM_MODEL") or "").strip(),
+            news_feeds=_env_list("NEWS_FEEDS", ()),
             default_symbol=(_env("SYMBOL", DEFAULT_SYMBOL) or DEFAULT_SYMBOL).strip(),
             timeframes=tuple(
                 tf.upper() for tf in _env_list("TIMEFRAMES", DEFAULT_TIMEFRAMES)
             ),
             allow_trading=_env_bool("ALLOW_TRADING", False),
             max_lot=_env_float("MAX_LOT", 0.10),
+            training_budget=_env_float("TRAINING_BUDGET", 100.0),
             max_risk_percent=_env_float("MAX_RISK_PERCENT", 1.0),
             max_open_positions=_env_int("MAX_OPEN_POSITIONS", 3),
             max_spread_points=_env_float("MAX_SPREAD_POINTS", 60.0),
@@ -125,10 +172,14 @@ class Config:
             deviation_points=_env_int("DEVIATION", 30),
             journal_path=str(Path(_env("JOURNAL", "~/.local/share/trade-mcp/journal.sqlite3") or "~/.local/share/trade-mcp/journal.sqlite3").expanduser()),
         )
-        if cfg.backend not in {"bridge", "mock"}:
+        if cfg.backend == "mcp":  # friendly alias
+            cfg.backend = "native"
+        if cfg.backend not in {"bridge", "file", "native", "mock"}:
             cfg.backend = "bridge"
         if cfg.port <= 0:
             cfg.port = 8787
+        if cfg.console_port <= 0:
+            cfg.console_port = 8790
         return cfg
 
     def with_overrides(self, **kwargs) -> Config:
@@ -161,3 +212,14 @@ class Config:
             if tf in VALID_TIMEFRAMES and tf not in out:
                 out.append(tf)
         return tuple(out) or self.timeframes
+
+
+def sizing_balance(account: dict, cfg) -> float:
+    """Never size against more than the account or the explicit practice cap."""
+    import math
+
+    equity = float(account.get("equity") or account.get("balance") or 0)
+    budget = float(getattr(cfg, "training_budget", 100))
+    if not math.isfinite(budget) or budget <= 0:
+        return 0.0
+    return max(0.0, min(equity, budget)) if math.isfinite(equity) else 0.0

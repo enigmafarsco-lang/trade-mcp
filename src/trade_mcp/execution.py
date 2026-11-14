@@ -12,9 +12,10 @@ import time
 from typing import Any
 
 from .bridge.base import BridgeError
-from .config import Config
+from .config import Config, sizing_balance
 from .risk import (
     has_blockers,
+    loss_per_lot,
     lots_for_risk,
     normalise_volume,
     validate_order,
@@ -69,7 +70,7 @@ def propose_open(
     sizing: dict[str, Any] | None = None
     if volume is None:
         sizing = lots_for_risk(
-            balance=float(account.get("equity") or account.get("balance") or 0.0),
+            balance=sizing_balance(account, cfg),
             risk_percent=(cfg.max_risk_percent if risk_percent is None else float(risk_percent)),
             entry=entry,
             stop=float(stop_loss),
@@ -122,6 +123,8 @@ def propose_open(
     }
     proposal = store.create_proposal(payload, ttl=cfg.proposal_ttl)
     blocked = has_blockers(issues)
+    estimated_risk = (loss_per_lot(info, abs(entry-float(stop_loss)))*volume
+                      if stop_loss else None)
 
     return {
         "ok": True,
@@ -141,17 +144,11 @@ def propose_open(
             "take_profit": payload["tp"] or None,
             "risk_per_unit": payload["risk_per_unit"],
             "estimated_margin": margin,
-            "risk_amount": (sizing or {}).get("actual_risk"),
-            "risk_percent_of_equity": (
-                round(
-                    float((sizing or {}).get("actual_risk") or 0)
-                    / float(account.get("equity") or 1)
-                    * 100,
-                    2,
-                )
-                if sizing
-                else None
-            ),
+            "risk_amount": round(estimated_risk, 4) if estimated_risk is not None else None,
+            "risk_percent_of_budget": (round(estimated_risk/sizing_balance(account, cfg)*100, 4)
+                                       if estimated_risk is not None and sizing_balance(account, cfg)>0 else None),
+            "risk_percent_of_equity": (round(estimated_risk/float(account.get("equity") or 1)*100, 4)
+                                       if estimated_risk is not None else None),
             "trading_enabled": cfg.allow_trading,
         },
         "next_step": (
@@ -385,16 +382,34 @@ def confirm(
             result = mt5.close_position(
                 ticket=int(payload["ticket"]), volume=float(payload.get("volume") or 0), deviation=dev
             )
+            if int(result.get("retcode") or 0) not in {10008, 10009, 10010}:
+                store.mark_proposal(proposal_id, "failed", result)
+                return {"ok": False, "error": "broker_rejected", "executed": False, "result": result}
             store.mark_proposal(proposal_id, "executed", result)
             store.record_trade(proposal_id, payload, result)
             return {"ok": True, "proposal_id": proposal_id, "executed": True, "result": result}
 
         if kind == "modify":
+            target = next((p for p in mt5.positions()
+                           if int(p.get("ticket") or 0) == int(payload["ticket"])), None)
+            if target is None:
+                return {"ok": False, "error": "position_not_found", "executed": False}
+            old_sl = float(target.get("sl") or 0)
+            new_sl = float(payload.get("sl") or 0)
+            current = float(target.get("price_current") or 0)
+            buy = str(target.get("type", "")).lower() in {"buy", "0"}
+            if old_sl and (not new_sl or (new_sl < old_sl if buy else new_sl > old_sl)):
+                return {"ok": False, "error": "stop_widening", "executed": False}
+            if new_sl and ((new_sl >= current) if buy else (new_sl <= current)):
+                return {"ok": False, "error": "stop_wrong_side", "executed": False}
             result = mt5.modify_position(
                 ticket=int(payload["ticket"]),
                 sl=float(payload.get("sl") or 0),
                 tp=float(payload.get("tp") or 0),
             )
+            if int(result.get("retcode") or 0) not in {10008, 10009, 10010}:
+                store.mark_proposal(proposal_id, "failed", result)
+                return {"ok": False, "error": "broker_rejected", "executed": False, "result": result}
             store.mark_proposal(proposal_id, "executed", result)
             store.record_trade(proposal_id, payload, result)
             return {"ok": True, "proposal_id": proposal_id, "executed": True, "result": result}

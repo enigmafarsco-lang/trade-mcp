@@ -46,6 +46,7 @@ def test_proposal_is_blocked_when_trading_disabled(mock_app):
 
 
 def test_confirm_executes_and_journals(mock_app):
+    mock_app.cfg.training_budget = 10000
     mock_app.cfg.allow_trading = True
     price = mock_app.mt5.tick("XAUUSD")["ask"]
     out = _proposal(mock_app, stop_loss=price - 3.0, risk_percent=0.5)
@@ -174,3 +175,45 @@ def test_analysis_scenario_is_actionable(mock_app):
     )
     assert result["scenario"]["action"] in {"buy", "sell", "wait"}
     assert result["warnings"]
+
+
+def test_confirm_rechecks_stop_widening(mock_app):
+    from trade_mcp.execution import confirm, propose_manage
+
+    mock_app.cfg.allow_trading = True
+    price = mock_app.mt5.tick('XAUUSD')['ask']
+    mock_app.mt5.open_order('XAUUSD', 'buy', .01, sl=price-3, tp=price+6)
+    position = mock_app.mt5.positions()[0]
+    proposal = propose_manage(mt5=mock_app.mt5, cfg=mock_app.cfg, store=mock_app.store,
+                              action='modify', ticket=position['ticket'], sl=price-10, tp=price+6)
+    assert proposal['blocked']
+    result = confirm(mt5=mock_app.mt5, cfg=mock_app.cfg, store=mock_app.store,
+                     proposal_id=proposal['proposal_id'])
+    assert result['error'] == 'stop_widening'
+    assert mock_app.mt5.positions()[0]['sl'] == position['sl']
+
+
+@pytest.mark.parametrize('action', ['close', 'modify'])
+def test_management_rejection_is_not_execution(mock_app, monkeypatch, action):
+    from trade_mcp.execution import confirm, propose_manage
+
+    mock_app.cfg.allow_trading = True
+    price = mock_app.mt5.tick('XAUUSD')['ask']
+    mock_app.mt5.open_order('XAUUSD', 'buy', .01, sl=price-3, tp=price+6)
+    position = mock_app.mt5.positions()[0]
+    proposal = propose_manage(mt5=mock_app.mt5, cfg=mock_app.cfg, store=mock_app.store,
+                              action=action, ticket=position['ticket'], sl=price-2, tp=price+6)
+    method = 'close_position' if action == 'close' else 'modify_position'
+    monkeypatch.setattr(mock_app.mt5, method, lambda **kw: {'retcode':10016})
+    result = confirm(mt5=mock_app.mt5, cfg=mock_app.cfg, store=mock_app.store,
+                     proposal_id=proposal['proposal_id'])
+    assert result['error'] == 'broker_rejected'
+    assert result['executed'] is False
+    assert mock_app.store.get_proposal(proposal['proposal_id'])['status'] == 'failed'
+
+
+def test_explicit_volume_has_risk_preview(mock_app):
+    price = mock_app.mt5.tick('XAUUSD')['ask']
+    p = _proposal(mock_app, volume=.01, stop_loss=price-1)
+    assert p['preview']['risk_amount'] > 0
+    assert p['preview']['risk_percent_of_budget'] > 0
