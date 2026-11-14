@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from urllib.parse import urlparse
 
@@ -116,6 +117,32 @@ def configure_llm(env: dict[str, str]) -> bool:
     return True
 
 
+def wait_for_copy():
+    """Do not echo accidental secret pastes; discard queued input on POSIX."""
+    try:
+        getpass.getpass('After clicking MT5 Copy, press Enter only (no paste): ')
+    finally:
+        try:
+            import termios
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+        except (ImportError, OSError, ValueError):
+            pass
+
+
+def startup_failure_reason(text):
+    """Return only fixed diagnostic labels, never raw child output."""
+    text = text.lower()
+    if any(x in text for x in ('eaddrinuse', 'address already in use')):
+        return 'port 4096 is already occupied'
+    if any(x in text for x in ('invalid config', 'configuration is invalid', 'configinvalid', 'unrecognized key')):
+        return 'OpenCode configuration was rejected'
+    if any(x in text for x in ('unknown option', 'unknown argument', 'unknown command')):
+        return 'the installed OpenCode CLI does not accept the server command'
+    if any(x in text for x in ('permission denied', 'eacces')):
+        return 'OpenCode encountered an operating-system permission error'
+    return 'server startup or health check failed; the exact cause is not yet known'
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--no-browser', action='store_true', help='do not open the console in a browser')
@@ -141,7 +168,7 @@ def main(argv=None) -> int:
         print('Open MT5 > Tools > Options > MCP and click Copy now.')
         print('Return here and press Enter only. Do NOT paste the configuration.')
         try:
-            input('Press Enter after copying from MT5: ')
+            wait_for_copy()
         except (EOFError, KeyboardInterrupt):
             print('Cancelled.')
             return 2
@@ -197,24 +224,41 @@ def main(argv=None) -> int:
                 # The OpenCode process must never inherit the terminal token.
                 child_env = {k: v for k, v in os.environ.items()
                              if not k.startswith(('TRADE_MCP_', 'MT5_MCP_'))}
-                owned = subprocess.Popen(['opencode', 'serve', '--hostname', '127.0.0.1', '--port', '4096'],
-                                         env=child_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                ready = False
-                for _ in range(40):
-                    if owned.poll() is not None:
-                        break
+                print('Starting OpenCode on 127.0.0.1:4096; allowing up to 60 seconds.', flush=True)
+                with tempfile.TemporaryFile(mode='w+b') as log:
                     try:
-                        client.health()
-                        ready = True
-                        break
-                    except RuntimeError:
-                        time.sleep(.25)
-                if not ready:
-                    if owned.poll() is None:
-                        owned.terminate()
-                        owned.wait(timeout=10)
-                    print('OpenCode v1 server did not start. Check port 4096 and your OpenCode installation.')
-                    return 4
+                        owned = subprocess.Popen(['opencode', 'serve', '--hostname', '127.0.0.1', '--port', '4096'],
+                                                 env=child_env, stdout=log, stderr=subprocess.STDOUT)
+                    except OSError:
+                        print('Cannot execute OpenCode. Check its executable path and permissions.')
+                        return 4
+                    ready = False
+                    deadline = time.monotonic()+60
+                    while time.monotonic() < deadline:
+                        if owned.poll() is not None:
+                            break
+                        try:
+                            client.health()
+                            ready = True
+                            break
+                        except RuntimeError:
+                            time.sleep(.25)
+                    if not ready:
+                        exit_code = owned.poll()
+                        if exit_code is None:
+                            owned.terminate()
+                            try:
+                                owned.wait(timeout=10)
+                            except subprocess.TimeoutExpired:
+                                owned.kill()
+                                owned.wait()
+                        log.seek(0)
+                        reason = startup_failure_reason(log.read(65536).decode('utf-8', 'replace'))
+                        print('OpenCode not ready: '+reason+'.')
+                        print('Child exit code: '+str(exit_code)+' (None means startup timed out).')
+                        print('Raw logs are not printed because they may contain secrets.')
+                        print('Next read-only checks: opencode --version ; opencode serve --help')
+                        return 4
             env['TRADE_MCP_OPENCODE_URL'] = endpoint
             env['TRADE_MCP_OPENCODE_MODEL'] = args.opencode_model
             print('OpenCode connected. Web agents require human confirmation, including existing auto agents.')

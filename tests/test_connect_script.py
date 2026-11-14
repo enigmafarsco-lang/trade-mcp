@@ -177,3 +177,14 @@ def test_console_browser_can_be_disabled_explicitly(monkeypatch):
     monkeypatch.setattr(connect.subprocess, 'call', lambda command, **kw: calls.append(command) or 0)
     assert connect.main(['--console', '--no-browser']) == 0
     assert calls[0][-2:] == ['console', '--no-browser']
+
+
+@pytest.mark.parametrize(('message', 'expected'), [
+    ('EADDRINUSE secret-key', 'port 4096 is already occupied'),
+    ('ConfigInvalidError secret-key', 'OpenCode configuration was rejected'),
+    ('unknown option secret-key', 'the installed OpenCode CLI does not accept the server command'),
+    ('arbitrary secret-key', 'server startup or health check failed; the exact cause is not yet known'),
+])
+def test_startup_diagnostics_do_not_echo_child_secrets(message, expected):
+    assert connect.startup_failure_reason(message) == expected
+    assert 'secret-key' not in connect.startup_failure_reason(message)
