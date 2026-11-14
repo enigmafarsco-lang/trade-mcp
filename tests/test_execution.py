@@ -217,3 +217,29 @@ def test_explicit_volume_has_risk_preview(mock_app):
     p = _proposal(mock_app, volume=.01, stop_loss=price-1)
     assert p['preview']['risk_amount'] > 0
     assert p['preview']['risk_percent_of_budget'] > 0
+
+
+def test_proposal_claim_is_shared_between_store_connections(mock_app):
+    from trade_mcp.store import Store
+    proposal = mock_app.store.create_proposal({'kind':'open','symbol':'XAUUSD'})
+    other = Store(mock_app.cfg.journal_path)
+    try:
+        assert mock_app.store.claim_proposal(proposal['id'])
+        assert not other.claim_proposal(proposal['id'])
+        assert other.get_proposal(proposal['id'])['status'] == 'executing'
+    finally:
+        other.close()
+
+
+def test_confirm_revalidates_current_limits_before_claiming(mock_app):
+    from trade_mcp import execution
+    mock_app.cfg.allow_trading = True
+    price = mock_app.mt5.tick('XAUUSD')['ask']
+    proposal = _proposal(mock_app, stop_loss=price-3, volume=.05)
+    assert not proposal['blocked']
+    mock_app.cfg.max_lot = .01
+    result = execution.confirm(mt5=mock_app.mt5, cfg=mock_app.cfg, store=mock_app.store,
+                               proposal_id=proposal['proposal_id'])
+    assert result['error'] == 'revalidation_failed'
+    assert mock_app.mt5.positions() == []
+    assert mock_app.store.get_proposal(proposal['proposal_id'])['status'] == 'pending'

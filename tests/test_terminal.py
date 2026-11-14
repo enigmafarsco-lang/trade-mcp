@@ -268,3 +268,77 @@ def test_workspace_advisory_action_does_not_use_saved_auto_mode(mock_app, monkey
             assert json.load(r)['ok']
     assert seen == ['advisory']
     assert mock_app.store.get_agent(agent['id'])['mode'] == 'auto'
+
+
+def test_complete_model_to_web_preview_to_separate_confirmation_mock_only(mock_app, monkeypatch):
+    from trade_mcp.opencode import OpenCodeClient
+    mock_app.cfg.allow_trading = True
+    mock_app.cfg.opencode_url = 'http://127.0.0.1:4096'
+    price = mock_app.mt5.tick('XAUUSD')['ask']
+    def chat(self, messages):
+        return json.dumps({'action':'buy', 'confidence':80, 'stop_loss':price-5,
+                           'take_profit':price+10, 'risk_percent':.5, 'reason':'Mock-only test'})
+    monkeypatch.setattr(OpenCodeClient, 'chat', chat)
+    agent = mock_app.store.create_agent({'name':'Cycle test','symbols':['XAUUSD'],
+                                        'mode':'auto','max_lot':.1,'max_risk':.5})
+    with console(mock_app) as base:
+        def post(path, payload):
+            req = Request(base+path, data=json.dumps(payload).encode(),
+                          headers={'Content-Type':'application/json'})
+            with urlopen(req) as r:
+                return json.load(r)
+        run = post('/api/agents/'+agent['id'], {'action':'run_advisory'})
+        assert run['report']['used_llm']
+        decision = run['report']['decisions'][0]
+        assert decision['source'] == 'opencode'
+        assert decision['status'] == 'pending'
+        assert decision['preview']['volume'] > 0
+        assert decision['preview']['risk_amount'] > 0
+        assert decision['preview']['estimated_profit'] > 0
+        assert mock_app.mt5.positions() == []
+        with urlopen(base+'/api/workspace-status') as r:
+            visible = json.load(r)
+        assert visible['agents'][0]['report']['used_llm']
+        pid = decision['proposal_id']
+        assert visible['proposals'][0]['id'] == pid
+        assert visible['proposals'][0]['confirmable']
+        assert mock_app.mt5.positions() == []  # Reading preview never executes.
+        done = post('/api/proposals/'+pid+'/confirm', {})
+        assert done['executed'] is True
+        assert len(mock_app.mt5.positions()) == 1
+        again = post('/api/proposals/'+pid+'/confirm', {})
+        assert again['error'] == 'not_pending'
+        assert len(mock_app.mt5.positions()) == 1
+
+
+def test_model_variant_can_be_explicitly_configured_without_generation(mock_app, monkeypatch):
+    from trade_mcp.opencode import OpenCodeClient
+    mock_app.cfg.opencode_url = 'http://localhost:49374'
+    calls = []
+    def chat(self, messages):
+        calls.append((self.model, self.variant))
+        return 'OK'
+    monkeypatch.setattr(OpenCodeClient, 'chat', chat)
+    with console(mock_app) as base:
+        def post(path, data):
+            with urlopen(Request(base+path, data=json.dumps(data).encode(), headers={'Content-Type':'application/json'})) as r:
+                return json.load(r)
+        result = post('/api/model-config', {'model':'opencode/deepseek-v4.1-flash-free','variant':'max'})
+        assert result['ok'] and not result['persisted']
+        assert calls == []
+        assert not mock_app.cfg.allow_trading
+        post('/api/model-test', {})
+        assert calls == [('opencode/deepseek-v4.1-flash-free','max')]
+        with urlopen(base+'/api/workspace-status') as r:
+            status = json.load(r)
+        assert status['model_variant'] == 'max'
+        assert status['model_test']['state'] == 'ready'
+        assert not status['page_cycle']['active']
+
+
+def test_cross_origin_posts_are_rejected(mock_app):
+    with console(mock_app) as base:
+        req = Request(base+'/api/model-test', data=b'{}', headers={'Origin':'http://foreign.example','Content-Type':'application/json'})
+        with pytest.raises(HTTPError) as error:
+            urlopen(req)
+        assert error.value.code == 403

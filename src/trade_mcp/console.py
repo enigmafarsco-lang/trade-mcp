@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import json
 import math
+import re
 import sys
 import threading
 import time
@@ -52,6 +53,8 @@ class ConsoleState:
         self.scheduler = _Scheduler(app, self.lock)
         self.quotes = QuoteFeed(app.mt5, self.lock)
         self.chart_cache: dict[tuple, tuple] = {}
+        from .cycle import PageCycle
+        self.page_cycle = PageCycle(self)
         self.model_test = {"state": "not_tested", "message": "پاسخ مدل در این اجرای وب هنوز آزمایش نشده است."}
 
     @property
@@ -345,6 +348,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
+        origin = self.headers.get('Origin')
+        if origin and urlparse(origin).netloc != self.headers.get('Host'):
+            return self._json({"ok": False, "error": "cross_origin_write_denied"}, 403)
         payload = self._body()
         try:
             if path == "/api/marketwatch/select":
@@ -432,9 +438,26 @@ class Handler(BaseHTTPRequestHandler):
                     {"role": "user", "content": json.dumps(safe, ensure_ascii=False)}])
                 return self._json({"ok": True, "used_llm": True, "model": llm.model or "OpenCode server default",
                                    "text": text, "executable": False})
+            if path == '/api/page-cycle':
+                return self._json(self.state.page_cycle.command(payload))
+            if path == '/api/model-config':
+                if self.state.page_cycle.status()['active'] or self.state.page_cycle.status()['busy']:
+                    return self._json({'ok': False, 'error': 'stop_cycle_before_model_change'})
+                if not self.state.cfg.opencode_url:
+                    return self._json({'ok': False, 'error': 'opencode_not_configured'})
+                model = str(payload.get('model') or '').strip()
+                variant = str(payload.get('variant') or '').strip()
+                if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_./:-]+', model) or len(model)>160 or not re.fullmatch(r'[A-Za-z0-9_-]{0,40}', variant):
+                    return self._json({'ok': False, 'error': 'invalid_model_or_variant'})
+                with self.state.lock:
+                    self.state.cfg.opencode_model = model
+                    self.state.cfg.opencode_variant = variant
+                    self.state.model_test = {'state': 'not_tested', 'message': 'مدل وب تغییر کرد؛ پیش از شروع چرخه، پاسخ آن را آزمایش کنید.'}
+                return self._json({'ok': True, 'model': model, 'variant': variant, 'persisted': False})
             if path == "/api/model-test":
                 from .opencode import ModelServiceError
                 llm = LLMClient.from_config(self.state.cfg)
+                model_key = (self.state.cfg.opencode_model, self.state.cfg.opencode_variant)
                 result = {"ok": False, "error": "model_not_configured", "message": "مدل تنظیم نشده است."}
                 if llm.configured:
                     try:
@@ -445,7 +468,10 @@ class Handler(BaseHTTPRequestHandler):
                         result = {"ok": False, "error": exc.code, **exc.safe_dict()}
                     except Exception:
                         result = {"ok": False, "error": "model_connection_failed", "message": "آزمایش مدل ناموفق بود؛ هیچ سفارشی ایجاد نشد."}
-                self.state.model_test = {**result, "state": "ready" if result['ok'] else "failed", "tested_at": time.time()}
+                if model_key != (self.state.cfg.opencode_model, self.state.cfg.opencode_variant):
+                    return self._json({'ok': False, 'error': 'model_changed_during_test'})
+                self.state.model_test = {**result, "state": "ready" if result['ok'] else "failed", "tested_at": time.time(),
+                                         "model_key": model_key}
                 return self._json(result)
             if path == "/api/agents":
                 return self._json(self._create_agent(payload))
@@ -505,7 +531,8 @@ class Handler(BaseHTTPRequestHandler):
             "allowed_symbols": list(cfg.allowed_symbols),
             "journal": cfg.journal_path,
             "llm": {"configured": llm.configured, "model": llm.model or "OpenCode server default",
-                    "backend": "opencode" if cfg.opencode_url else "openai-compatible"},
+                    "backend": "opencode" if cfg.opencode_url else "openai-compatible",
+                    "variant": cfg.opencode_variant},
             "console": {"host": cfg.console_host, "port": cfg.console_port},
         }
 
@@ -549,10 +576,15 @@ class Handler(BaseHTTPRequestHandler):
                               "expires_at": item['expires_at'], "payload": item['payload'],
                               "status": 'expired' if expired else ('blocked' if item['id'] in blocked_ids and item['status'] == 'pending' else item['status']),
                               "confirmable": bool(cfg.allow_trading and item['status'] == 'pending' and not expired and item['id'] not in blocked_ids)})
+        from .workspace import journal_identity, workspace_identity
         return {"ok": True, "backend": cfg.backend, "trading_enabled": cfg.allow_trading,
+                "journal_identity": journal_identity(cfg.journal_path),
+                "workspace_identity": workspace_identity(cfg),
                 "model_backend": "opencode" if cfg.opencode_url else "openai-compatible",
                 "model_configured": LLMClient.from_config(cfg).configured,
                 "model": cfg.opencode_model if cfg.opencode_url else cfg.llm_model,
+                "model_variant": cfg.opencode_variant, "page_cycle": self.state.page_cycle.status(),
+                "run_history": self.state.store.agent_run_history(),
                 "model_test": self.state.model_test, "agents": agents, "proposals": proposals,
                 "scheduler": self.state.scheduler.status(), "observed_at": now}
 
@@ -638,6 +670,8 @@ class Handler(BaseHTTPRequestHandler):
     def _scheduler(self, payload: dict[str, Any]) -> dict[str, Any]:
         on = bool(payload.get("on"))
         if on:
+            if self.state.page_cycle.status()['active'] or self.state.page_cycle.status()['busy']:
+                return {'ok': False, 'error': 'stop_page_cycle_first'}
             return {"ok": True, "scheduler": self.state.scheduler.start(int(payload.get("interval") or 300))}
         return {"ok": True, "scheduler": self.state.scheduler.stop()}
 
@@ -666,6 +700,7 @@ class ConsoleServer:
             self.httpd.server_close()
 
     def stop(self) -> None:
+        self.state.page_cycle.close()
         self.state.scheduler.stop()
         self.httpd.shutdown()
 

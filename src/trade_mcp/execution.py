@@ -352,6 +352,21 @@ def confirm(
                     "current_price": current,
                     "reference_price": reference,
                 }
+            account = mt5.account_info(fresh=True)
+            if cfg.opencode_url and account.get('trade_mode') != 'demo':
+                return {"ok": False, "error": "demo_account_required", "executed": False}
+            info = mt5.symbol_info(symbol, fresh=True)
+            margin = float(mt5.calc_order(symbol, side, float(payload['volume'])).get('margin') or 0)
+            issues = validate_order(cfg=cfg, info=info, symbol=symbol, side=side,
+                                    volume=float(payload['volume']), entry=current,
+                                    stop=float(payload.get('sl') or 0), take_profit=float(payload.get('tp') or 0),
+                                    account=account, open_positions=mt5.positions(), margin_required=margin)
+            if has_blockers(issues):
+                return {"ok": False, "error": "revalidation_failed", "executed": False,
+                        "blockers": _blockers(issues), "message": "Current conditions no longer pass validation; request a fresh preview."}
+            if not store.claim_proposal(proposal_id):
+                return {"ok": False, "error": "not_pending", "executed": False,
+                        "message": "Proposal already claimed or expired; do not retry automatically."}
             result = mt5.open_order(
                 symbol=symbol,
                 side=side,
@@ -381,6 +396,9 @@ def confirm(
             }
 
         if kind == "close":
+            if not store.claim_proposal(proposal_id):
+                return {"ok": False, "error": "not_pending", "executed": False,
+                        "message": "Proposal already claimed or expired; do not retry automatically."}
             result = mt5.close_position(
                 ticket=int(payload["ticket"]), volume=float(payload.get("volume") or 0), deviation=dev
             )
@@ -404,6 +422,9 @@ def confirm(
                 return {"ok": False, "error": "stop_widening", "executed": False}
             if new_sl and ((new_sl >= current) if buy else (new_sl <= current)):
                 return {"ok": False, "error": "stop_wrong_side", "executed": False}
+            if not store.claim_proposal(proposal_id):
+                return {"ok": False, "error": "not_pending", "executed": False,
+                        "message": "Proposal already claimed or expired; do not retry automatically."}
             result = mt5.modify_position(
                 ticket=int(payload["ticket"]),
                 sl=float(payload.get("sl") or 0),

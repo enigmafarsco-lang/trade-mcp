@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import pytest
+
 from trade_mcp.agents import (
     AgentEngine,
     LLMClient,
@@ -181,3 +183,27 @@ def test_saved_structured_report_is_not_truncated_into_invalid_json(mock_app):
     mock_app.store.mark_agent_run(agent['id'], report)
     saved = mock_app.store.get_agent(agent['id'])['last_result']
     assert json.loads(saved) == report
+
+
+def test_page_cycle_closed_market_estimate_does_not_spend_model_requests(mock_app, monkeypatch):
+    import trade_mcp.agents as agents
+    cfg = mock_app.cfg.with_overrides(opencode_url='http://localhost:49374')
+    monkeypatch.setattr(agents, 'analyze_symbol', lambda **kw: {
+        'ok':True, 'symbol':'XAUUSD', 'market':{'open_estimate':False},
+        'warnings':['market looks closed'], 'scenario':{}})
+    engine = agents.AgentEngine(cfg=cfg, mt5=mock_app.mt5, store=mock_app.store)
+    monkeypatch.setattr(engine.llm, 'chat_json', lambda *a: pytest.fail('Closed session must not request a model'))
+    report = engine.run({'name':'Closed test','symbols':['XAUUSD'],'require_open_market':True})
+    assert not report['used_llm']
+    assert not report['proposals']
+    assert report['decisions'][0]['source'] == 'market_estimate'
+
+
+def test_each_agent_run_is_retained_in_history(mock_app):
+    agent = mock_app.store.create_agent({'name':'History','symbols':['XAUUSD']})
+    mock_app.store.mark_agent_run(agent['id'], {'used_llm':False,'decisions':[{'action':'wait'}]})
+    mock_app.store.mark_agent_run(agent['id'], {'used_llm':True,'decisions':[{'action':'sell'}]})
+    history = mock_app.store.agent_run_history()
+    assert len(history) == 2
+    assert history[0]['report']['used_llm']
+    assert not history[1]['report']['used_llm']

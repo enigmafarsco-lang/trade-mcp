@@ -144,7 +144,7 @@ def startup_failure_reason(text):
     return 'server startup or health check failed; the exact cause is not yet known'
 
 
-def serve_desktop(model=''):
+def serve_desktop(model='', variant=''):
     """Noninteractive MCP startup: stdout and stdin belong to the protocol."""
     from trade_mcp.opencode import discover_desktop
     try:
@@ -158,7 +158,8 @@ def serve_desktop(model=''):
                TRADE_MCP_MCP_TOKEN=token, TRADE_MCP_ALLOW_TRADING='false',
                TRADE_MCP_TRAINING_BUDGET='100', TRADE_MCP_OPENCODE_URL=desktop_url,
                TRADE_MCP_OPENCODE_PASSWORD=password,
-               TRADE_MCP_OPENCODE_MODEL=model or env.get('TRADE_MCP_OPENCODE_MODEL', ''))
+               TRADE_MCP_OPENCODE_MODEL=model or env.get('TRADE_MCP_OPENCODE_MODEL', ''),
+               TRADE_MCP_OPENCODE_VARIANT=variant or env.get('TRADE_MCP_OPENCODE_VARIANT', ''))
     # Do not run doctor here: it writes human-readable output to protocol stdout.
     # Native authentication is checked by mt5_status after the MCP handshake.
     return subprocess.call([sys.executable, '-m', 'trade_mcp', 'serve'], env=env)
@@ -175,6 +176,7 @@ def main(argv=None) -> int:
                         help='prompt for an OpenAI-compatible model and verify a response; no keys saved')
     parser.add_argument('--opencode', action='store_true',
                         help='use a local OpenCode v1/v2 server, starting it if needed')
+    parser.add_argument('--opencode-variant', default='', help='optional model variant such as max')
     parser.add_argument('--opencode-model', default='', help='optional provider/model ID')
     parser.add_argument('--opencode-desktop', action='store_true', help='discover the running desktop from its private service registration; no password prompt or CLI spawn')
     parser.add_argument('--opencode-url', default='', help='attach only to an existing desktop server; never start another server')
@@ -184,7 +186,7 @@ def main(argv=None) -> int:
         if (not args.opencode_desktop or args.console or args.enable_demo_trading or args.setup_llm
                 or args.opencode or args.opencode_url or args.opencode_password_prompt):
             parser.error('--serve requires --opencode-desktop and cannot combine with console, trading or other connection modes')
-        return serve_desktop(args.opencode_model)
+        return serve_desktop(args.opencode_model, args.opencode_variant)
     if args.opencode and (not args.console or args.setup_llm):
         parser.error('--opencode requires --console and cannot be combined with --setup-llm')
     if args.setup_llm and (not args.console or not sys.stdin.isatty()):
@@ -326,6 +328,7 @@ def main(argv=None) -> int:
                         return 4
             env['TRADE_MCP_OPENCODE_URL'] = endpoint
             env['TRADE_MCP_OPENCODE_MODEL'] = args.opencode_model or env.get('TRADE_MCP_OPENCODE_MODEL', '')
+            env['TRADE_MCP_OPENCODE_VARIANT'] = args.opencode_variant or env.get('TRADE_MCP_OPENCODE_VARIANT', '')
             print('OpenCode connected (API '+(client.api_version or 'detected')+'). Web agents require human confirmation, including existing auto agents.')
             print('Model credentials stay in OpenCode. Use the web model test to verify provider access.')
         try:

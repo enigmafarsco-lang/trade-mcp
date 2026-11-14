@@ -54,7 +54,7 @@ class LLMClient:
     def from_config(cls, cfg: Config) -> LLMClient:
         if cfg.opencode_url:
             from .opencode import OpenCodeClient
-            return OpenCodeClient(cfg.opencode_url, cfg.opencode_model, cfg.opencode_password)
+            return OpenCodeClient(cfg.opencode_url, cfg.opencode_model, cfg.opencode_password, variant=cfg.opencode_variant)
         return cls(
             base_url=cfg.llm_base_url,
             api_key=cfg.llm_api_key,
@@ -235,7 +235,12 @@ class AgentEngine:
             report["errors"].append({"symbol": symbol, "error": analysis.get("error")})
             return {}
 
-        decision = self._decide(agent, analysis)
+        if agent.get('require_open_market') and (analysis.get('market') or {}).get('open_estimate') is False:
+            decision = {'action': 'wait', 'confidence': 0, 'source': 'market_estimate',
+                        'llm_status': 'not_requested',
+                        'reason': 'تخمین جلسهٔ بازار بسته است؛ درخواست مدل و پیشنهاد معامله ایجاد نشد.'}
+        else:
+            decision = self._decide(agent, analysis)
         entry: dict[str, Any] = {
             "symbol": analysis.get("symbol") or symbol,
             "price": (analysis.get("quote") or {}).get("bid"),

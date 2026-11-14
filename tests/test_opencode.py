@@ -265,3 +265,14 @@ def test_auth_failure_is_not_hidden_by_another_health_route(monkeypatch):
         client.health()
     assert error.value.code == 'authentication_failed'
     assert len(calls) == 1
+
+
+def test_v2_sends_exact_model_variant(monkeypatch):
+    requests = []
+    client = OpenCodeClient('http://localhost:49374', 'opencode/deepseek-v4.1-flash-free', api_version='v2', variant='max')
+    def request(method, path, payload):
+        requests.append(payload)
+        return {'data':{'text':'OK'}}
+    monkeypatch.setattr(client, '_request', request)
+    assert client.chat([{'role':'user','content':'test'}]) == 'OK'
+    assert requests[0]['model'] == {'providerID':'opencode', 'id':'deepseek-v4.1-flash-free', 'variant':'max'}

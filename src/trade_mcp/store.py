@@ -55,6 +55,12 @@ CREATE TABLE IF NOT EXISTS agents (
     last_run    REAL,
     last_result TEXT
 );
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    report TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_trades_created ON trades(created_at);
 """
 
@@ -100,6 +106,15 @@ class Store:
                 data["result"] = json.loads(data["result"])
         data["expired"] = time.time() > float(data["expires_at"])
         return data
+
+    def claim_proposal(self, proposal_id: str) -> bool:
+        """Atomically reserve an unexpired pending proposal across MCP/web processes."""
+        cursor = self._conn.execute(
+            "UPDATE proposals SET status='executing' WHERE id=? AND status='pending' AND expires_at>?",
+            (proposal_id, time.time()),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
 
     def mark_proposal(self, proposal_id: str, status: str, result: Any = None) -> None:
         self._conn.execute(
@@ -228,11 +243,27 @@ class Store:
 
     def mark_agent_run(self, agent_id: str, result: dict[str, Any] | str) -> None:
         text = result[:8000] if isinstance(result, str) else json.dumps(result, default=str)
+        now = time.time()
         self._conn.execute(
             "UPDATE agents SET last_run = ?, last_result = ? WHERE id = ?",
-            (time.time(), text, agent_id),
+            (now, text, agent_id),
         )
+        self._conn.execute("INSERT INTO agent_runs(agent_id,created_at,report) VALUES(?,?,?)",
+                           (agent_id, now, text))
         self._conn.commit()
+
+    def agent_run_history(self, limit=30):
+        rows = self._conn.execute("SELECT * FROM agent_runs ORDER BY id DESC LIMIT ?",
+                                  (max(1, min(int(limit), 100)),)).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item['report'] = json.loads(item['report'])
+            except (ValueError, TypeError):
+                item['report'] = {}
+            result.append(item)
+        return result
 
     @staticmethod
     def _agent_row(row: sqlite3.Row) -> dict[str, Any]:

@@ -314,3 +314,65 @@ Optional browser regression checks (mock console only): `scripts/browser_smoke.c
 and `scripts/workspace_smoke.cjs`. The latter checks saved-report visibility,
 classified billing errors, absence of automatic model/agent/confirmation requests,
 expired proposal controls, text rendering and mobile layout.
+
+## Page-owned advisory analysis and explicit model selection
+
+The chart is above the analysis workspace. Model ID and reasoning variant are
+separate settings: for example `opencode/deepseek-v4.1-flash-free` and `max`.
+The desktop chat selection, OpenCode server default, and web selection are
+independent. Saving the web selection changes this console process only and
+invalidates its previous model test. Test the exact pair before starting a cycle.
+A catalogue entry or an answering desktop chat does not prove API entitlement.
+Quota/provider failures stop the cycle; they are not broker margin errors.
+
+Choose a saved agent, an interval (30–3600 seconds), explicitly accept model
+request usage, then start the page cycle. It always runs in advisory mode, even
+if the saved agent was automatic. It does not confirm proposals. A valid pending
+signal for a selected symbol postpones another analysis. Hidden/closed pages
+request a stop; a missing heartbeat expires the ownership lease after 20 seconds.
+An already-running request may finish and save a proposal, but cannot trade.
+Returning to the page does not restart the cycle automatically. Background
+scheduler and page cycle are mutually exclusive. The market-open check is a
+schedule estimate, not a broker session API; it can exclude non-Forex sessions.
+
+Each completed agent run is stored separately in SQLite and shown as historical
+analysis. Proposal history retains expired proposals without cancelling them.
+Historical reports describe their run time; current proposal status is shown in
+the proposal lists. Orders require a separate explicit confirmation while valid.
+Confirmation rechecks current limits, margin and positions, then atomically claims
+the proposal to prevent duplicate execution. Estimates are not guaranteed fills.
+
+For a persistent launch selection, append these options to the existing launcher
+command (not to an already-running process):
+
+```text
+--opencode-model opencode/deepseek-v4.1-flash-free --opencode-variant max
+```
+
+This example is not a claim that the free model or `max` currently has available
+quota. Do not buy credits or change billing merely to diagnose a model mismatch.
+
+## Dedicated OpenCode profile and managed web console
+
+`.opencode/agent/trade-analyst.md` provides a project-local primary agent profile
+for OpenCode v2.2.7. Open the updated repository in OpenCode and select
+`trade-analyst` after the client reloads its project configuration. It is not
+installed into an unrelated project or an existing running chat automatically.
+Its shell/edit permissions are denied; other tools require permission. The
+profile explicitly prohibits trade confirmation and credentials inspection.
+It supervises the application but is **not** a persistent session behind the
+stateless web model API. Its model selection does not change the console model.
+
+New MCP tools are `start_web_workspace`, `web_workspace_status`, and
+`stop_owned_web_workspace`. The manager passes credentials only through its
+child environment, forces trading disabled, verifies console identity before
+reuse, and stops only a process it owns. It never adopts an unrelated console
+or extracts credentials from old processes. The MCP process must first be
+reloaded onto this code and already have valid native-demo/OpenCode credentials;
+the manager cannot bootstrap missing credentials. Do not restart MT5 or expose
+keys just to refresh the console. Configuration mismatches require operator
+review rather than killing an unknown process.
+
+All automated model/broker checks in the development sandbox use mocks or HTTP
+fixtures. A successful local test suite is not proof of live provider access,
+broker calculations, or successful order execution.

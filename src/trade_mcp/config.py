@@ -96,6 +96,7 @@ class Config:
     console_port: int = 8790
     opencode_url: str = ""
     opencode_model: str = ""
+    opencode_variant: str = ""
     opencode_password: str = field(default="", repr=False)
     llm_base_url: str = ""
     llm_api_key: str = ""
@@ -150,6 +151,7 @@ class Config:
             console_port=_env_int("CONSOLE_PORT", 8790),
             opencode_url=(_env("OPENCODE_URL") or "").strip(),
             opencode_model=(_env("OPENCODE_MODEL") or "").strip(),
+            opencode_variant=(_env("OPENCODE_VARIANT") or "").strip(),
             opencode_password=(_env("OPENCODE_PASSWORD") or os.environ.get("OPENCODE_PASSWORD") or os.environ.get("OPENCODE_SERVER_PASSWORD", "")),
             llm_base_url=(_env("LLM_BASE_URL") or "").strip(),
             llm_api_key=(_env("LLM_API_KEY") or "").strip(),

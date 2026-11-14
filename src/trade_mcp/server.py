@@ -16,6 +16,7 @@ from .app import get_app
 from .bridge.base import BridgeError
 from .config import VALID_TIMEFRAMES, sizing_balance
 from .risk import loss_per_lot, lots_for_risk
+from .workspace import WorkspaceManager
 
 LOG = logging.getLogger(__name__)
 
@@ -558,6 +559,37 @@ def journal_list(limit: int = 20, symbol: str = "") -> dict[str, Any]:
     app = get_app()
     notes = app.store.list_notes(limit=max(1, min(int(limit), 100)), symbol=symbol or None)
     return {"ok": True, "count": len(notes), "notes": notes}
+
+
+# One owned console per MCP process; never stop unrelated listeners.
+
+_web_workspace = WorkspaceManager()
+
+
+@mcp.tool()
+@_safe
+def start_web_workspace(open_browser: bool = False) -> dict[str, Any]:
+    """Start/reuse the read-only native web console using this active connection.
+
+    No clipboard or password prompt, no new OpenCode server, no model requests,
+    no scheduler and no trades. Requires a verified native demo connection and
+    OpenCode configuration in this MCP process. open_browser uses the system browser.
+    """
+    return _web_workspace.start(get_app(), open_browser=open_browser)
+
+
+@mcp.tool()
+@_safe
+def web_workspace_status() -> dict[str, Any]:
+    """Read console readiness and saved reports only. Does not run models or agents."""
+    return _web_workspace.status(get_app().cfg)
+
+
+@mcp.tool()
+@_safe
+def stop_owned_web_workspace() -> dict[str, Any]:
+    """Stop only the console started by this MCP process, never a reused listener."""
+    return _web_workspace.stop()
 
 
 # Web agents share the journal with this MCP process when journal paths match.

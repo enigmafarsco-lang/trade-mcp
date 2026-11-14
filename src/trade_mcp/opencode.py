@@ -65,6 +65,7 @@ class OpenCodeClient:
     timeout: float = 90
     last_session_id: str = ""
     api_version: str = ""
+    variant: str = ""
     last_error: dict | None = field(default=None, init=False)
 
     @property
@@ -128,6 +129,10 @@ class OpenCodeClient:
                 if not separator or not provider or not model:
                     raise RuntimeError('OpenCode model must use provider/model format.')
                 body['model'] = {'providerID': provider, 'id': model}
+            if self.variant:
+                if not self.model:
+                    raise RuntimeError('An explicit model is required for a variant.')
+                body['model']['variant'] = self.variant
             result = self._request('POST', '/api/experimental/generate/text', body)
             data = result.get('data') if isinstance(result, dict) else None
             text = data.get('text') if isinstance(data, dict) else None
@@ -153,6 +158,8 @@ class OpenCodeClient:
                 if not separator or not provider or not model:
                     raise RuntimeError('OpenCode model must use provider/model format.')
                 body['model'] = {'providerID': provider, 'modelID': model}
+            if self.variant:
+                body['variant'] = self.variant
             result = self._request('POST', path+'/message', body)
             info = result.get('info') or {}
             if info.get('error'):
