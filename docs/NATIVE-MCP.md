@@ -204,3 +204,21 @@ history -c && history -w
 ```
 
 کد کلاینت: `src/trade_mcp/mcpclient.py` (فقط کتابخانه‌ی استاندارد، بدون `asyncio`).
+
+### Sizing provenance and practice-budget parity
+
+`symbol_spec.info.sizing_field_provenance` exposes only whitelisted numeric inputs:
+digits, point, tick size, tick value and contract size. Each has a numeric
+`reported_value` (null when absent/unparseable) and a `source`. In particular,
+`trade_tick_size.source=point_fallback` means the server did not provide a positive
+usable tick size and the adapter substituted point. `reported` means the native
+payload supplied a usable value; it does not independently verify broker accuracy.
+No raw server response, credentials or account identifiers are exposed by this map.
+A `sizing_metadata_warning` accompanies fallback tick size. This warning is not a
+broker-side profit verification or a new execution permission.
+
+Both `position_size` and analysis scenarios use the effective practice balance:
+`min(account equity, training budget)`. An explicit position_size balance may lower
+this basis, never raise it. Results expose the effective sizing balance and training
+budget so a cash budget such as 0.50 is not confused with a 0.5 percent input.
+`equity_used` remains a compatibility alias for the effective sizing balance.

@@ -14,7 +14,7 @@ from mcp.server.fastmcp import FastMCP
 from . import analysis, execution
 from .app import get_app
 from .bridge.base import BridgeError
-from .config import VALID_TIMEFRAMES
+from .config import VALID_TIMEFRAMES, sizing_balance
 from .risk import loss_per_lot, lots_for_risk
 
 LOG = logging.getLogger(__name__)
@@ -279,10 +279,18 @@ def position_size(
         entry = float(app.mt5.tick(resolved).get("ask") or 0.0)
     if not stop:
         return {"ok": False, "error": "missing_stop", "message": "a stop price is required"}
-    equity = float(balance or app.mt5.account_info().get("equity") or 0.0)
+    account = app.mt5.account_info(fresh=True)
+    effective = sizing_balance(account, app.cfg)
+    if balance is not None:
+        requested_balance = float(balance)
+        if not math.isfinite(requested_balance) or requested_balance < 0:
+            return {"ok": False, "error": "invalid_balance"}
+        effective = min(effective, requested_balance)
+    if not math.isfinite(float(risk_percent)) or float(risk_percent) <= 0:
+        return {"ok": False, "error": "invalid_risk_percent"}
     pct = min(float(risk_percent), app.cfg.max_risk_percent)
     sizing = lots_for_risk(
-        balance=equity, risk_percent=pct, entry=entry, stop=stop, info=info, max_lot=app.cfg.max_lot
+        balance=effective, risk_percent=pct, entry=entry, stop=stop, info=info, max_lot=app.cfg.max_lot
     )
     if sizing.get("ok"):
         try:
@@ -293,11 +301,15 @@ def position_size(
     return {
         "ok": bool(sizing.get("ok")),
         "symbol": resolved,
-        "equity_used": round(equity, 2),
+        "equity_used": round(effective, 2),
+        "effective_sizing_balance": effective,
+        "account_equity": account.get("equity"),
+        "training_budget": app.cfg.training_budget,
+        "requested_balance": balance,
         "requested_risk_percent": risk_percent,
         "applied_risk_percent": pct,
         "sizing": sizing,
-        "cap_note": f"risk above {app.cfg.max_risk_percent}% is clamped by configuration",
+        "cap_note": f"risk above {app.cfg.max_risk_percent}% is clamped; sizing balance cannot exceed equity or the training budget",
     }
 
 

@@ -22,6 +22,7 @@ Design notes
 
 from __future__ import annotations
 
+import math
 import re
 import threading
 import time
@@ -389,7 +390,27 @@ class NativeBridge:
         spread = as_float(find(record, "spread"))
         if not spread and bid > 0 and ask > 0:
             spread = round((ask - bid) / point, 1)
+        # Whitelisted numeric provenance, not a raw-payload passthrough.
+        field_aliases = {
+            "digits": ("digits",), "point": ("point",),
+            "trade_tick_size": ("trade_tick_size", "tick_size"),
+            "trade_tick_value": ("trade_tick_value", "tick_value"),
+            "trade_contract_size": ("trade_contract_size", "contract_size"),
+        }
+        provenance = {}
+        for field, aliases in field_aliases.items():
+            raw = find(record, *aliases)
+            value = as_float(raw, float("nan")) if raw is not None else None
+            valid = value is not None and math.isfinite(value) and (value >= 0 if field == "digits" else value > 0)
+            fallback = {"digits": "default", "point": "digits_fallback",
+                        "trade_tick_size": "point_fallback", "trade_tick_value": "unavailable",
+                        "trade_contract_size": "default"}[field]
+            provenance[field] = {"source": "reported" if valid else fallback,
+                                 "reported_value": value if value is not None and math.isfinite(value) else None}
         return {
+            "sizing_field_provenance": provenance,
+            "sizing_metadata_warning": ("Tick size was substituted from point; verify broker specification before trading."
+                                        if provenance["trade_tick_size"]["source"] != "reported" else None),
             "name": name,
             "symbol": name,
             "description": as_text(find(record, "description", "display_name")),

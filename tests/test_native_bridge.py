@@ -574,3 +574,18 @@ def test_terminal_permission_uses_mcp_flag(monkeypatch):
     data = native._cmd_terminal_info()
     assert data['mcp_trade_allowed'] is False
     assert data['trade_allowed'] is False
+
+
+def test_symbol_numeric_provenance_distinguishes_reported_and_fallback():
+    row = NativeBridge._symbol_record({'name': 'XAUUSD', 'digits': 2,
+                                      'point': .01, 'tick_value': .1,
+                                      'contract_size': 100, 'Authorization': 'must-not-appear'})
+    p = row['sizing_field_provenance']
+    assert p['trade_tick_size'] == {'source': 'point_fallback', 'reported_value': None}
+    assert p['trade_tick_value'] == {'source': 'reported', 'reported_value': .1}
+    assert row['sizing_metadata_warning']
+    assert 'must-not-appear' not in json.dumps(row)
+    explicit = NativeBridge._symbol_record({'name': 'XAUUSD', 'tick_size': .001, 'tick_value': .1})
+    assert explicit['trade_tick_size'] == .001
+    assert explicit['sizing_field_provenance']['trade_tick_size']['source'] == 'reported'
+    assert explicit['sizing_metadata_warning'] is None

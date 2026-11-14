@@ -483,7 +483,10 @@ def build_scenario(
             info=symbol_info or {},
             max_lot=cfg.max_lot,
         )
-        plan["sizing"] = {**sizing, "risk_percent": pct}
+        plan["sizing"] = {**sizing, "risk_percent": pct,
+                          "effective_sizing_balance": sizing_balance(account, cfg),
+                          "training_budget": cfg.training_budget,
+                          "account_equity": account.get("equity")}
     return plan
 
 
