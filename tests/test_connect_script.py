@@ -68,7 +68,8 @@ def test_success_starts_console_with_copied_key(monkeypatch):
         return 0
     monkeypatch.setattr(connect.subprocess, 'call', launch)
     assert connect.main(['--console']) == 0
-    assert calls[0][-2:] == ['console', '--no-browser']
+    assert calls[0][-1] == 'console'
+    assert '--no-browser' not in calls[0]
 
 
 def test_demo_flag_enables_console_only_after_check(monkeypatch):
@@ -167,3 +168,12 @@ def test_owned_opencode_does_not_inherit_mt5_credentials(monkeypatch):
     monkeypatch.setattr(connect.subprocess, 'call', lambda *a, **kw: 0)
     assert connect.main(['--console', '--opencode']) == 0
     assert stopped == [True]
+
+
+def test_console_browser_can_be_disabled_explicitly(monkeypatch):
+    monkeypatch.setattr(connect, 'read_clipboard', configuration)
+    monkeypatch.setattr(connect.subprocess, 'run', lambda *a, **kw: SimpleNamespace(returncode=0, stdout='OK', stderr=''))
+    calls = []
+    monkeypatch.setattr(connect.subprocess, 'call', lambda command, **kw: calls.append(command) or 0)
+    assert connect.main(['--console', '--no-browser']) == 0
+    assert calls[0][-2:] == ['console', '--no-browser']

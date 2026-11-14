@@ -118,6 +118,7 @@ def configure_llm(env: dict[str, str]) -> bool:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--no-browser', action='store_true', help='do not open the console in a browser')
     parser.add_argument('--console', action='store_true', help='start read-only console after doctor succeeds')
     parser.add_argument('--enable-demo-trading', action='store_true',
                         help='enable execution only after a fresh demo-account check; requires --console')
@@ -219,7 +220,10 @@ def main(argv=None) -> int:
             print('OpenCode connected. Web agents require human confirmation, including existing auto agents.')
             print('Model credentials stay in OpenCode. Use the web model test to verify provider access.')
         try:
-            return subprocess.call([sys.executable, '-m', 'trade_mcp', 'console', '--no-browser'], env=env)
+            command = [sys.executable, '-m', 'trade_mcp', 'console']
+            if args.no_browser:
+                command.append('--no-browser')
+            return subprocess.call(command, env=env)
         finally:
             if owned is not None and owned.poll() is None:
                 owned.terminate()
