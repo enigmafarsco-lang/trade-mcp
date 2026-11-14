@@ -273,3 +273,44 @@ configured separately through the existing environment mechanism. A successful
 chat test does not guarantee a valid agent JSON response or permission to trade.
 Agents still need to be created/run through the Agents tab, and sizing limits remain
 in force. Do not send API keys in chat or paste the MT5 Copy block into Bash.
+
+## Visible agent workspace and model-provider failures
+
+The terminal's top panel now shows saved agent activity without requiring the user
+to read OpenCode chat logs. `GET /api/workspace-status` is a read-only snapshot of
+configuration, the last explicit model test, saved agent reports (including runs
+from another MCP process sharing the journal), and recent proposals. Polling this
+endpoint never calls a model, runs an agent, places an order or modifies proposal
+status. The browser polls every five seconds and refreshes across desktop/mobile.
+
+- The explicit model-test button sends one generic request; charges may apply.
+- OpenCode failures are classified into fixed safe codes/messages: billing required,
+  quota exhausted, rate limited, authentication failed, endpoint unavailable, or
+  connection failed. Provider response bodies and credentials are never returned.
+- A model failure remains `wait`, `used_llm=false`, with no silent rules fallback.
+  Saved reports expose the safe model error so it is visible in the web panel.
+- Technical rule-based analysis is separately labelled, not presented as a model
+  decision or executed order. Market/configuration warnings remain visible.
+- The workspace's agent-run button always requests one advisory run, even when the
+  saved agent's mode is auto. It does not modify the saved mode or start a scheduler.
+- Valid proposals show entry, volume, SL/TP, estimated stop loss/target profit before
+  costs and margin when available. The agent consumes the executor's actual preview
+  rather than assuming a nonexistent payload field. Blocked proposals do not proceed
+  to auto confirmation; agent lot ceilings use the actual preview volume.
+- Old pending proposals past their TTL are displayed as expired with confirmation
+  disabled. This is a view, not automatic cancellation or rewriting of history.
+- Confirmation is a separate deliberate click and browser confirmation. Existing
+  executor TTL, price drift, validation and trading-permission gates remain in force.
+- Structured saved reports are no longer sliced into invalid JSON at 8000 characters.
+
+A successful desktop connection is not evidence of model entitlement. HTTP 402,
+provider credit failures and free-model quota failures cannot be fixed or bypassed
+by this panel. No alternate model is probed or selected automatically, and no
+billing action, quota workaround, allowlist change or risk increase is performed.
+The supported OpenCode v2 integration remains the documented stateless generation
+route. Its entitlement may differ from an interactive desktop chat session.
+
+Optional browser regression checks (mock console only): `scripts/browser_smoke.cjs`
+and `scripts/workspace_smoke.cjs`. The latter checks saved-report visibility,
+classified billing errors, absence of automatic model/agent/confirmation requests,
+expired proposal controls, text rendering and mobile layout.

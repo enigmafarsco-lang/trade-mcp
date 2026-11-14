@@ -172,3 +172,12 @@ def test_model_failure_fallback_is_visible(mock_app, monkeypatch):
     assert decision['llm_status'] == 'fallback'
     assert 'پاسخ معتبر مدل دریافت نشد' in decision['reason']
     assert decision['action'] == 'wait'
+
+
+def test_saved_structured_report_is_not_truncated_into_invalid_json(mock_app):
+    import json
+    agent = mock_app.store.create_agent({'name':'Complete report', 'symbols':['XAUUSD']})
+    report = {'summary_fa':'x'*9000, 'decisions':[{'action':'wait'}]}
+    mock_app.store.mark_agent_run(agent['id'], report)
+    saved = mock_app.store.get_agent(agent['id'])['last_result']
+    assert json.loads(saved) == report

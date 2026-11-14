@@ -226,3 +226,42 @@ def test_desktop_discovery_fails_closed(tmp_path, monkeypatch, case):
     with pytest.raises(RuntimeError) as error:
         discover_desktop()
     assert 'never-show-me' not in str(error.value)
+
+
+@pytest.mark.parametrize(('status','body','code'), [
+    (502, '{"reason":"rate_limit","status":402,"message":"Insufficient balance secret-xyz"}', 'billing_required'),
+    (502, 'Free usage limit reached secret-xyz', 'quota_exhausted'),
+    (429, 'secret-xyz', 'rate_limited'),
+    (401, 'secret-xyz', 'authentication_failed'),
+    (404, 'secret-xyz', 'endpoint_unavailable'),
+    (500, 'secret-xyz', 'connection_failed'),
+])
+def test_provider_errors_are_classified_without_echoing_body(status, body, code):
+    from trade_mcp.opencode import classify_provider_error
+    result = classify_provider_error(status, body).safe_dict()
+    assert result['code'] == code
+    assert 'secret-xyz' not in json.dumps(result)
+
+
+def test_billing_failure_is_saved_on_model_client(monkeypatch):
+    from trade_mcp.opencode import ModelServiceError
+    client = OpenCodeClient('http://localhost:4096', api_version='v2')
+    def fail(*args):
+        raise ModelServiceError('billing_required', 502)
+    monkeypatch.setattr(client, '_request', fail)
+    assert client.chat_json([]) is None
+    assert client.last_error['code'] == 'billing_required'
+
+
+def test_auth_failure_is_not_hidden_by_another_health_route(monkeypatch):
+    from trade_mcp.opencode import ModelServiceError
+    calls = []
+    def request(*args):
+        calls.append(args)
+        raise ModelServiceError('authentication_failed', 401)
+    client = OpenCodeClient('http://localhost:4096')
+    monkeypatch.setattr(client, '_request', request)
+    with pytest.raises(ModelServiceError) as error:
+        client.health()
+    assert error.value.code == 'authentication_failed'
+    assert len(calls) == 1

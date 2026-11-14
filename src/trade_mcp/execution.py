@@ -144,6 +144,8 @@ def propose_open(
             "take_profit": payload["tp"] or None,
             "risk_per_unit": payload["risk_per_unit"],
             "estimated_margin": margin,
+            "estimated_profit": (round(loss_per_lot(info, abs(entry-float(take_profit)))*volume, 4)
+                                 if take_profit else None),
             "risk_amount": round(estimated_risk, 4) if estimated_risk is not None else None,
             "risk_percent_of_budget": (round(estimated_risk/sizing_balance(account, cfg)*100, 4)
                                        if estimated_risk is not None and sizing_balance(account, cfg)>0 else None),

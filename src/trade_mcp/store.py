@@ -227,10 +227,10 @@ class Store:
         self._conn.commit()
 
     def mark_agent_run(self, agent_id: str, result: dict[str, Any] | str) -> None:
-        text = result if isinstance(result, str) else json.dumps(result, default=str)
+        text = result[:8000] if isinstance(result, str) else json.dumps(result, default=str)
         self._conn.execute(
             "UPDATE agents SET last_run = ?, last_result = ? WHERE id = ?",
-            (time.time(), text[:8000], agent_id),
+            (time.time(), text, agent_id),
         )
         self._conn.commit()
 

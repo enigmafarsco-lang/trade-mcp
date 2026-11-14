@@ -85,6 +85,7 @@
 <main>
   <!-- overview -->
   <section id="tab-terminal" class="active">
+    <div class="card" id="workspace-panel"><h2>مرکز ایجنت و پیشنهاد معامله</h2><p id="workspace-status" role="status">در حال خواندن وضعیت…</p><p id="workspace-model"></p><button id="workspace-test" class="primary">آزمایش پاسخ مدل (ممکن است هزینه داشته باشد)</button> <button id="workspace-refresh" class="ghost">بازخوانی گزارش‌ها</button><p id="workspace-action" role="status"></p><details open><summary>نتیجهٔ ایجنت‌ها</summary><div id="workspace-agents"></div></details><details><summary>پیشنهادهای جدید و سابقه</summary><div id="workspace-proposals"></div></details><p>بازخوانی هر ۵ ثانیه فقط گزارش ذخیره‌شده را می‌خواند؛ مدل و معامله را خودکار اجرا نمی‌کند. پیشنهاد تاریخی یا تحلیل قاعده‌محور، سیگنال جدید مدل نیست.</p></div>
     <div class="desk-toolbar"><strong>TRADE DESK</strong><span>متصل به MT5 • معاملهٔ دستی فقط دمو و با تأیید جداگانه</span>
     <button id="desk-add" class="ghost">+ نمودار</button><button id="desk-layout" class="ghost">تغییر چیدمان</button><button id="desk-refresh" class="primary">به‌روزرسانی</button>
     <label><input type="checkbox" id="desk-auto" checked> زنده</label>
@@ -316,14 +317,16 @@ async function loadOverview() {
 
   const props = d.proposals || [];
   $("prop-body").innerHTML = props.length ? props.map((p) => {
-    const pending = p.status === "pending";
+    const pending = p.status === "pending" && p.expires_at*1000>Date.now();
+    const status=p.status === "pending"&&!pending?"expired":p.status;
     return `<tr><td>${p.id}</td><td>${p.symbol || "—"}</td>
-      <td><span class="pill ${p.status === "executed" ? "ok" : pending ? "warn" : ""}">${p.status}</span></td>
+      <td><span class="pill ${p.status === "executed" ? "ok" : pending ? "warn" : ""}">${status}</span></td>
       <td>${p.side || ""} ${p.volume ?? ""}</td>
-      <td>${pending ? `<button class="ghost" onclick="confirmProp('${p.id}')">تأیید</button>` : "—"}</td></tr>`;
+      <td>${pending && d.trading_enabled ? `<button class="ghost" onclick="confirmProp('${p.id}')">تأیید</button>` : pending ? "اجرای معامله غیرفعال است" : "—"}</td></tr>`;
   }).join("") : `<tr><td colspan="5" class="muted">پیشنهادی نیست</td></tr>`;
 }
 async function confirmProp(id) {
+  if(!confirm("اجرای واقعی پیشنهاد "+id+"؟ ابتدا جزئیات آن را در مرکز ایجنت بررسی کنید."))return;
   const d = await api("/api/proposals/" + id + "/confirm", {method: "POST", body: "{}"});
   toast(d.ok ? "سفارش ثبت شد" : (d.message || d.error || "رد شد"));
   loadOverview();
@@ -454,7 +457,7 @@ async function addNote() {
 /* ---------------- settings ---------------- */
 $("model-test").onclick=async()=>{
   const b=$("model-test"),out=$("model-test-result");b.disabled=true;out.textContent="در انتظار پاسخ واقعی مدل…";
-  try{const d=await api('/api/model-test',{method:'POST',body:'{}'});out.textContent=d.ok?'پاسخ مدل دریافت شد؛ هیچ سفارش یا معامله‌ای ایجاد نشد.':'اتصال مدل تأیید نشد: '+d.error;}
+  try{const d=await api('/api/model-test',{method:'POST',body:'{}'});out.textContent=d.message||(d.ok?'پاسخ مدل دریافت شد؛ هیچ سفارش یا معامله‌ای ایجاد نشد.':'اتصال مدل تأیید نشد: '+d.error);}
   catch(_){out.textContent='آزمایش ناموفق؛ سرور و دسترسی مدل را بررسی کنید.';}finally{b.disabled=false;}
 };
 async function loadSettings() {
@@ -532,5 +535,6 @@ document.getElementById('tr-run').onclick=async()=>{
 };
 </script>
 <script src="/terminal.js"></script>
+<script src="/workspace.js"></script>
 </body>
 </html>

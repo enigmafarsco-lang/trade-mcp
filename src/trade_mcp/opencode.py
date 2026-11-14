@@ -13,6 +13,44 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from urllib.parse import quote, urlparse
 
+MODEL_ERROR_MESSAGES = {
+    'billing_required': 'اعتبار سرویس مدل کافی نیست؛ ایجنت متوقف است و پیشنهادی ساخته نشد.',
+    'quota_exhausted': 'سهمیهٔ سرویس مدل تمام شده است؛ ایجنت متوقف است.',
+    'rate_limited': 'سرویس مدل موقتاً محدودیت تعداد درخواست دارد؛ پاسخ معتبر دریافت نشد.',
+    'authentication_failed': 'احراز هویت سرور OpenCode ناموفق بود.',
+    'endpoint_unavailable': 'مسیر API مدل در این نسخه در دسترس نیست.',
+    'connection_failed': 'ارتباط با سرور مدل برقرار نشد یا پاسخ نامعتبر بود.',
+    'invalid_response': 'مدل پاسخ تصمیم معتبر نداد؛ هیچ پیشنهاد جدیدی ساخته نشد.',
+}
+
+
+class ModelServiceError(RuntimeError):
+    def __init__(self, code, http_status=None):
+        self.code = code
+        self.http_status = http_status
+        super().__init__(MODEL_ERROR_MESSAGES.get(code, MODEL_ERROR_MESSAGES['connection_failed']))
+
+    def safe_dict(self):
+        return {'code': self.code, 'message': str(self), 'http_status': self.http_status}
+
+
+def classify_provider_error(status, body):
+    # Inspect a bounded response only for known markers. Never return its contents.
+    text = body.lower()
+    if status == 402 or 'insufficient balance' in text or '\"status\": 402' in text or '\"status\":402' in text:
+        code = 'billing_required'
+    elif any(marker in text for marker in ('free usage limit', 'quota exceeded', 'quota_exceeded', 'insufficient_quota')):
+        code = 'quota_exhausted'
+    elif status == 429 or 'rate_limit' in text:
+        code = 'rate_limited'
+    elif status in (401, 403):
+        code = 'authentication_failed'
+    elif status == 404:
+        code = 'endpoint_unavailable'
+    else:
+        code = 'connection_failed'
+    return ModelServiceError(code, status)
+
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -27,6 +65,7 @@ class OpenCodeClient:
     timeout: float = 90
     last_session_id: str = ""
     api_version: str = ""
+    last_error: dict | None = field(default=None, init=False)
 
     @property
     def configured(self):
@@ -48,13 +87,20 @@ class OpenCodeClient:
         try:
             with urllib.request.build_opener(NoRedirect).open(req, timeout=self.timeout) as response:
                 return json.load(response)
+        except urllib.error.HTTPError as exc:
+            body = exc.read(32768).decode('utf-8', 'replace')
+            raise classify_provider_error(exc.code, body) from None
         except Exception:
-            raise RuntimeError('OpenCode request failed. Check server, API version, authentication and model access.') from None
+            raise ModelServiceError('connection_failed') from None
 
     def health(self):
         self.api_version = ''
         try:
             result = self._request('GET', '/api/info')
+        except ModelServiceError as exc:
+            if exc.code == 'authentication_failed':
+                raise
+            result = None
         except RuntimeError:
             result = None
         if (isinstance(result, dict) and str(result.get('version', '')).lstrip('v').startswith('2.')
@@ -70,6 +116,7 @@ class OpenCodeClient:
     def chat(self, messages, temperature=0.2):
         del temperature
         self.last_session_id = ''
+        self.last_error = None
         if not self.api_version:
             self.health()
         if self.api_version == 'v2':
@@ -122,9 +169,17 @@ class OpenCodeClient:
 
     def chat_json(self, messages):
         from .agents import _extract_json
+        self.last_error = None
         try:
-            return _extract_json(self.chat(messages))
+            result = _extract_json(self.chat(messages))
+            if not result:
+                self.last_error = ModelServiceError('invalid_response').safe_dict()
+            return result
+        except ModelServiceError as exc:
+            self.last_error = exc.safe_dict()
+            return None
         except (RuntimeError, ValueError, TypeError, AttributeError):
+            self.last_error = ModelServiceError('connection_failed').safe_dict()
             return None
 
 

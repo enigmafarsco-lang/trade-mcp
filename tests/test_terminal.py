@@ -208,6 +208,63 @@ def test_opencode_web_model_test_and_redacted_settings(mock_app, monkeypatch):
         assert json.loads(raw)['llm']['backend'] == 'opencode'
         req = Request(base+'/api/model-test', data=b'{}', headers={'Content-Type': 'application/json'})
         with urlopen(req) as r:
-            assert json.load(r) == {'ok': True, 'backend': 'opencode'}
+            result = json.load(r)
+            assert result['ok'] and result['backend'] == 'opencode'
         assert len(calls) == 1
         assert mock_app.mt5.positions() == []
+
+
+def test_workspace_shows_external_saved_report_expiry_and_billing(mock_app, monkeypatch):
+    from trade_mcp.opencode import ModelServiceError, OpenCodeClient
+    mock_app.cfg = mock_app.cfg.with_overrides(opencode_url='http://127.0.0.1:4096',
+                                               opencode_password='never-echo')
+    a = mock_app.store.create_agent({'name': 'External agent', 'symbols': ['XAUUSD']})
+    mock_app.store.mark_agent_run(a['id'], {'used_llm': False, 'decisions': [
+        {'symbol': 'XAUUSD', 'action': 'wait', 'source': 'opencode_error',
+         'model_error': ModelServiceError('billing_required', 502).safe_dict()}]})
+    p = mock_app.store.create_proposal({'symbol': 'XAUUSD', 'volume': .01})
+    mock_app.store._conn.execute('UPDATE proposals SET expires_at=1 WHERE id=?', (p['id'],))
+    mock_app.store._conn.commit()
+    count = []
+    def fail(self, messages):
+        count.append(1)
+        raise ModelServiceError('billing_required', 502)
+    monkeypatch.setattr(OpenCodeClient, 'chat', fail)
+    with console(mock_app) as base:
+        with urlopen(base+'/api/workspace-status') as r:
+            d = json.load(r)
+        assert not count  # Read polling never invokes the provider.
+        assert d['agents'][0]['report']['decisions'][0]['model_error']['code'] == 'billing_required'
+        assert d['proposals'][0]['status'] == 'expired'
+        assert not d['proposals'][0]['confirmable']
+        assert mock_app.store.get_proposal(p['id'])['status'] == 'pending'  # Display-only expiry.
+        req = Request(base+'/api/model-test', data=b'{}', headers={'Content-Type':'application/json'})
+        with urlopen(req) as r:
+            error = json.load(r)
+        assert error['error'] == 'billing_required'
+        with urlopen(base+'/api/workspace-status') as r:
+            status = json.load(r)
+        assert status['model_test']['state'] == 'failed'
+        assert status['model_test']['code'] == 'billing_required'
+        assert 'never-echo' not in json.dumps(status)
+        assert len(count) == 1
+        with urlopen(base+'/workspace.js') as r:
+            assert 'javascript' in r.headers['Content-Type']
+    assert mock_app.mt5.positions() == []
+
+
+def test_workspace_advisory_action_does_not_use_saved_auto_mode(mock_app, monkeypatch):
+    from trade_mcp.agents import AgentEngine
+    agent = mock_app.store.create_agent({'name':'Auto', 'symbols':['XAUUSD'], 'mode':'auto'})
+    seen = []
+    def run(self, a):
+        seen.append(a['mode'])
+        return {'used_llm':False, 'proposals':[]}
+    monkeypatch.setattr(AgentEngine, 'run', run)
+    with console(mock_app) as base:
+        req = Request(base+'/api/agents/'+agent['id'], data=b'{"action":"run_advisory"}',
+                      headers={'Content-Type':'application/json'})
+        with urlopen(req) as r:
+            assert json.load(r)['ok']
+    assert seen == ['advisory']
+    assert mock_app.store.get_agent(agent['id'])['mode'] == 'auto'

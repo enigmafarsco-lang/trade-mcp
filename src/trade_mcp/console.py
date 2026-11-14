@@ -52,6 +52,7 @@ class ConsoleState:
         self.scheduler = _Scheduler(app, self.lock)
         self.quotes = QuoteFeed(app.mt5, self.lock)
         self.chart_cache: dict[tuple, tuple] = {}
+        self.model_test = {"state": "not_tested", "message": "پاسخ مدل در این اجرای وب هنوز آزمایش نشده است."}
 
     @property
     def cfg(self) -> Config:
@@ -211,7 +212,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path in {"/", "/index.html"}:
                 return self._index()
-            if path in {"/terminal.js", "/terminal.css"}:
+            if path in {"/terminal.js", "/terminal.css", "/workspace.js"}:
                 asset = WEB_DIR / path[1:]
                 kind = "text/javascript" if path.endswith(".js") else "text/css"
                 return self._send(200, asset.read_bytes(), kind + "; charset=utf-8")
@@ -327,6 +328,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(self._candles(query))
             if path == "/api/news":
                 return self._json({"ok": True, "items": fetch_news(self.state.cfg.news_feeds)})
+            if path == "/api/workspace-status":
+                return self._json(self._workspace_status())
             if path == "/api/agents":
                 return self._json(
                     {"ok": True, "agents": self.state.store.list_agents(),
@@ -430,14 +433,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "used_llm": True, "model": llm.model or "OpenCode server default",
                                    "text": text, "executable": False})
             if path == "/api/model-test":
+                from .opencode import ModelServiceError
                 llm = LLMClient.from_config(self.state.cfg)
-                if not llm.configured:
-                    return self._json({"ok": False, "error": "model_not_configured"})
-                try:
-                    text = llm.chat([{"role": "user", "content": "Reply with OK only. Do not use tools."}])
-                    return self._json({"ok": bool(text), "backend": "opencode" if self.state.cfg.opencode_url else "openai-compatible"})
-                except Exception:
-                    return self._json({"ok": False, "error": "model_connection_failed"})
+                result = {"ok": False, "error": "model_not_configured", "message": "مدل تنظیم نشده است."}
+                if llm.configured:
+                    try:
+                        text = llm.chat([{"role": "user", "content": "Reply with OK only. Do not use tools."}])
+                        result = {"ok": bool(text), "backend": "opencode" if self.state.cfg.opencode_url else "openai-compatible",
+                                  "message": "پاسخ واقعی مدل دریافت شد؛ هیچ سفارشی ایجاد نشد." if text else "مدل پاسخ خالی داد."}
+                    except ModelServiceError as exc:
+                        result = {"ok": False, "error": exc.code, **exc.safe_dict()}
+                    except Exception:
+                        result = {"ok": False, "error": "model_connection_failed", "message": "آزمایش مدل ناموفق بود؛ هیچ سفارشی ایجاد نشد."}
+                self.state.model_test = {**result, "state": "ready" if result['ok'] else "failed", "tested_at": time.time()}
+                return self._json(result)
             if path == "/api/agents":
                 return self._json(self._create_agent(payload))
             if path.startswith("/api/agents/"):
@@ -512,10 +521,40 @@ class Handler(BaseHTTPRequestHandler):
                 out["account"] = self.state.app.mt5.account_info(fresh=True)
                 out["positions"] = self.state.app.mt5.positions()
                 out["spec"] = self.state.app.mt5.symbol_info(sym)
+        out["trading_enabled"] = cfg.allow_trading
         out["proposals"] = self.state.store.list_proposals(limit=10)
         out["notes"] = self.state.store.list_notes(limit=8)
         out["scheduler"] = self.state.scheduler.status()
         return out
+
+    def _workspace_status(self):
+        cfg = self.state.cfg
+        agents = []
+        for agent in self.state.store.list_agents():
+            try:
+                report = json.loads(agent.get('last_result') or '{}')
+                if not isinstance(report, dict):
+                    report = {}
+            except (ValueError, TypeError):
+                report = {}
+            agents.append({"id": agent['id'], "name": agent['name'], "symbols": agent['symbols'],
+                           "enabled": agent['enabled'], "last_run": agent.get('last_run'), "report": report})
+        blocked_ids = {decision.get('proposal_id') for agent in agents
+                       for decision in agent['report'].get('decisions', []) if decision.get('blocked')}
+        proposals = []
+        now = time.time()
+        for item in self.state.store.list_proposals(limit=20):
+            expired = item['status'] == 'pending' and item['expires_at'] <= now
+            proposals.append({"id": item['id'], "created_at": item['created_at'],
+                              "expires_at": item['expires_at'], "payload": item['payload'],
+                              "status": 'expired' if expired else ('blocked' if item['id'] in blocked_ids and item['status'] == 'pending' else item['status']),
+                              "confirmable": bool(cfg.allow_trading and item['status'] == 'pending' and not expired and item['id'] not in blocked_ids)})
+        return {"ok": True, "backend": cfg.backend, "trading_enabled": cfg.allow_trading,
+                "model_backend": "opencode" if cfg.opencode_url else "openai-compatible",
+                "model_configured": LLMClient.from_config(cfg).configured,
+                "model": cfg.opencode_model if cfg.opencode_url else cfg.llm_model,
+                "model_test": self.state.model_test, "agents": agents, "proposals": proposals,
+                "scheduler": self.state.scheduler.status(), "observed_at": now}
 
     def _analysis(self, query: dict[str, str]) -> dict[str, Any]:
         cfg = self.state.cfg
@@ -588,6 +627,8 @@ class Handler(BaseHTTPRequestHandler):
         agent = store.get_agent(agent_id)
         if not agent:
             return {"ok": False, "error": "unknown_agent"}
+        if action == 'run_advisory':
+            agent = {**agent, 'mode': 'advisory'}
         with self.state.lock:
             report = AgentEngine(
                 cfg=self.state.cfg, mt5=self.state.app.mt5, store=store

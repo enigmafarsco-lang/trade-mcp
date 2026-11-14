@@ -243,8 +243,15 @@ class AgentEngine:
             "confidence": decision.get("confidence"),
             "reason": decision.get("reason"),
             "source": decision.get("source"),
+            "model_error": decision.get("model_error"),
             "wait_reasons": decision.get("wait_reasons", []),
             "llm_status": decision.get("llm_status", "used" if decision.get("source") in {"llm", "opencode"} else "unknown"),
+        }
+        entry["technical_analysis"] = {
+            "summary": analysis.get("summary_fa"),
+            "warnings": analysis.get("warnings") or [],
+            "scenario": {k: (analysis.get("scenario") or {}).get(k)
+                         for k in ("action", "entry_reference", "stop_loss", "take_profit_1", "sizing")},
         }
         report["decisions"].append(entry)
 
@@ -275,7 +282,10 @@ class AgentEngine:
             return entry
 
         pid = proposal.get("proposal_id") or proposal.get("id")
-        payload = proposal.get("payload") or proposal.get("order") or {}
+        payload = proposal.get("payload") or proposal.get("order") or proposal.get("preview") or {}
+        entry["preview"] = proposal.get("preview") or {}
+        entry["blocked"] = bool(proposal.get("blocked"))
+        entry["blockers"] = proposal.get("blockers", [])
 
         # The agent's own lot ceiling is stricter than the global one.
         volume = float(payload.get("volume") or 0.0)
@@ -288,9 +298,14 @@ class AgentEngine:
 
         entry["proposal_id"] = pid
         entry["volume"] = volume
-        entry["stop_loss"] = payload.get("sl")
-        entry["take_profit"] = payload.get("tp")
+        entry["stop_loss"] = payload.get("sl", payload.get("stop_loss"))
+        entry["take_profit"] = payload.get("tp", payload.get("take_profit"))
         report["proposals"].append({"id": pid, "symbol": entry["symbol"], "side": action})
+
+        if proposal.get("blocked"):
+            entry["status"] = "blocked"
+            entry["note"] = "; ".join(proposal.get("blockers") or [])
+            return entry
 
         mode = str(agent.get("mode") or "advisory").lower()
         blocked_reasons = self._auto_confirm_blockers(agent, analysis, mode)
@@ -323,8 +338,10 @@ class AgentEngine:
             if payload and payload.get('action') in {'buy', 'sell', 'wait'}:
                 return self._sanitise(payload, scenario, source="opencode" if self.cfg.opencode_url else "llm")
             if self.cfg.opencode_url:
+                from .opencode import ModelServiceError
+                error = getattr(self.llm, 'last_error', None) or ModelServiceError('invalid_response').safe_dict()
                 return {"action": "wait", "confidence": 0, "source": "opencode_error",
-                        "llm_status": "failed", "reason": "OpenCode پاسخ تصمیم معتبر نداد؛ سفارشی ایجاد نشد و قواعد جایگزین اجرا نشدند."}
+                        "model_error": error, "llm_status": "failed", "reason": error['message']}
 
         # Deterministic fallback: trust the scenario engine.
         action = str(scenario.get("action") or "wait").lower()
