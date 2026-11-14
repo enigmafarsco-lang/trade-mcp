@@ -25,7 +25,7 @@ def journal_identity(path):
 
 def workspace_identity(cfg):
     settings = [journal_identity(cfg.journal_path), cfg.mcp_url, cfg.opencode_url,
-                cfg.opencode_model, cfg.opencode_variant, cfg.default_symbol, cfg.timeframes, cfg.training_budget,
+                cfg.opencode_model, cfg.opencode_variant, cfg.opencode_free_fallback, cfg.default_symbol, cfg.timeframes, cfg.training_budget,
                 cfg.max_lot, cfg.max_risk_percent, cfg.max_open_positions, cfg.max_spread_points,
                 cfg.allowed_symbols, cfg.proposal_ttl, cfg.deviation_points]
     return hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
@@ -37,6 +37,7 @@ def console_environment(cfg):
         'BACKEND': 'native', 'MCP_URL': cfg.mcp_url, 'MCP_TOKEN': cfg.mcp_token,
         'OPENCODE_URL': cfg.opencode_url, 'OPENCODE_MODEL': cfg.opencode_model,
         'OPENCODE_VARIANT': cfg.opencode_variant,
+        'OPENCODE_FREE_FALLBACK': 'true' if cfg.opencode_free_fallback else 'false',
         'OPENCODE_PASSWORD': cfg.opencode_password, 'ALLOW_TRADING': 'false',
         'JOURNAL': cfg.journal_path, 'SYMBOL': cfg.default_symbol,
         'TIMEFRAMES': ','.join(cfg.timeframes), 'TRAINING_BUDGET': cfg.training_budget,

@@ -376,3 +376,31 @@ review rather than killing an unknown process.
 All automated model/broker checks in the development sandbox use mocks or HTTP
 fixtures. A successful local test suite is not proof of live provider access,
 broker calculations, or successful order execution.
+
+## Optional free-model failover
+
+The model settings now include an opt-in **free fallback** checkbox. It is off
+by default, changes only this console process, and invalidates the model test.
+`TRADE_MCP_OPENCODE_FREE_FALLBACK=true` persists the policy through environment
+configuration. The managed child inherits it. The primary must be one of the 11
+explicitly free IDs in the operator-supplied catalogue; `big-pickle`, unknown IDs,
+and paid models are rejected when this option is enabled. This is a static
+allowlist, not live price/entitlement verification; recheck the provider catalogue
+if pricing or availability changes.
+
+At most three generation attempts occur in one call. Alternate order is GLM
+Flash Free (`low`), MiMo Flash Free (default), then DeepSeek Flash Free (`low`),
+excluding the primary and taking only two alternates. The selected primary and
+variant are preserved. Reports record every attempted model and the model and
+variant that actually responded. A response is not necessarily a valid trading
+decision: invalid JSON or invalid actions still fail closed without rotation.
+
+Only explicit `model_quota_exceeded`, `model_capacity_exceeded`, or
+`model_unavailable` provider error markers permit automatic failover. Generic
+“Free usage limit”, shared/unknown quota, rate limits, billing, authentication,
+connection and malformed-response errors **stop**, rather than rotating models.
+The currently reported generic free-usage error therefore still requires operator
+review. The catalogue supplies no evidence of independent per-model quotas.
+Nothing here bypasses provider limits, buys credit, enables trading, or promises
+unlimited inference. A successful test may itself have used an alternate; inspect
+its recorded attempts and actual response model.

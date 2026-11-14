@@ -276,3 +276,61 @@ def test_v2_sends_exact_model_variant(monkeypatch):
     monkeypatch.setattr(client, '_request', request)
     assert client.chat([{'role':'user','content':'test'}]) == 'OK'
     assert requests[0]['model'] == {'providerID':'opencode', 'id':'deepseek-v4.1-flash-free', 'variant':'max'}
+
+
+def test_free_fallback_uses_only_bounded_allowlist_and_records_actual_model(monkeypatch):
+    from trade_mcp.opencode import ModelServiceError
+    calls = []
+    def once(self, messages, temperature):
+        calls.append((self.model, self.variant))
+        if len(calls) == 1:
+            raise ModelServiceError('model_unavailable', 502)
+        return '{"action":"wait"}'
+    monkeypatch.setattr(OpenCodeClient, '_chat_once', once)
+    client = OpenCodeClient('http://localhost:49374', 'opencode/deepseek-v4.1-flash-free',
+                            variant='max', free_fallback=True)
+    assert client.chat_json([]) == {'action':'wait'}
+    assert calls == [('opencode/deepseek-v4.1-flash-free','max'), ('opencode/glm-5.3-flash-free','low')]
+    assert client.response_model == 'opencode/glm-5.3-flash-free'
+    assert client.model == 'opencode/deepseek-v4.1-flash-free'
+    assert client.variant == 'max'
+    assert client.attempts[0]['error'] == 'model_unavailable'
+
+
+@pytest.mark.parametrize('code', ['quota_exhausted','billing_required','rate_limited',
+                                  'authentication_failed','connection_failed','invalid_response'])
+def test_free_fallback_does_not_rotate_on_shared_or_ambiguous_failures(monkeypatch, code):
+    from trade_mcp.opencode import ModelServiceError
+    calls = []
+    def once(self, *args):
+        calls.append(self.model)
+        raise ModelServiceError(code)
+    monkeypatch.setattr(OpenCodeClient, '_chat_once', once)
+    client = OpenCodeClient('http://localhost:49374', 'opencode/beam-free', free_fallback=True)
+    assert client.chat_json([]) is None
+    assert len(calls) == 1
+    assert client.last_error['code'] == code
+
+
+def test_free_fallback_never_exceeds_three_requests(monkeypatch):
+    from trade_mcp.opencode import ModelServiceError
+    def once(*args):
+        raise ModelServiceError('model_unavailable')
+    monkeypatch.setattr(OpenCodeClient, '_chat_once', once)
+    client = OpenCodeClient('http://localhost:49374', 'opencode/iceman-free', free_fallback=True)
+    assert client.chat_json([]) is None
+    assert len(client.attempts) == 3
+    assert client.model == 'opencode/iceman-free'
+
+
+@pytest.mark.parametrize('model', ['opencode/big-pickle','opencode/paid','other/beam-free',''])
+def test_free_fallback_rejects_unverified_primary_without_request(monkeypatch, model):
+    monkeypatch.setattr(OpenCodeClient, '_chat_once', lambda *a: pytest.fail('Must not generate'))
+    assert OpenCodeClient('http://localhost:49374', model, free_fallback=True).chat_json([]) is None
+
+
+def test_model_scoped_error_classification_does_not_override_shared_quota_or_auth():
+    from trade_mcp.opencode import classify_provider_error
+    assert classify_provider_error(502, '{"code":"model_quota_exceeded"}').code == 'model_unavailable'
+    assert classify_provider_error(401, 'model_unavailable').code == 'authentication_failed'
+    assert classify_provider_error(502, 'Free usage limit reached model_quota_exceeded').code == 'quota_exhausted'

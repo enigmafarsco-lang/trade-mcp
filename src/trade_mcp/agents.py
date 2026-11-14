@@ -54,7 +54,7 @@ class LLMClient:
     def from_config(cls, cfg: Config) -> LLMClient:
         if cfg.opencode_url:
             from .opencode import OpenCodeClient
-            return OpenCodeClient(cfg.opencode_url, cfg.opencode_model, cfg.opencode_password, variant=cfg.opencode_variant)
+            return OpenCodeClient(cfg.opencode_url, cfg.opencode_model, cfg.opencode_password, variant=cfg.opencode_variant, free_fallback=cfg.opencode_free_fallback)
         return cls(
             base_url=cfg.llm_base_url,
             api_key=cfg.llm_api_key,
@@ -249,6 +249,9 @@ class AgentEngine:
             "reason": decision.get("reason"),
             "source": decision.get("source"),
             "model_error": decision.get("model_error"),
+            "model_attempts": decision.get("model_attempts", []),
+            "response_model": decision.get("response_model"),
+            "response_variant": decision.get("response_variant"),
             "wait_reasons": decision.get("wait_reasons", []),
             "llm_status": decision.get("llm_status", "used" if decision.get("source") in {"llm", "opencode"} else "unknown"),
         }
@@ -341,12 +344,16 @@ class AgentEngine:
                 ]
             )
             if payload and payload.get('action') in {'buy', 'sell', 'wait'}:
-                return self._sanitise(payload, scenario, source="opencode" if self.cfg.opencode_url else "llm")
+                result = self._sanitise(payload, scenario, source="opencode" if self.cfg.opencode_url else "llm")
+                result.update(model_attempts=getattr(self.llm, 'attempts', []),
+                              response_model=getattr(self.llm, 'response_model', None),
+                              response_variant=getattr(self.llm, 'response_variant', None))
+                return result
             if self.cfg.opencode_url:
                 from .opencode import ModelServiceError
                 error = getattr(self.llm, 'last_error', None) or ModelServiceError('invalid_response').safe_dict()
                 return {"action": "wait", "confidence": 0, "source": "opencode_error",
-                        "model_error": error, "llm_status": "failed", "reason": error['message']}
+                        "model_error": error, "model_attempts": getattr(self.llm, "attempts", []), "llm_status": "failed", "reason": error['message']}
 
         # Deterministic fallback: trust the scenario engine.
         action = str(scenario.get("action") or "wait").lower()

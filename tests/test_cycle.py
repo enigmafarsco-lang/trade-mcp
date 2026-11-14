@@ -12,7 +12,7 @@ def setup_cycle(mock_app, monkeypatch):
     monkeypatch.setattr(threading.Thread, 'start', lambda _: None)
     cfg = mock_app.cfg.with_overrides(opencode_url='http://127.0.0.1:49374')
     state = SimpleNamespace(cfg=cfg, app=mock_app, store=mock_app.store, lock=threading.Lock(),
-                            model_test={'state':'ready', 'model_key':(cfg.opencode_model,cfg.opencode_variant)}, scheduler=SimpleNamespace(running=False))
+                            model_test={'state':'ready', 'model_key':(cfg.opencode_model,cfg.opencode_variant,cfg.opencode_free_fallback)}, scheduler=SimpleNamespace(running=False))
     cycle = PageCycle(state)
     agent = mock_app.store.create_agent({'name':'Dedicated','symbols':['XAUUSD'],'mode':'auto'})
     yield cycle, state, agent
@@ -90,3 +90,9 @@ def test_cycle_does_not_overlap_runs_or_background_scheduler(setup_cycle, monkey
     cycle.busy = True
     cycle.tick()
     assert cycle.busy
+
+
+def test_changing_fallback_policy_invalidates_cycle_test(setup_cycle):
+    cycle, state, agent = setup_cycle
+    state.cfg.opencode_free_fallback = True
+    assert start(cycle, agent)['error'] == 'successful_model_test_required'

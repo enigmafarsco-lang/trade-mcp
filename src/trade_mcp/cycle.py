@@ -48,7 +48,7 @@ class PageCycle:
                 cfg = self.state.cfg
                 test = self.state.model_test
                 if (not cfg.opencode_url or test.get('state') != 'ready'
-                        or tuple(test.get('model_key', ())) != (cfg.opencode_model, cfg.opencode_variant)):
+                        or tuple(test.get('model_key', ())) != (cfg.opencode_model, cfg.opencode_variant, cfg.opencode_free_fallback)):
                     return {'ok': False, 'error': 'successful_model_test_required'}
                 if payload.get('consent_model_requests') is not True:
                     return {'ok': False, 'error': 'model_usage_consent_required'}
@@ -109,7 +109,7 @@ class PageCycle:
                     self.state.model_test = {**(errors[0] if errors else {}), 'state': 'failed',
                                              'message': errors[0]['message'] if errors else 'خطای تحلیل؛ بررسی و آزمایش مجدد لازم است.',
                                              'tested_at': time.time(),
-                                             'model_key': (self.state.cfg.opencode_model, self.state.cfg.opencode_variant)}
+                                             'model_key': (self.state.cfg.opencode_model, self.state.cfg.opencode_variant, self.state.cfg.opencode_free_fallback)}
                     self.reason = errors[0]['message'] if errors else 'چرخه به علت خطای تحلیل متوقف شد؛ قبل از شروع مجدد بررسی کنید.'
                 elif self.owner == owner:
                     self.reason = 'گزارش ذخیره شد؛ تا نوبت بعدی یا تأیید شما منتظر می‌مانیم.'

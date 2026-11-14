@@ -449,7 +449,12 @@ class Handler(BaseHTTPRequestHandler):
                 variant = str(payload.get('variant') or '').strip()
                 if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_./:-]+', model) or len(model)>160 or not re.fullmatch(r'[A-Za-z0-9_-]{0,40}', variant):
                     return self._json({'ok': False, 'error': 'invalid_model_or_variant'})
+                from .opencode import FREE_MODELS
+                fallback = payload.get('free_fallback', False)
+                if not isinstance(fallback, bool) or (fallback and model not in FREE_MODELS):
+                    return self._json({'ok': False, 'error': 'free_fallback_requires_free_primary'})
                 with self.state.lock:
+                    self.state.cfg.opencode_free_fallback = fallback
                     self.state.cfg.opencode_model = model
                     self.state.cfg.opencode_variant = variant
                     self.state.model_test = {'state': 'not_tested', 'message': 'مدل وب تغییر کرد؛ پیش از شروع چرخه، پاسخ آن را آزمایش کنید.'}
@@ -457,7 +462,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/model-test":
                 from .opencode import ModelServiceError
                 llm = LLMClient.from_config(self.state.cfg)
-                model_key = (self.state.cfg.opencode_model, self.state.cfg.opencode_variant)
+                model_key = (self.state.cfg.opencode_model, self.state.cfg.opencode_variant, self.state.cfg.opencode_free_fallback)
                 result = {"ok": False, "error": "model_not_configured", "message": "مدل تنظیم نشده است."}
                 if llm.configured:
                     try:
@@ -468,7 +473,10 @@ class Handler(BaseHTTPRequestHandler):
                         result = {"ok": False, "error": exc.code, **exc.safe_dict()}
                     except Exception:
                         result = {"ok": False, "error": "model_connection_failed", "message": "آزمایش مدل ناموفق بود؛ هیچ سفارشی ایجاد نشد."}
-                if model_key != (self.state.cfg.opencode_model, self.state.cfg.opencode_variant):
+                result['model_attempts'] = getattr(llm, 'attempts', [])
+                result['response_model'] = getattr(llm, 'response_model', None)
+                result['response_variant'] = getattr(llm, 'response_variant', None)
+                if model_key != (self.state.cfg.opencode_model, self.state.cfg.opencode_variant, self.state.cfg.opencode_free_fallback):
                     return self._json({'ok': False, 'error': 'model_changed_during_test'})
                 self.state.model_test = {**result, "state": "ready" if result['ok'] else "failed", "tested_at": time.time(),
                                          "model_key": model_key}
@@ -583,7 +591,7 @@ class Handler(BaseHTTPRequestHandler):
                 "model_backend": "opencode" if cfg.opencode_url else "openai-compatible",
                 "model_configured": LLMClient.from_config(cfg).configured,
                 "model": cfg.opencode_model if cfg.opencode_url else cfg.llm_model,
-                "model_variant": cfg.opencode_variant, "page_cycle": self.state.page_cycle.status(),
+                "model_variant": cfg.opencode_variant, "free_fallback": cfg.opencode_free_fallback, "page_cycle": self.state.page_cycle.status(),
                 "run_history": self.state.store.agent_run_history(),
                 "model_test": self.state.model_test, "agents": agents, "proposals": proposals,
                 "scheduler": self.state.scheduler.status(), "observed_at": now}

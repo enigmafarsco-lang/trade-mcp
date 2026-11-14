@@ -24,6 +24,21 @@ MODEL_ERROR_MESSAGES = {
 }
 
 
+# Explicit catalogue supplied by the operator; not proof of runtime entitlement.
+FREE_MODELS = {
+    'opencode/beam-free', 'opencode/deepseek-v4.1-flash-free',
+    'opencode/flint-40b-free', 'opencode/glm-5.3-flash-free',
+    'opencode/iceman-free', 'opencode/inkling-2-small-free',
+    'opencode/longcat-2.5-free', 'opencode/mimo-v2.6-flash-free',
+    'opencode/minimax-m3.1-flash-free', 'opencode/nemotron-3.5-lightning-free',
+    'opencode/nemotron-3.5-super-vl-free',
+}
+FREE_ALTERNATES = (('opencode/glm-5.3-flash-free', 'low'),
+                   ('opencode/mimo-v2.6-flash-free', ''),
+                   ('opencode/deepseek-v4.1-flash-free', 'low'))
+MODEL_ERROR_MESSAGES['model_unavailable'] = 'مدل انتخاب‌شده سهمیه یا ظرفیت قابل استفاده ندارد.'
+
+
 class ModelServiceError(RuntimeError):
     def __init__(self, code, http_status=None):
         self.code = code
@@ -37,14 +52,18 @@ class ModelServiceError(RuntimeError):
 def classify_provider_error(status, body):
     # Inspect a bounded response only for known markers. Never return its contents.
     text = body.lower()
-    if status == 402 or 'insufficient balance' in text or '\"status\": 402' in text or '\"status\":402' in text:
+    if status in (401, 403):
+        code = 'authentication_failed'
+    elif status == 402 or 'insufficient balance' in text or '\"status\": 402' in text or '\"status\":402' in text:
         code = 'billing_required'
-    elif any(marker in text for marker in ('free usage limit', 'quota exceeded', 'quota_exceeded', 'insufficient_quota')):
+    elif 'free usage limit' in text or 'insufficient_quota' in text:
+        code = 'quota_exhausted'
+    elif any(marker in text for marker in ('model_quota_exceeded', 'model_capacity_exceeded', 'model_unavailable')):
+        code = 'model_unavailable'
+    elif 'quota exceeded' in text or 'quota_exceeded' in text:
         code = 'quota_exhausted'
     elif status == 429 or 'rate_limit' in text:
         code = 'rate_limited'
-    elif status in (401, 403):
-        code = 'authentication_failed'
     elif status == 404:
         code = 'endpoint_unavailable'
     else:
@@ -66,6 +85,10 @@ class OpenCodeClient:
     last_session_id: str = ""
     api_version: str = ""
     variant: str = ""
+    free_fallback: bool = False
+    attempts: list = field(default_factory=list, init=False)
+    response_model: str = field(default="", init=False)
+    response_variant: str = field(default="", init=False)
     last_error: dict | None = field(default=None, init=False)
 
     @property
@@ -115,6 +138,35 @@ class OpenCodeClient:
         return {'healthy': True, 'version': result.get('version'), 'api': 'v1'}
 
     def chat(self, messages, temperature=0.2):
+        primary = (self.model, self.variant)
+        self.attempts = []
+        self.response_model = self.response_variant = ''
+        candidates = [primary]
+        if self.free_fallback:
+            if self.model not in FREE_MODELS:
+                raise RuntimeError('Free fallback requires an explicitly free primary model.')
+            candidates += [item for item in FREE_ALTERNATES if item[0] != self.model][:2]
+        try:
+            for index, (model, variant) in enumerate(candidates):
+                self.model, self.variant = model, variant
+                attempt = {'model': model, 'variant': variant}
+                self.attempts.append(attempt)
+                try:
+                    text = self._chat_once(messages, temperature)
+                    self.response_model, self.response_variant = model, variant
+                    attempt['status'] = 'responded'
+                    return text
+                except ModelServiceError as exc:
+                    attempt.update(status='failed', error=exc.code)
+                    # Generic free-usage/account quota, rate limits, billing and auth
+                    # never trigger rotation. Only explicit model-scoped errors do.
+                    if exc.code != 'model_unavailable' or index == len(candidates)-1:
+                        raise
+            raise ModelServiceError('connection_failed')
+        finally:
+            self.model, self.variant = primary
+
+    def _chat_once(self, messages, temperature=0.2):
         del temperature
         self.last_session_id = ''
         self.last_error = None

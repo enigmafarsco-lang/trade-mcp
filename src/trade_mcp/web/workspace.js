@@ -10,6 +10,8 @@ function describe(report){
  const lines=[`مدل واقعاً استفاده شد: ${report.used_llm?'بله':'خیر'} | پیشنهادهای این اجرا: ${(report.proposals||[]).length}`];
  for(const d of report.decisions||[]){
   lines.push(`${d.symbol}: ${{buy:'خرید',sell:'فروش',wait:'انتظار'}[d.action]||'نامشخص'} | منبع: ${d.source||'—'}`);
+  if(d.response_model)lines.push('مدل پاسخ‌دهنده: '+d.response_model+' / '+(d.response_variant||'default'));
+  for(const a of d.model_attempts||[])lines.push('تلاش مدل: '+a.model+' / '+(a.variant||'default')+' • '+a.status+(a.error?' • '+a.error:''));
   if(d.model_error)lines.push(`توقف مدل: ${d.model_error.message} (${d.model_error.code})`);
   if(d.reason)lines.push(d.reason);
   if(d.note)lines.push(d.note);
@@ -34,12 +36,12 @@ async function refresh(){
   if(!cycle.active)lease=null;
   node('workspace-cycle-start').disabled=!!cycle.active||!!cycle.busy;
   node('workspace-cycle-stop').disabled=!lease;
-  if(!modelLoaded){node('workspace-model-id').value=d.model||'';node('workspace-variant').value=d.model_variant||'';modelLoaded=true;}
+  if(!modelLoaded){node('workspace-model-id').value=d.model||'';node('workspace-variant').value=d.model_variant||'';node('workspace-free-fallback').checked=!!d.free_fallback;modelLoaded=true;}
   const select=node('workspace-cycle-agent'),chosen=select.value;
   const ids=(d.agents||[]).map(a=>a.id).join(',');
   if(select.dataset.ids!==ids){select.replaceChildren();for(const a of d.agents||[]){const option=make('option',a.name+' • '+a.symbols.join(', '));option.value=a.id;select.append(option);}select.value=chosen||d.agents[0]?.id||'';select.dataset.ids=ids;}
   const test=d.model_test||{};
-  node('workspace-model').textContent=`آخرین آزمایش پاسخ مدل: ${test.state==='not_tested'?'هنوز انجام نشده':time(test.tested_at)}\n${test.message||'—'}${test.code?' ('+test.code+')':''}`;
+  node('workspace-model').textContent=`آخرین آزمایش پاسخ مدل: ${test.state==='not_tested'?'هنوز انجام نشده':time(test.tested_at)}\n${test.message||'—'}${test.code?' ('+test.code+')':''}${test.response_model?'\nمدل پاسخ‌دهندهٔ تست: '+test.response_model+' / '+(test.response_variant||'default'):''}${(test.model_attempts||[]).map(a=>'\n'+a.model+' • '+a.status+(a.error?' • '+a.error:'')).join('')}`;
   const box=node('workspace-agents');box.replaceChildren();
   for(const a of d.agents||[]){
    const card=make('div');card.className='card';
@@ -83,7 +85,7 @@ async function stopCycle(beacon=false){
  try{await request('/api/page-cycle',body);}finally{await refresh();}
 }
 node('workspace-save-model').onclick=async()=>{
- const d=await request('/api/model-config',{model:node('workspace-model-id').value,variant:node('workspace-variant').value});
+ const d=await request('/api/model-config',{model:node('workspace-model-id').value,variant:node('workspace-variant').value,free_fallback:node('workspace-free-fallback').checked});
  node('workspace-action').textContent=d.ok?'مدل وب اعمال شد؛ تنظیم چت OpenCode عوض نشد. اکنون پاسخ مدل را آزمایش کنید.':d.error;await refresh();
 };
 node('workspace-cycle-start').onclick=async()=>{
