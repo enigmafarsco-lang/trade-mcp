@@ -144,8 +144,29 @@ def startup_failure_reason(text):
     return 'server startup or health check failed; the exact cause is not yet known'
 
 
+def serve_desktop(model=''):
+    """Noninteractive MCP startup: stdout and stdin belong to the protocol."""
+    from trade_mcp.opencode import discover_desktop
+    try:
+        desktop_url, password = discover_desktop()
+        terminal_url, token = parse_terminal(read_clipboard())
+    except Exception:
+        print('MCP startup refused: verify OpenCode desktop registration and click MT5 MCP Copy before reconnecting. No fallback server started.', file=sys.stderr)
+        return 4
+    env = os.environ.copy()
+    env.update(TRADE_MCP_BACKEND='native', TRADE_MCP_MCP_URL=terminal_url,
+               TRADE_MCP_MCP_TOKEN=token, TRADE_MCP_ALLOW_TRADING='false',
+               TRADE_MCP_TRAINING_BUDGET='100', TRADE_MCP_OPENCODE_URL=desktop_url,
+               TRADE_MCP_OPENCODE_PASSWORD=password,
+               TRADE_MCP_OPENCODE_MODEL=model or env.get('TRADE_MCP_OPENCODE_MODEL', ''))
+    # Do not run doctor here: it writes human-readable output to protocol stdout.
+    # Native authentication is checked by mt5_status after the MCP handshake.
+    return subprocess.call([sys.executable, '-m', 'trade_mcp', 'serve'], env=env)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--serve', action='store_true', help='run stdio MCP using desktop discovery and MT5 clipboard; no prompts, no trading')
     parser.add_argument('--no-browser', action='store_true', help='do not open the console in a browser')
     parser.add_argument('--console', action='store_true', help='start read-only console after doctor succeeds')
     parser.add_argument('--enable-demo-trading', action='store_true',
@@ -159,6 +180,11 @@ def main(argv=None) -> int:
     parser.add_argument('--opencode-url', default='', help='attach only to an existing desktop server; never start another server')
     parser.add_argument('--opencode-password-prompt', action='store_true', help='read the existing server password without echo or persistence')
     args = parser.parse_args(argv)
+    if args.serve:
+        if (not args.opencode_desktop or args.console or args.enable_demo_trading or args.setup_llm
+                or args.opencode or args.opencode_url or args.opencode_password_prompt):
+            parser.error('--serve requires --opencode-desktop and cannot combine with console, trading or other connection modes')
+        return serve_desktop(args.opencode_model)
     if args.opencode and (not args.console or args.setup_llm):
         parser.error('--opencode requires --console and cannot be combined with --setup-llm')
     if args.setup_llm and (not args.console or not sys.stdin.isatty()):

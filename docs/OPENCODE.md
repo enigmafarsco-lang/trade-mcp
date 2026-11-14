@@ -378,3 +378,25 @@ registration filenames are not automatically searched.
 The desktop is checked before MT5 clipboard setup, avoiding repeated MT5 steps
 when desktop discovery fails. Trading stays disabled unless explicitly enabled by
 the separate demo-trading flag. Do not cat, paste or upload the registration file.
+
+### Run the desktop-discovered native MCP server without a shell wrapper
+
+Configure OpenCode's local `trade` MCP command as an argv array consisting of the
+absolute venv Python path, absolute `scripts/mt5_mcp_connect.py` path, and:
+
+```text
+--serve --opencode-desktop --opencode-model opencode/big-pickle
+```
+
+No password or terminal key belongs in the OpenCode config. This mode reads the
+private desktop registration, then the MT5 Copy block from the clipboard, and
+launches `trade-mcp serve` with backend=native and trading=false, overriding stale
+mock/trading settings. It never prompts on protocol stdin or writes diagnostic
+text to protocol stdout. Failures produce a generic stderr message and no fallback.
+It does not run doctor; call `mt5_status` after the handshake to verify native auth.
+
+After saving configuration, click MT5 MCP Copy immediately before reconnecting the
+`trade` MCP server in the desktop app. Do not copy shell commands afterward, since
+that replaces the clipboard. This is required on each MCP restart; no terminal key
+is persisted. The console remains a separate process using the same journal path.
+An already running MCP process must be restarted to load this launcher/configuration.

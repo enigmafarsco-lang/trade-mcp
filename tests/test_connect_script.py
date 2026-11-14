@@ -223,3 +223,37 @@ def test_desktop_attach_failure_does_not_launch_fallback(monkeypatch):
     monkeypatch.setattr(connect.subprocess, 'Popen', lambda *a, **kw: pytest.fail('Must not spawn fallback'))
     monkeypatch.setattr(connect.subprocess, 'call', lambda *a, **kw: pytest.fail('Must not launch console'))
     assert connect.main(['--console', '--opencode-url', 'http://127.0.0.1:49374']) == 4
+
+
+def test_stdio_desktop_native_launch_is_quiet_and_readonly(monkeypatch, capsys):
+    from trade_mcp import opencode
+    monkeypatch.setattr(opencode, 'discover_desktop', lambda: ('http://127.0.0.1:49374', 'private-desktop'))
+    monkeypatch.setattr(connect, 'read_clipboard', configuration)
+    monkeypatch.setenv('TRADE_MCP_BACKEND', 'mock')
+    monkeypatch.setenv('TRADE_MCP_ALLOW_TRADING', 'true')
+    def launch(command, **kw):
+        assert command[-1] == 'serve'
+        env = kw['env']
+        assert env['TRADE_MCP_BACKEND'] == 'native'
+        assert env['TRADE_MCP_ALLOW_TRADING'] == 'false'
+        assert env['TRADE_MCP_MCP_TOKEN'] == KEY
+        assert env['TRADE_MCP_OPENCODE_PASSWORD'] == 'private-desktop'
+        assert env['TRADE_MCP_OPENCODE_MODEL'] == 'opencode/big-pickle'
+        assert 'stdin' not in kw and 'stdout' not in kw
+        return 0
+    monkeypatch.setattr(connect.subprocess, 'call', launch)
+    monkeypatch.setattr(connect, 'wait_for_copy', lambda: pytest.fail('Protocol stdin cannot be prompted'))
+    assert connect.main(['--serve', '--opencode-desktop', '--opencode-model', 'opencode/big-pickle']) == 0
+    assert capsys.readouterr().out == ''
+
+
+def test_stdio_discovery_failure_is_only_stderr(monkeypatch, capsys):
+    from trade_mcp import opencode
+    def fail():
+        raise RuntimeError('private-secret')
+    monkeypatch.setattr(opencode, 'discover_desktop', fail)
+    monkeypatch.setattr(connect.subprocess, 'call', lambda *a, **kw: pytest.fail('Must fail closed'))
+    assert connect.main(['--serve', '--opencode-desktop']) == 4
+    output = capsys.readouterr()
+    assert output.out == ''
+    assert 'private-secret' not in output.err
