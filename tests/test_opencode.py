@@ -243,6 +243,31 @@ def test_provider_errors_are_classified_without_echoing_body(status, body, code)
     assert 'secret-xyz' not in json.dumps(result)
 
 
+def test_provider_retry_after_is_exposed_but_body_stays_hidden():
+    from trade_mcp.opencode import classify_provider_error
+    result = classify_provider_error(
+        502,
+        '{"_tag":"ProviderRequestError","providerID":"opencode","reason":"rate_limit",'
+        '"message":"Free usage limit reached secret-xyz","status":429,"retryAfterMs":49741000}',
+    ).safe_dict()
+    assert result['code'] == 'quota_exhausted'
+    assert result['retry_after_ms'] == 49741000
+    assert 'secret-xyz' not in json.dumps(result)
+    assert 'Free usage limit' not in json.dumps(result)
+
+
+@pytest.mark.parametrize('body', [
+    '{"retryAfterMs": -1}',
+    '{"retryAfterMs": true}',
+    '{"retryAfterMs": "soon"}',
+    '{"retryAfterMs": 99999999999999}',
+    'not-json',
+])
+def test_invalid_provider_retry_after_is_ignored(body):
+    from trade_mcp.opencode import classify_provider_error
+    assert 'retry_after_ms' not in classify_provider_error(429, body).safe_dict()
+
+
 def test_billing_failure_is_saved_on_model_client(monkeypatch):
     from trade_mcp.opencode import ModelServiceError
     client = OpenCodeClient('http://localhost:4096', api_version='v2')

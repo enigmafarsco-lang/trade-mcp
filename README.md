@@ -47,6 +47,7 @@ trade-mcp/
 │   ├── execution.py     # جریان دو مرحله‌ای: propose → تأیید انسان → اجرا
 │   ├── store.py         # ژورنال SQLite (پیشنهادها، معاملات، یادداشت‌ها، ایجنت‌ها)
 │   ├── agents.py        # ایجنت‌های مقیدشده (قید نماد/لات/ریسک/ساعت) + موتور LLM
+│   ├── model_usage.py   # دفتر مصرف provider وب + بودجهٔ آزمایش مشترک
 │   ├── console.py       # اپلیکیشن محلی با تب‌ها (http://127.0.0.1:8790)
 │   ├── web/index.html   # رابط کاربری همان کنسول (فارسی، RTL)
 │   ├── news.py          # خواننده‌ی RSS برای تب اخبار
@@ -55,7 +56,7 @@ trade-mcp/
 │   └── TradeMCPConnector.mq5   # اکسپرت متاتریدر
 ├── docs/                # نصب، OpenCode، معماری، پروتکل
 ├── examples/opencode.jsonc
-└── tests/               # ۵۸ تست، کامل آفلاین
+└── tests/               # ۲۷۹ تست، کامل آفلاین
 ```
 
 ## نصب سریع (۵ دقیقه)
@@ -184,11 +185,24 @@ TRADE_MCP_BACKEND=native .venv/bin/trade-mcp console           # http://127.0.0.
 export TRADE_MCP_LLM_BASE_URL="https://api.openai.com/v1"
 export TRADE_MCP_LLM_MODEL="gpt-4o-mini"
 export TRADE_MCP_LLM_API_KEY="sk-..."
+# اختیاری: برچسب metadata و قرارداد شمارش توکن
+export TRADE_MCP_LLM_BILLING_PROJECT="web-analysis"
+export TRADE_MCP_LLM_USAGE_CONVENTION="openai_inclusive"  # یا additive / unknown
 ```
+
+کنسول وب فقط از همین provider مستقیم استفاده می‌کند و به OpenCode یا کلید چت توسعه
+fallback نمی‌کند. اگر `LLM_BASE_URL`/`LLM_MODEL` تنظیم نشده باشند، مسیرهای مدل وب
+با خطای روشن بسته می‌مانند. پیش از هر درخواست واقعی باید بودجهٔ آزمایش را در پنل
+ایجنت صریحاً فعال کنید: پنجرهٔ ۳۰۰ ثانیه‌ای از نخستین درخواست مجاز و حداکثر پنج
+تلاش مشترک بین تست مدل، ایجنت، توضیح و چرخه. بودجه در SQLite می‌ماند؛ رفرش صفحه
+یا اجرای دوبارهٔ کنسول آن را بازنشانی نمی‌کند. مصرف در دفتر جداگانهٔ `model_usage`
+ثبت می‌شود و با آمار OpenCode جمع نمی‌شود؛ مقدار نامشخص صفر نیست. جزئیات:
+[docs/WEB-TERMINAL.md](docs/WEB-TERMINAL.md).
 
 هر ایجنت سه حالت اختیار دارد: `advisory` (فقط پیشنهاد)، `guarded` (خودکار در محدوده‌ی
 اطمینان)، `auto` (خودکار کامل). در هر سه حالت `TRADE_MCP_ALLOW_TRADING` قفل نهایی است.
-جزئیات: [docs/CONSOLE.md](docs/CONSOLE.md).
+پیشنهادهای مسیر وب همیشه تأیید انسانی جداگانه می‌خواهند. جزئیات:
+[docs/CONSOLE.md](docs/CONSOLE.md).
 
 ## ابزارهایی که مدل در اختیار دارد
 
@@ -229,7 +243,7 @@ export TRADE_MCP_LLM_API_KEY="sk-..."
 
 ```bash
 .venv/bin/pip install -e ".[dev]"
-.venv/bin/python -m pytest        # ۵۸ تست، بدون نیاز به MT5 و اینترنت
+.venv/bin/python -m pytest        # ۲۷۹ تست، بدون نیاز به MT5 و اینترنت
 ```
 
 ## مستندات

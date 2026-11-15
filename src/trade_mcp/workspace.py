@@ -24,8 +24,12 @@ def journal_identity(path):
 
 
 def workspace_identity(cfg):
-    settings = [journal_identity(cfg.journal_path), cfg.mcp_url, cfg.opencode_url,
-                cfg.opencode_model, cfg.opencode_variant, cfg.opencode_free_fallback, cfg.default_symbol, cfg.timeframes, cfg.training_budget,
+    # The model ID is intentionally mutable from the web console
+    # (/api/model-config) for this run only. Base URL, billing label and usage
+    # convention are environment-level settings and are part of the identity.
+    settings = [journal_identity(cfg.journal_path), cfg.mcp_url,
+                cfg.llm_base_url, cfg.llm_billing_project, cfg.llm_usage_convention,
+                cfg.default_symbol, cfg.timeframes, cfg.training_budget,
                 cfg.max_lot, cfg.max_risk_percent, cfg.max_open_positions, cfg.max_spread_points,
                 cfg.allowed_symbols, cfg.proposal_ttl, cfg.deviation_points]
     return hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
@@ -33,12 +37,19 @@ def workspace_identity(cfg):
 
 def console_environment(cfg):
     env = os.environ.copy()
+    # The web console must not inherit the development chat's OpenCode
+    # credentials or an implicit fallback path. Only the dedicated direct
+    # provider settings are handed to the child.
+    for key in ('OPENCODE_URL', 'OPENCODE_MODEL', 'OPENCODE_VARIANT',
+                'OPENCODE_FREE_FALLBACK', 'OPENCODE_PASSWORD'):
+        env.pop('TRADE_MCP_' + key, None)
+        env.pop(key, None)
     values = {
         'BACKEND': 'native', 'MCP_URL': cfg.mcp_url, 'MCP_TOKEN': cfg.mcp_token,
-        'OPENCODE_URL': cfg.opencode_url, 'OPENCODE_MODEL': cfg.opencode_model,
-        'OPENCODE_VARIANT': cfg.opencode_variant,
-        'OPENCODE_FREE_FALLBACK': 'true' if cfg.opencode_free_fallback else 'false',
-        'OPENCODE_PASSWORD': cfg.opencode_password, 'ALLOW_TRADING': 'false',
+        'LLM_BASE_URL': cfg.llm_base_url, 'LLM_MODEL': cfg.llm_model,
+        'LLM_API_KEY': cfg.llm_api_key, 'LLM_BILLING_PROJECT': cfg.llm_billing_project,
+        'LLM_USAGE_CONVENTION': cfg.llm_usage_convention,
+        'ALLOW_TRADING': 'false',
         'JOURNAL': cfg.journal_path, 'SYMBOL': cfg.default_symbol,
         'TIMEFRAMES': ','.join(cfg.timeframes), 'TRAINING_BUDGET': cfg.training_budget,
         'MAX_LOT': cfg.max_lot, 'MAX_RISK_PERCENT': cfg.max_risk_percent,
@@ -67,8 +78,9 @@ class WorkspaceManager:
                 data = json.load(response)
             if (data.get('backend') != 'native' or data.get('trading_enabled') is not False
                     or data.get('workspace_identity') != workspace_identity(cfg)
-                    or data.get('model_backend') != 'opencode' or not data.get('model_configured')
-                    or data.get('model') != cfg.opencode_model):
+                    or data.get('model_backend') != 'openai-compatible'
+                    or data.get('model_source') != 'web'
+                    or not data.get('model_configured')):
                 raise ValueError('workspace mismatch')
             return {'ok': True, 'state': 'ready', 'url': url, 'trading_enabled': False,
                     'model_test': data.get('model_test'), 'agents': data.get('agents', []),
@@ -83,14 +95,16 @@ class WorkspaceManager:
 
     def _start(self, app, *, open_browser=False):
         cfg = app.cfg
-        if cfg.backend != 'native' or not cfg.mcp_token or not cfg.opencode_url:
-            return {'ok': False, 'error': 'authenticated_native_and_opencode_required'}
+        if cfg.backend != 'native' or not cfg.mcp_token:
+            return {'ok': False, 'error': 'authenticated_native_required'}
         # Verify real terminal identity before reusing credentials for another process.
         status = app.mt5.status()
         if not status.get('ea_connected') or status.get('backend') != 'native':
             return {'ok': False, 'error': 'terminal_not_connected'}
         if app.mt5.account_info(fresh=True).get('trade_mode') != 'demo':
             return {'ok': False, 'error': 'demo_account_required'}
+        if not (cfg.llm_base_url and cfg.llm_model):
+            return {'ok': False, 'error': 'dedicated_web_model_required'}
         existing = self.status(cfg)
         if existing['state'] == 'stopped':
             try:

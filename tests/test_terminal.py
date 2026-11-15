@@ -55,6 +55,7 @@ def test_explanation_requires_config_and_redacts_identity(mock_app, monkeypatch)
         mock_app.cfg.llm_base_url = 'http://model.invalid/v1'
         mock_app.cfg.llm_model = 'test-model'
         mock_app.cfg.llm_api_key = 'private-api-key'
+        mock_app.store.activate_model_budget()
 
         def chat(client, messages):
             payload = json.loads(messages[-1]['content'])
@@ -192,32 +193,75 @@ def test_watch_selected_and_automatic_stop_preview(mock_app):
         assert mock_app.mt5.positions() == []
 
 
-def test_opencode_web_model_test_and_redacted_settings(mock_app, monkeypatch):
-    from trade_mcp.opencode import OpenCodeClient
-    mock_app.cfg = mock_app.cfg.with_overrides(opencode_url='http://127.0.0.1:4096',
-                                               opencode_password='never-show-this')
+def test_web_model_test_and_redacted_settings(mock_app, monkeypatch):
+    from trade_mcp.agents import LLMClient
+    mock_app.cfg = mock_app.cfg.with_overrides(
+        llm_base_url='https://provider.example/v1', llm_model='web-model',
+        llm_api_key='never-show-this', llm_billing_project='web-billing',
+        llm_usage_convention='openai_inclusive',
+        opencode_url='http://127.0.0.1:4096',
+        opencode_password='never-show-opencode')
+    mock_app.store.activate_model_budget()
     calls = []
     def chat(self, messages):
         calls.append(messages)
+        self.last_usage = {'input_tokens': 3, 'cached_input_tokens': 0,
+                           'output_tokens': 1, 'reasoning_tokens': None,
+                           'cost_amount': None, 'cost_currency': None,
+                           'usage_source': 'partial', 'cost_source': 'unknown',
+                           'accounting_convention': 'openai_inclusive'}
         return 'OK'
-    monkeypatch.setattr(OpenCodeClient, 'chat', chat)
+    monkeypatch.setattr(LLMClient, 'chat', chat)
     with console(mock_app) as base:
         with urlopen(base+'/api/settings') as r:
             raw = r.read().decode()
         assert 'never-show-this' not in raw
-        assert json.loads(raw)['llm']['backend'] == 'opencode'
+        assert 'never-show-opencode' not in raw
+        settings = json.loads(raw)
+        assert settings['llm']['backend'] == 'openai-compatible'
+        assert settings['llm']['mode'] == 'web'
+        assert settings['llm']['api_key_configured'] is True
+        assert settings['llm']['billing_project'] == 'web-billing'
+        assert settings['llm']['usage_convention'] == 'openai_inclusive'
         req = Request(base+'/api/model-test', data=b'{}', headers={'Content-Type': 'application/json'})
         with urlopen(req) as r:
             result = json.load(r)
-            assert result['ok'] and result['backend'] == 'opencode'
+        assert result['ok'] and result['backend'] == 'openai-compatible'
+        assert result['usage']['input_tokens'] == 3
         assert len(calls) == 1
         assert mock_app.mt5.positions() == []
 
 
+def test_model_test_requires_explicit_budget(mock_app, monkeypatch):
+    from trade_mcp.agents import LLMClient
+    mock_app.cfg = mock_app.cfg.with_overrides(
+        llm_base_url='https://provider.example/v1', llm_model='web-model')
+    calls = []
+    def chat(self, messages):
+        calls.append(messages)
+        return 'OK'
+    monkeypatch.setattr(LLMClient, 'chat', chat)
+    with console(mock_app) as base:
+        req = Request(base+'/api/model-test', data=b'{}',
+                      headers={'Content-Type': 'application/json'})
+        with pytest.raises(HTTPError) as error:
+            urlopen(req)
+        assert error.value.code == 429
+        payload = json.loads(error.value.read())
+        assert payload['error'] == 'test_budget_not_activated'
+        assert payload['budget']['state'] == 'not_activated'
+        assert calls == []
+    assert mock_app.mt5.positions() == []
+
+
 def test_workspace_shows_external_saved_report_expiry_and_billing(mock_app, monkeypatch):
-    from trade_mcp.opencode import ModelServiceError, OpenCodeClient
-    mock_app.cfg = mock_app.cfg.with_overrides(opencode_url='http://127.0.0.1:4096',
-                                               opencode_password='never-echo')
+    from trade_mcp.agents import LLMClient
+    from trade_mcp.model_usage import ProviderError
+    from trade_mcp.opencode import ModelServiceError
+    mock_app.cfg = mock_app.cfg.with_overrides(
+        llm_base_url='https://provider.example/v1', llm_model='web-model',
+        llm_api_key='never-echo', opencode_password='never-echo-opencode')
+    mock_app.store.activate_model_budget()
     a = mock_app.store.create_agent({'name': 'External agent', 'symbols': ['XAUUSD']})
     mock_app.store.mark_agent_run(a['id'], {'used_llm': False, 'decisions': [
         {'symbol': 'XAUUSD', 'action': 'wait', 'source': 'opencode_error',
@@ -228,8 +272,8 @@ def test_workspace_shows_external_saved_report_expiry_and_billing(mock_app, monk
     count = []
     def fail(self, messages):
         count.append(1)
-        raise ModelServiceError('billing_required', 502)
-    monkeypatch.setattr(OpenCodeClient, 'chat', fail)
+        raise ProviderError('billing_required', 502)
+    monkeypatch.setattr(LLMClient, 'chat', fail)
     with console(mock_app) as base:
         with urlopen(base+'/api/workspace-status') as r:
             d = json.load(r)
@@ -253,6 +297,43 @@ def test_workspace_shows_external_saved_report_expiry_and_billing(mock_app, monk
     assert mock_app.mt5.positions() == []
 
 
+def test_model_test_surfaces_provider_retry_window(mock_app, monkeypatch):
+    from trade_mcp.agents import LLMClient
+    from trade_mcp.model_usage import ProviderError
+    mock_app.cfg = mock_app.cfg.with_overrides(
+        llm_base_url='https://provider.example/v1', llm_model='web-model')
+    mock_app.store.activate_model_budget()
+    def fail(self, messages):
+        raise ProviderError('quota_exhausted', 502, retry_after_ms=49741000)
+    monkeypatch.setattr(LLMClient, 'chat', fail)
+    with console(mock_app) as base:
+        req = Request(base+'/api/model-test', data=b'{}', headers={'Content-Type':'application/json'})
+        with urlopen(req) as r:
+            result = json.load(r)
+        assert result['ok'] is False
+        assert result['code'] == 'quota_exhausted'
+        assert result['retry_after_ms'] == 49741000
+        with urlopen(base+'/api/workspace-status') as r:
+            status = json.load(r)
+        assert status['model_test']['state'] == 'failed'
+        assert status['model_test']['retry_after_ms'] == 49741000
+    assert mock_app.mt5.positions() == []
+
+
+def test_expired_proposal_confirmation_is_rejected_server_side(mock_app):
+    p = mock_app.store.create_proposal({'symbol': 'XAUUSD', 'volume': .01})
+    mock_app.store._conn.execute('UPDATE proposals SET expires_at=1 WHERE id=?', (p['id'],))
+    mock_app.store._conn.commit()
+    with console(mock_app) as base:
+        req = Request(base+'/api/proposals/'+p['id']+'/confirm', data=b'{}',
+                      headers={'Content-Type':'application/json'})
+        with urlopen(req) as r:
+            result = json.load(r)
+        assert result['ok'] is False
+        assert result['error'] == 'expired'
+    assert mock_app.mt5.positions() == []
+
+
 def test_workspace_advisory_action_does_not_use_saved_auto_mode(mock_app, monkeypatch):
     from trade_mcp.agents import AgentEngine
     agent = mock_app.store.create_agent({'name':'Auto', 'symbols':['XAUUSD'], 'mode':'auto'})
@@ -271,14 +352,16 @@ def test_workspace_advisory_action_does_not_use_saved_auto_mode(mock_app, monkey
 
 
 def test_complete_model_to_web_preview_to_separate_confirmation_mock_only(mock_app, monkeypatch):
-    from trade_mcp.opencode import OpenCodeClient
+    from trade_mcp.agents import LLMClient
     mock_app.cfg.allow_trading = True
-    mock_app.cfg.opencode_url = 'http://127.0.0.1:4096'
+    mock_app.cfg.llm_base_url = 'https://provider.example/v1'
+    mock_app.cfg.llm_model = 'web-model'
+    mock_app.store.activate_model_budget()
     price = mock_app.mt5.tick('XAUUSD')['ask']
     def chat(self, messages):
         return json.dumps({'action':'buy', 'confidence':80, 'stop_loss':price-5,
                            'take_profit':price+10, 'risk_percent':.5, 'reason':'Mock-only test'})
-    monkeypatch.setattr(OpenCodeClient, 'chat', chat)
+    monkeypatch.setattr(LLMClient, 'chat', chat)
     agent = mock_app.store.create_agent({'name':'Cycle test','symbols':['XAUUSD'],
                                         'mode':'auto','max_lot':.1,'max_risk':.5})
     with console(mock_app) as base:
@@ -290,7 +373,7 @@ def test_complete_model_to_web_preview_to_separate_confirmation_mock_only(mock_a
         run = post('/api/agents/'+agent['id'], {'action':'run_advisory'})
         assert run['report']['used_llm']
         decision = run['report']['decisions'][0]
-        assert decision['source'] == 'opencode'
+        assert decision['source'] == 'web'
         assert decision['status'] == 'pending'
         assert decision['preview']['volume'] > 0
         assert decision['preview']['risk_amount'] > 0
@@ -311,27 +394,31 @@ def test_complete_model_to_web_preview_to_separate_confirmation_mock_only(mock_a
         assert len(mock_app.mt5.positions()) == 1
 
 
-def test_model_variant_can_be_explicitly_configured_without_generation(mock_app, monkeypatch):
-    from trade_mcp.opencode import OpenCodeClient
-    mock_app.cfg.opencode_url = 'http://localhost:49374'
+def test_model_can_be_explicitly_configured_without_generation(mock_app, monkeypatch):
+    from trade_mcp.agents import LLMClient
+    mock_app.cfg = mock_app.cfg.with_overrides(
+        llm_base_url='https://provider.example/v1', llm_model='web-model')
+    mock_app.store.activate_model_budget()
     calls = []
     def chat(self, messages):
-        calls.append((self.model, self.variant))
+        calls.append(self.model)
         return 'OK'
-    monkeypatch.setattr(OpenCodeClient, 'chat', chat)
+    monkeypatch.setattr(LLMClient, 'chat', chat)
     with console(mock_app) as base:
         def post(path, data):
             with urlopen(Request(base+path, data=json.dumps(data).encode(), headers={'Content-Type':'application/json'})) as r:
                 return json.load(r)
-        result = post('/api/model-config', {'model':'opencode/deepseek-v4.1-flash-free','variant':'max'})
+        result = post('/api/model-config', {'model':'web-model-2'})
         assert result['ok'] and not result['persisted']
+        assert result['backend'] == 'openai-compatible'
         assert calls == []
         assert not mock_app.cfg.allow_trading
         post('/api/model-test', {})
-        assert calls == [('opencode/deepseek-v4.1-flash-free','max')]
+        assert calls == ['web-model-2']
         with urlopen(base+'/api/workspace-status') as r:
             status = json.load(r)
-        assert status['model_variant'] == 'max'
+        assert status['model'] == 'web-model-2'
+        assert status['model_backend'] == 'openai-compatible'
         assert status['model_test']['state'] == 'ready'
         assert not status['page_cycle']['active']
 

@@ -5,7 +5,7 @@ import secrets
 import threading
 import time
 
-from .agents import AgentEngine
+from .agents import AgentEngine, LLMClient, model_signature
 
 
 class PageCycle:
@@ -47,9 +47,14 @@ class PageCycle:
                     return {'ok': False, 'error': 'stop_background_scheduler_first'}
                 cfg = self.state.cfg
                 test = self.state.model_test
-                if (not cfg.opencode_url or test.get('state') != 'ready'
-                        or tuple(test.get('model_key', ())) != (cfg.opencode_model, cfg.opencode_variant, cfg.opencode_free_fallback)):
+                signature = model_signature(cfg)
+                if (not all(signature) or test.get('state') != 'ready'
+                        or tuple(test.get('model_key', ())) != signature):
                     return {'ok': False, 'error': 'successful_model_test_required'}
+                budget = self.state.store.model_budget_status()
+                if not budget.get('allowed'):
+                    return {'ok': False, 'error': 'active_test_budget_required',
+                            'budget': budget}
                 if payload.get('consent_model_requests') is not True:
                     return {'ok': False, 'error': 'model_usage_consent_required'}
                 agent = self.state.store.get_agent(str(payload.get('agent_id') or ''))
@@ -100,8 +105,14 @@ class PageCycle:
                     with self.lock:
                         self.reason = 'پیشنهاد معتبر موجود است؛ منتظر تأیید شما یا انقضا هستیم.'
                     return
+                factory = getattr(self.state, 'model_client', None)
+                llm = (factory('page_cycle') if callable(factory)
+                       else LLMClient.from_config(self.state.cfg, mode='web',
+                                                  store=self.state.store,
+                                                  request_kind='page_cycle'))
                 report = AgentEngine(cfg=self.state.cfg, mt5=self.state.app.mt5,
-                                     store=self.state.store).run({**agent, 'mode': 'advisory', 'require_open_market': True})
+                                     store=self.state.store, llm=llm).run(
+                    {**agent, 'mode': 'advisory', 'require_open_market': True})
             errors = [d.get('model_error') for d in report.get('decisions', []) if d.get('model_error')]
             with self.lock:
                 if errors or report.get('errors'):
@@ -109,7 +120,7 @@ class PageCycle:
                     self.state.model_test = {**(errors[0] if errors else {}), 'state': 'failed',
                                              'message': errors[0]['message'] if errors else 'خطای تحلیل؛ بررسی و آزمایش مجدد لازم است.',
                                              'tested_at': time.time(),
-                                             'model_key': (self.state.cfg.opencode_model, self.state.cfg.opencode_variant, self.state.cfg.opencode_free_fallback)}
+                                             'model_key': model_signature(self.state.cfg)}
                     self.reason = errors[0]['message'] if errors else 'چرخه به علت خطای تحلیل متوقف شد؛ قبل از شروع مجدد بررسی کنید.'
                 elif self.owner == owner:
                     self.reason = 'گزارش ذخیره شد؛ تا نوبت بعدی یا تأیید شما منتظر می‌مانیم.'

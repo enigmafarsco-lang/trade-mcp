@@ -40,13 +40,37 @@ MODEL_ERROR_MESSAGES['model_unavailable'] = 'مدل انتخاب‌شده سهم
 
 
 class ModelServiceError(RuntimeError):
-    def __init__(self, code, http_status=None):
+    def __init__(self, code, http_status=None, retry_after_ms=None):
         self.code = code
         self.http_status = http_status
+        # Provider hint only; validated and bounded here so a malformed body
+        # cannot turn into an unbounded UI countdown.
+        if isinstance(retry_after_ms, int) and not isinstance(retry_after_ms, bool) \
+                and 0 <= retry_after_ms <= 30 * 24 * 3600 * 1000:
+            self.retry_after_ms = retry_after_ms
+        else:
+            self.retry_after_ms = None
         super().__init__(MODEL_ERROR_MESSAGES.get(code, MODEL_ERROR_MESSAGES['connection_failed']))
 
     def safe_dict(self):
-        return {'code': self.code, 'message': str(self), 'http_status': self.http_status}
+        result = {'code': self.code, 'message': str(self), 'http_status': self.http_status}
+        if self.retry_after_ms is not None:
+            result['retry_after_ms'] = self.retry_after_ms
+        return result
+
+
+def _provider_retry_after(body):
+    """Read only the documented retry hint from a bounded error body."""
+    try:
+        parsed = json.loads(body)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    value = parsed.get('retryAfterMs')
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 0 <= value <= 30 * 24 * 3600 * 1000 else None
 
 
 def classify_provider_error(status, body):
@@ -68,7 +92,7 @@ def classify_provider_error(status, body):
         code = 'endpoint_unavailable'
     else:
         code = 'connection_failed'
-    return ModelServiceError(code, status)
+    return ModelServiceError(code, status, retry_after_ms=_provider_retry_after(body))
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):

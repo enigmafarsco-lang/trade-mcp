@@ -244,27 +244,49 @@ asyncio.run(main())
 PY
 ```
 
-## Integrated web agents using the OpenCode model server
+## Development chat vs. the dedicated web model
 
-There are two distinct connections:
+There are two distinct model paths:
 
 - OpenCode -> trade-mcp MCP tools: coding/operating the application, including
-  `list_web_agents`, `create_web_agent`, and `run_web_agent`.
-- trade-mcp web agents -> OpenCode HTTP server: bounded model decisions, with all
-  tools denied in a fresh v1 session or through stateless v2 text generation. The local execution engine alone validates and
-  creates proposals. Every OpenCode proposal requires explicit human confirmation,
-  even if an existing agent was previously set to guarded/auto mode.
+  `list_web_agents`, `create_web_agent`, and `run_web_agent`. This remains the
+  development-chat integration and keeps its own OpenCode credentials, billing
+  and `session_v2` totals.
+- trade-mcp web console -> dedicated OpenAI-compatible provider: one direct
+  endpoint configured through `TRADE_MCP_LLM_BASE_URL`, `TRADE_MCP_LLM_MODEL`,
+  `TRADE_MCP_LLM_API_KEY`, `TRADE_MCP_LLM_BILLING_PROJECT`, and
+  `TRADE_MCP_LLM_USAGE_CONVENTION`. The web path never selects OpenCode, never
+  inherits its credentials, and never falls back to it. Missing web-provider
+  configuration fails closed. All model tools are denied; the local execution
+  engine alone validates and creates proposals. Every web proposal requires
+  explicit human confirmation, even if an existing agent was previously set to
+  guarded/auto mode.
 
-### One launcher for MT5, OpenCode server and the web console
+The web routes are also gated by a persisted, explicitly activated test budget:
+300 seconds measured from the first authorized attempt and at most five actual
+provider attempts shared by model tests, agent runs, explanations and page cycles.
+Refreshing the page or restarting the console does not create a new window.
+Usage is recorded in a separate `model_usage` ledger; it is never merged with
+OpenCode session totals. Unknown token/cost values remain NULL.
+
+### One launcher for MT5, the OpenCode development server and the web console
 
 Prerequisites: working OpenCode CLI with provider authentication, the project venv,
-and a running native MT5 MCP server. No second model-provider key is required.
+and a running native MT5 MCP server. OpenCode authentication is only for the
+development chat/MCP surface. The web console separately needs its own direct
+provider configuration (`TRADE_MCP_LLM_BASE_URL`, `_MODEL`, `_API_KEY`); do not
+reuse or copy the OpenCode provider key.
 
 ```bash
+export TRADE_MCP_LLM_BASE_URL="https://provider.example/v1"
+export TRADE_MCP_LLM_MODEL="web-model-id"
+# enter the web-provider key hidden; never paste it into chat
+read -rsp 'web model provider key: ' MK; echo
+export TRADE_MCP_LLM_API_KEY="$MK"; unset MK
 .venv/bin/python scripts/mt5_mcp_connect.py --console --enable-demo-trading --opencode --opencode-model opencode/big-pickle
 ```
 
-The model ID above is an example matching the reported OpenCode setup; it must be
+The OpenCode model ID above is an example matching the reported setup; it must be
 available to your installed OpenCode account. Omit `--opencode-model` to use the
 server's default model, which is not necessarily the model selected in another
 interactive OpenCode session.
@@ -277,13 +299,14 @@ not passed to the OpenCode child process. An owned OpenCode process is stopped w
 the console exits; a pre-existing server is left alone. Provider credentials stay
 in OpenCode. Startup health only tests the HTTP server, not model access.
 
-Open `http://127.0.0.1:8790`, select Settings, and click the model-response test.
-This sends one generic request and may incur provider usage charges. Then create
-or run an agent in the Agents tab. Reports show the backend, actual model usage,
-decisions and errors. Pending proposals are reviewed/confirmed in the existing
-proposal UI. No trade is sent by creating/running an OpenCode-backed agent.
-Insufficient sizing budget can still block a proposal; integration does not raise
-risk limits or promise a profitable trade.
+Open `http://127.0.0.1:8790`, open the agent workspace, explicitly activate the
+test budget, and click the model-response test. This sends one generic request to
+the dedicated web provider, consumes one of five attempts, and may incur provider
+usage charges. Then create or run an agent in the Agents tab. Reports show the web
+backend, actual model usage, decisions and errors. Pending proposals are reviewed
+and confirmed in the existing proposal UI. No trade is sent by creating/running a
+web agent. Insufficient sizing budget can still block a proposal; integration does
+not raise risk limits or promise a profitable trade.
 
 ### API compatibility and security boundary
 
@@ -320,14 +343,18 @@ For an already managed server, set `TRADE_MCP_OPENCODE_URL` in the console proce
 instead of using the launcher flag. Optional `TRADE_MCP_OPENCODE_MODEL` uses
 `provider/model` format. Optional `OPENCODE_PASSWORD` (legacy alias `OPENCODE_SERVER_PASSWORD`) uses the default
 OpenCode username `opencode`. The URL must be loopback HTTP without embedded
-credentials. OpenCode takes precedence over the direct OpenAI-compatible adapter.
+credentials. In auto mode (development MCP tools), OpenCode takes precedence over
+the direct OpenAI-compatible adapter. The web console never uses auto mode for
+model requests: it constructs `LLMClient.from_config(cfg, mode="web")`, which
+ignores OpenCode entirely.
 
 The external MCP tools share agents/reports with the console only when both use
 the same journal path. `create_web_agent` creates a disabled advisory agent;
-`run_web_agent` requires OpenCode configuration in that MCP process and runs once
-without enabling the scheduler or confirming anything. The web console's process
-environment is not automatically inherited by an independently launched MCP
-process. Use the console for running agents if that MCP process is not configured.
+`run_web_agent` uses that MCP process's own model configuration (OpenCode in auto
+mode) and runs once without enabling the scheduler or confirming anything. The web
+console's process environment is not automatically inherited by an independently
+launched MCP process. Use the console for running agents if that MCP process is
+not configured.
 
 ### Attach to the running desktop app, without starting a CLI server
 

@@ -128,14 +128,19 @@ def test_auto_mode_executes_inside_limits(mock_app, monkeypatch):
     engine = AgentEngine(cfg=mock_app.cfg, mt5=mock_app.mt5, store=mock_app.store, llm=LLMClient())
 
     def forced(self, agent_spec, analysis):
+        # The mock price is a function of wall-clock time, so structural scenario
+        # levels can drift onto the wrong side of the live entry. Size the test
+        # levels from the analysed quote to stay deterministic.
+        quote = analysis.get("quote") or {}
         scenario = analysis.get("scenario") or {}
         scenario["action"] = "buy"
         scenario["confidence"] = 80
+        price = float(quote.get("bid") or scenario.get("entry_reference") or 0.0)
         return {
             "action": "buy",
             "confidence": 80,
-            "stop_loss": scenario.get("stop_loss"),
-            "take_profit": scenario.get("take_profit_1"),
+            "stop_loss": round(price - 1.0, 2),
+            "take_profit": round(price + 2.0, 2),
             "risk_percent": 0.5,
             "reason": "تست",
             "source": "rules",

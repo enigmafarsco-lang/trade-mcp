@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from .model_usage import normalise_convention
+
 ENV_PREFIX = "TRADE_MCP_"
 
 DEFAULT_SYMBOL = "XAUUSD"
@@ -100,8 +102,10 @@ class Config:
     opencode_free_fallback: bool = False
     opencode_password: str = field(default="", repr=False)
     llm_base_url: str = ""
-    llm_api_key: str = ""
+    llm_api_key: str = field(default="", repr=False)
     llm_model: str = ""
+    llm_billing_project: str = ""
+    llm_usage_convention: str = "unknown"
     news_feeds: tuple[str, ...] = ()
 
     # instrument defaults
@@ -158,6 +162,10 @@ class Config:
             llm_base_url=(_env("LLM_BASE_URL") or "").strip(),
             llm_api_key=(_env("LLM_API_KEY") or "").strip(),
             llm_model=(_env("LLM_MODEL") or "").strip(),
+            llm_billing_project=(_env("LLM_BILLING_PROJECT") or "").strip(),
+            llm_usage_convention=normalise_convention(
+                _env("LLM_USAGE_CONVENTION") or "unknown"
+            ),
             news_feeds=_env_list("NEWS_FEEDS", ()),
             default_symbol=(_env("SYMBOL", DEFAULT_SYMBOL) or DEFAULT_SYMBOL).strip(),
             timeframes=tuple(

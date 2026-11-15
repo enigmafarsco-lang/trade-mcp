@@ -70,21 +70,74 @@ Ctrl+Shift+R بزنید. کلید را در چت، کد یا بلوک JSON ای�
 این نسخه هنوز ارزش تیک را با تابع محاسبهٔ سود مستقل MT5 تأیید نمی‌کند؛
 اعداد سود/زیان تخمینی‌اند. ریسک گپ، لغزش و هزینهٔ واقعی وجود دارد.
 
-## توضیح هوش مصنوعی (اختیاری)
+## provider اختصاصی وب
 
-تحلیل بدون مدل زبانی نیز کار می‌کند. دکمهٔ توضیح مدل فقط در صورت داشتن
-سرویس سازگار با OpenAI فعال از نظر عملیاتی است. قبل از اجرای کنسول،
-`TRADE_MCP_LLM_BASE_URL` و `TRADE_MCP_LLM_MODEL` را مطابق سرویس خود
-تنظیم کنید؛ اگر سرویس نیاز دارد، کلید را با read مخفیانه وارد و در
-`TRADE_MCP_LLM_API_KEY` export کنید. سرویس محلی هم ممکن است؛ این پروژه
-مدل یا Ollama را به‌صورت خودکار نصب نمی‌کند.
+تحلیل بدون مدل زبانی نیز کار می‌کند. مسیر وب فقط یک provider مستقیم
+سازگار با OpenAI را می‌پذیرد و از مسیر چت توسعهٔ OpenCode جدا است. قبل از
+اجرای کنسول این‌ها را در محیط همان کنسول تنظیم کنید:
 
-با کلیک روی دکمه و تأیید، نماد، قیمت، سناریوی عددی، سوگیری و هشدارها به
-سرویس تنظیم‌شده فرستاده می‌شوند. نام، شمارهٔ حساب و کلید ارسال نمی‌شوند.
-این قابلیت تفسیر دادهٔ عددی چارت است، نه دریافت تصویر چارت. توضیح مدل
-نباید مبنای عددسازی یا وعدهٔ سود باشد و هیچ معامله‌ای اجرا نمی‌کند.
-اگر سرویس تنظیم نشده باشد، پیام روشن نشان داده می‌شود؛ شکست سرویس
-جای توضیح واقعی با متن ساختگی پر نمی‌شود.
+```bash
+export TRADE_MCP_LLM_BASE_URL="https://provider.example/v1"
+export TRADE_MCP_LLM_MODEL="model-id"
+# کلید را مخفیانه وارد کنید؛ آن را در چت یا فایل پروژه نگذارید:
+read -rsp 'model provider key: ' MK; echo
+export TRADE_MCP_LLM_API_KEY="$MK"; unset MK
+export TRADE_MCP_LLM_BILLING_PROJECT="web-analysis"   # فقط metadata
+export TRADE_MCP_LLM_USAGE_CONVENTION="openai_inclusive"  # یا additive / unknown
+```
+
+`TRADE_MCP_OPENCODE_URL` و کلیدهای چت توسعه برای ابزارهای MCP و همان چت
+باقی می‌مانند؛ مسیر وب هرگز به آن‌ها fallback نمی‌کند. اگر
+`LLM_BASE_URL` یا `LLM_MODEL` خالی باشد، دکمه‌های مدل با خطای روشن
+غیرفعال/رد می‌شوند. URL باید HTTPS باشد؛ HTTP فقط برای loopback مجاز است.
+کاربر/رمز داخل URL، query و fragment پذیرفته نمی‌شوند.
+
+برچسب `TRADE_MCP_LLM_BILLING_PROJECT` فقط برای تفکیک گزارشهاست و ثابت
+نمی‌کند صورت‌حساب provider جدا است. مسئولیت محدودکردن کلید/پروژه در پنل
+provider همچنان با شماست.
+
+### بودجهٔ آزمایش مشترک (۳۰۰ ثانیه / حداکثر ۵ تلاش)
+
+پیش از هر درخواست واقعی، بودجه را در پنل ایجنت صریحاً فعال کنید. این بودجه
+بین تست مدل، اجرای ایجنت، توضیح مدل و چرخهٔ صفحه مشترک است:
+
+- پنجرهٔ ۳۰۰ ثانیه‌ای با **نخستین درخواست مجاز** آغاز می‌شود، نه با کلیک
+  فعال‌سازی؛ پیش از آن هیچ تلاشی مصرف نمی‌شود.
+- حداکثر پنج تلاش واقعی در همان پنجره مجاز است. تلاش ششم با HTTP 429 و
+  دلیل `test_budget_exhausted` رد می‌شود.
+- رفرش صفحه بودجه را بازنشانی نمی‌کند. کنسول دوباره هم پنجرهٔ قبلی را از
+  SQLite می‌خواند و خودکار پنجرهٔ تازه نمی‌سازد.
+- فعال‌سازی دوباره در حین پنجرهٔ فعال، پنجره را بازنشانی نمی‌کند.
+  پس از پایان/مصرف/لغو، فقط فعال‌سازی صریح پنجرهٔ جدید می‌سازد.
+- درخواستی که پیش از پایان مهلت مجاز شده ممکن است پس از مهلت تمام شود؛
+  نتیجه‌اش ثبت می‌شود. تلاش خودکار یا retry وجود ندارد.
+- `Retry-After`/`retry_after_ms` معتبر provider به‌صورت cooldown ذخیره
+  می‌شود و تا پایان آن درخواست جدید رد می‌شود. cooldown خودش تلاش مصرف
+  نمی‌کند.
+
+### دفتر مصرف provider وب
+
+فقط تلاش‌های واقعی provider اختصاصی وب در جدول `model_usage` ژورنال ثبت
+می‌شوند: تست مدل، اجرای ایجنت، توضیح مدل و چرخه. این دفتر با آمار
+`session_v2` چت OpenCode جمع نمی‌شود.
+
+- متن prompt، پاسخ مدل، کلید و مشخصات حساب ذخیره نمی‌شوند.
+- هر مقدار نامعلوم `NULL` می‌ماند و در خلاصه به‌عنوان «نامشخص» شمرده
+  می‌شود، نه صفر.
+- `cached_input_tokens` جدا از input و `reasoning_tokens` جدا از output
+  ذخیره می‌شوند؛ جمع دوباره ساخته نمی‌شود. قرارداد هر ردیف
+  (`openai_inclusive`، `additive` یا `unknown`) نیز ثبت می‌شود.
+- هزینه فقط وقتی ثبت می‌شود که provider خودش گزارش کند
+  (`cost_source=provider`)؛ برآورد محلی جای آن را نمی‌گیرد.
+- هزینه‌های ارزهای مختلف جدا نمایش داده می‌شوند و هیچ‌گاه با هم جمع
+  نمی‌شوند. ردیف بدون واحد پول در سبد «واحد نامشخص» می‌ماند.
+
+با کلیک روی دکمهٔ توضیح و تأیید، نماد، قیمت، سناریوی عددی، سوگیری و
+هشدارها به سرویس تنظیم‌شده فرستاده می‌شوند. نام، شمارهٔ حساب و کلید ارسال
+نمی‌شوند. این قابلیت تفسیر دادهٔ عددی چارت است، نه دریافت تصویر چارت.
+توضیح مدل نباید مبنای عددسازی یا وعدهٔ سود باشد و هیچ معامله‌ای اجرا
+نمی‌کند. اگر سرویس تنظیم نشده باشد یا بودجه فعال نباشد، پیام روشن نشان
+داده می‌شود؛ شکست سرویس جای توضیح واقعی با متن ساختگی پر نمی‌شود.
 
 ## محدودیت‌ها و مرز نسخه
 
@@ -283,8 +336,12 @@ from another MCP process sharing the journal), and recent proposals. Polling thi
 endpoint never calls a model, runs an agent, places an order or modifies proposal
 status. The browser polls every five seconds and refreshes across desktop/mobile.
 
-- The explicit model-test button sends one generic request; charges may apply.
-- OpenCode failures are classified into fixed safe codes/messages: billing required,
+- The explicit model-test button sends one generic request; charges may apply and
+  one of the five shared test-budget attempts is consumed.
+- The workspace shows the dedicated web provider separately from the development
+  OpenCode chat. Web requests never use OpenCode credentials or totals, and no
+  silent fallback is attempted when the web provider is missing or fails.
+- Provider failures are classified into fixed safe codes/messages: billing required,
   quota exhausted, rate limited, authentication failed, endpoint unavailable, or
   connection failed. Provider response bodies and credentials are never returned.
 - A model failure remains `wait`, `used_llm=false`, with no silent rules fallback.
@@ -303,12 +360,13 @@ status. The browser polls every five seconds and refreshes across desktop/mobile
   executor TTL, price drift, validation and trading-permission gates remain in force.
 - Structured saved reports are no longer sliced into invalid JSON at 8000 characters.
 
-A successful desktop connection is not evidence of model entitlement. HTTP 402,
-provider credit failures and free-model quota failures cannot be fixed or bypassed
-by this panel. No alternate model is probed or selected automatically, and no
-billing action, quota workaround, allowlist change or risk increase is performed.
-The supported OpenCode v2 integration remains the documented stateless generation
-route. Its entitlement may differ from an interactive desktop chat session.
+A successful desktop connection is not evidence of web-provider entitlement. HTTP
+402, provider credit failures and quota failures cannot be fixed or bypassed by
+this panel. No alternate model is probed or selected automatically, and no billing
+action, quota workaround, allowlist change or risk increase is performed. The
+development OpenCode chat remains a separate integration; its plan or entitlement
+does not make the web provider available. The web path uses one direct
+OpenAI-compatible endpoint and fails closed when it is missing.
 
 Optional browser regression checks (mock console only): `scripts/browser_smoke.cjs`
 and `scripts/workspace_smoke.cjs`. The latter checks saved-report visibility,
@@ -317,23 +375,33 @@ expired proposal controls, text rendering and mobile layout.
 
 ## Page-owned advisory analysis and explicit model selection
 
-The chart is above the analysis workspace. Model ID and reasoning variant are
-separate settings: for example `opencode/deepseek-v4.1-flash-free` and `max`.
-The desktop chat selection, OpenCode server default, and web selection are
-independent. Saving the web selection changes this console process only and
-invalidates its previous model test. Test the exact pair before starting a cycle.
-A catalogue entry or an answering desktop chat does not prove API entitlement.
-Quota/provider failures stop the cycle; they are not broker margin errors.
+The chart is above the analysis workspace. The web model ID is separate from the
+development OpenCode chat selection. The provider base URL, API key, billing label
+and usage convention come only from the console environment; only the model ID can
+be changed for this console run from the workspace panel (`/api/model-config`).
+Saving a model changes this process only, persists nothing, sends no request and
+invalidates the previous model test. Test the exact model before starting a cycle.
+A catalogue entry, a desktop chat answer or an OpenCode session does not prove
+web-provider entitlement.
+
+The page cycle also requires an active test budget (300 seconds from the first
+authorized attempt, at most five actual attempts shared with every other web model
+route). A successful model test, the active budget and explicit consent are all
+required before starting. The window is persisted in SQLite; refreshing the page
+or restarting the console does not create another one. Provider cooldowns are
+respected and no automatic retry is attempted.
 
 Choose a saved agent, an interval (30–3600 seconds), explicitly accept model
 request usage, then start the page cycle. It always runs in advisory mode, even
 if the saved agent was automatic. It does not confirm proposals. A valid pending
 signal for a selected symbol postpones another analysis. Hidden/closed pages
 request a stop; a missing heartbeat expires the ownership lease after 20 seconds.
-An already-running request may finish and save a proposal, but cannot trade.
-Returning to the page does not restart the cycle automatically. Background
+An already-running provider request may finish and save a proposal, but cannot
+trade. Returning to the page does not restart the cycle automatically. Background
 scheduler and page cycle are mutually exclusive. The market-open check is a
 schedule estimate, not a broker session API; it can exclude non-Forex sessions.
+Each provider attempt made by the cycle is recorded in the separate web usage
+ledger; unknown token/cost values stay NULL.
 
 Each completed agent run is stored separately in SQLite and shown as historical
 analysis. Proposal history retains expired proposals without cancelling them.
@@ -342,15 +410,10 @@ the proposal lists. Orders require a separate explicit confirmation while valid.
 Confirmation rechecks current limits, margin and positions, then atomically claims
 the proposal to prevent duplicate execution. Estimates are not guaranteed fills.
 
-For a persistent launch selection, append these options to the existing launcher
-command (not to an already-running process):
-
-```text
---opencode-model opencode/deepseek-v4.1-flash-free --opencode-variant max
-```
-
-This example is not a claim that the free model or `max` currently has available
-quota. Do not buy credits or change billing merely to diagnose a model mismatch.
+The web model base URL and key are operator environment settings, not launcher
+model-selection flags. Development-chat flags such as `--opencode-model` configure
+OpenCode for the chat and MCP tools; they do not configure or authorize the web
+model. Do not buy credits or change billing merely to diagnose a model mismatch.
 
 ## Dedicated OpenCode profile and managed web console
 
@@ -368,32 +431,42 @@ New MCP tools are `start_web_workspace`, `web_workspace_status`, and
 child environment, forces trading disabled, verifies console identity before
 reuse, and stops only a process it owns. It never adopts an unrelated console
 or extracts credentials from old processes. The MCP process must first be
-reloaded onto this code and already have valid native-demo/OpenCode credentials;
-the manager cannot bootstrap missing credentials. Do not restart MT5 or expose
-keys just to refresh the console. Configuration mismatches require operator
-review rather than killing an unknown process.
+reloaded onto this code, already have a valid native-demo connection, and have
+`TRADE_MCP_LLM_BASE_URL`/`_MODEL` for the dedicated web provider. OpenCode
+credentials are removed from the child environment; the manager cannot
+bootstrap missing model credentials and will not substitute the development
+chat provider. Do not restart MT5 or expose keys just to refresh the console.
+Configuration mismatches require operator review rather than killing an unknown
+process.
 
 All automated model/broker checks in the development sandbox use mocks or HTTP
 fixtures. A successful local test suite is not proof of live provider access,
 broker calculations, or successful order execution.
 
-## Optional free-model failover
+## Optional free-model failover (development OpenCode only)
 
-The model settings now include an opt-in **free fallback** checkbox. It is off
-by default, changes only this console process, and invalidates the model test.
-`TRADE_MCP_OPENCODE_FREE_FALLBACK=true` persists the policy through environment
-configuration. The managed child inherits it. The primary must be one of the 11
-explicitly free IDs in the operator-supplied catalogue; `big-pickle`, unknown IDs,
-and paid models are rejected when this option is enabled. This is a static
-allowlist, not live price/entitlement verification; recheck the provider catalogue
-if pricing or availability changes.
+The dedicated web provider has **no** automatic fallback: one configured model,
+one endpoint, and a failure stops the request. The console's web routes never use
+the OpenCode fallback policy. The legacy OpenCode adapter keeps its opt-in free
+fallback for development-chat use, but that setting is not inherited by the web
+console child (the manager removes the OpenCode environment variables).
 
-At most three generation attempts occur in one call. Alternate order is GLM
-Flash Free (`low`), MiMo Flash Free (default), then DeepSeek Flash Free (`low`),
-excluding the primary and taking only two alternates. The selected primary and
-variant are preserved. Reports record every attempted model and the model and
-variant that actually responded. A response is not necessarily a valid trading
-decision: invalid JSON or invalid actions still fail closed without rotation.
+For direct OpenCode adapter use, the free fallback is an opt-in checkbox in the
+OpenCode path. It is off by default and invalidates the model test.
+`TRADE_MCP_OPENCODE_FREE_FALLBACK=true` persists that policy through environment
+configuration. The primary must be one of the 11 explicitly free IDs in the
+operator-supplied catalogue; `big-pickle`, unknown IDs, and paid models are
+rejected when this option is enabled. This is a static allowlist, not live
+price/entitlement verification; recheck the provider catalogue if pricing or
+availability changes.
+
+At most three generation attempts occur in one OpenCode call. Alternate order is
+GLM Flash Free (`low`), MiMo Flash Free (default), then DeepSeek Flash Free
+(`low`), excluding the primary and taking only two alternates. The selected
+primary and variant are preserved. Reports record every attempted model and the
+model and variant that actually responded. A response is not necessarily a valid
+trading decision: invalid JSON or invalid actions still fail closed without
+rotation.
 
 Only explicit `model_quota_exceeded`, `model_capacity_exceeded`, or
 `model_unavailable` provider error markers permit automatic failover. Generic

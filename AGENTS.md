@@ -6,7 +6,7 @@
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-.venv/bin/python -m pytest                 # ۵۸ تست آفلاین، بدون MT5
+.venv/bin/python -m pytest                 # ۲۷۹ تست آفلاین، بدون MT5
 .venv/bin/trade-mcp --mock doctor          # سلامت کامل بدون متاتریدر
 .venv/bin/trade-mcp --mock serve           # اجرای MCP روی stdio
 .venv/bin/trade-mcp tools                  # فهرست ابزارها
