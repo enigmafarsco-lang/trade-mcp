@@ -548,7 +548,22 @@ class Handler(BaseHTTPRequestHandler):
                 if self.state.page_cycle.status()['active'] or self.state.page_cycle.status()['busy']:
                     return self._json({'ok': False, 'error': 'stop_cycle_before_model_change'})
                 if self.state.cfg.web_model_backend == "opencode-session":
-                    return self._json({"ok": False, "error": "session_model_is_environment_configured"}, 409)
+                    from .opencode import FREE_MODELS
+                    model = str(payload.get('model') or '').strip()
+                    # Variant is deliberately reset, never inherited from the
+                    # previous model (e.g. DeepSeek low -> MiMo default).
+                    variant = str(payload.get('variant') or '').strip()
+                    if model not in FREE_MODELS or variant:
+                        return self._json({'ok': False, 'error': 'free_model_with_default_variant_required',
+                                           'message': 'یک مدل رایگان مجاز انتخاب کنید؛ تغییر مدل از وب با حالت پیش‌فرض انجام می‌شود.'}, 400)
+                    with self.state.lock:
+                        if self.state.page_cycle.status()['active'] or self.state.page_cycle.status()['busy']:
+                            return self._json({'ok': False, 'error': 'stop_cycle_before_model_change'}, 409)
+                        self.state.cfg.opencode_model = model
+                        self.state.cfg.opencode_variant = ''
+                        self.state.model_test = {'state': 'not_tested', 'message': 'مدل وب تغییر کرد؛ پاسخ آن را آزمایش کنید.'}
+                    return self._json({'ok': True, 'model': model, 'variant': '',
+                                       'backend': 'opencode-session', 'persisted': False})
                 if not self.state.cfg.llm_base_url:
                     return self._json({'ok': False, 'error': 'dedicated_web_provider_not_configured',
                                        'message': 'BASE_URL provider وب در محیط تنظیم نشده است.'})

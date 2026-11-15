@@ -529,3 +529,11 @@ After updating, the local operator must explicitly select this backend, reload
 only the relevant MCP/owned console, verify native versus mock data, activate a
 test budget and make one model test. A successful local mock suite does not prove
 live provider entitlement. Keep trading disabled throughout.
+
+In session mode `/api/model-config` now accepts an allowlisted free `model` ID
+at runtime. This changes only the web process, clears its previous model-test
+success and resets variant to provider default. Nonempty variant overrides and
+nonfree IDs are rejected on this route. The budget, cooldown, authentication,
+backend and development-chat configuration are not changed. A changed model
+requires a new successful test before a page cycle. Startup environment changes
+do not affect an already running process; use this API or the web model editor.

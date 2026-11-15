@@ -477,3 +477,44 @@ def test_offline_token_estimate_rejects_invalid_selection(mock_app, payload, err
             urlopen(req)
         assert exc.value.code == 400
         assert json.load(exc.value)['error'] == error
+
+
+def test_session_model_change_no_generation_and_no_budget_reset(mock_app, monkeypatch):
+    from trade_mcp.opencode import OpenCodeClient
+    monkeypatch.setattr(OpenCodeClient, '_request', lambda *a, **kw: pytest.fail('No OpenCode network on configuration'))
+    mock_app.cfg.web_model_backend = 'opencode-session'
+    mock_app.cfg.opencode_url = 'http://localhost:49374'
+    mock_app.cfg.opencode_model = 'opencode/deepseek-v4.1-flash-free'
+    mock_app.cfg.opencode_variant = 'low'
+    mock_app.store.activate_model_budget()
+    mock_app.store.reserve_model_budget()
+    budget = mock_app.store.model_budget_status()
+    with console(mock_app) as base:
+        req = Request(base+'/api/model-config', data=json.dumps({
+            'model':'opencode/mimo-v2.6-flash-free'}).encode(),
+            headers={'Content-Type':'application/json'})
+        with urlopen(req) as r:
+            data = json.load(r)
+        assert data['ok'] and data['variant'] == ''
+        with urlopen(base+'/api/workspace-status') as r:
+            state = json.load(r)
+        assert state['model'] == 'opencode/mimo-v2.6-flash-free'
+        assert state['model_variant'] == ''
+        assert state['model_test']['state'] == 'not_tested'
+    after = mock_app.store.model_budget_status()
+    assert {k:v for k,v in after.items() if k != "seconds_remaining"} == {k:v for k,v in budget.items() if k != "seconds_remaining"}
+    assert mock_app.store.list_model_usage() == []
+
+
+@pytest.mark.parametrize('model,variant', [('opencode/big-pickle',''),
+    ('opencode/paid',''), ('opencode/mimo-v2.6-flash-free','low')])
+def test_session_model_config_rejects_nonfree_and_inherited_variant(mock_app, model, variant):
+    mock_app.cfg.web_model_backend = 'opencode-session'
+    original = mock_app.cfg.opencode_model
+    with console(mock_app) as base:
+        req = Request(base+'/api/model-config', data=json.dumps({'model':model,'variant':variant}).encode(),
+                      headers={'Content-Type':'application/json'})
+        with pytest.raises(HTTPError) as exc:
+            urlopen(req)
+        assert exc.value.code == 400
+    assert mock_app.cfg.opencode_model == original
