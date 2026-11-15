@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from .agents import AgentEngine, LLMClient, model_signature
+from .agents import AgentEngine, LLMClient, analysis_messages, model_signature
 from .analysis import analyze_symbol
 from .bridge.base import BridgeError
 from .config import Config
@@ -294,7 +294,7 @@ class Handler(BaseHTTPRequestHandler):
                 with self.state.lock:
                     mt5 = self.state.app.mt5
                     symbol = mt5.resolve_symbol(query.get("symbol") or self.state.cfg.default_symbol)
-                    result = {"ok": True, "symbol": symbol, "spec": mt5.symbol_info(symbol, fresh=True),
+                    result = {"ok": True, "backend": self.state.cfg.backend, "symbol": symbol, "spec": mt5.symbol_info(symbol, fresh=True),
                               "quote": mt5.tick(symbol), "account": mt5.account_info(fresh=True),
                               "trading_enabled": self.state.cfg.allow_trading,
                               "terminal": mt5.terminal_info(), "positions": mt5.positions(),
@@ -411,6 +411,34 @@ class Handler(BaseHTTPRequestHandler):
                 with self.state.lock:
                     result = self.state.app.mt5.symbol_select(name, enable=bool(payload.get("enable", True)))
                 return self._json({"ok": True, "result": result})
+            if path == "/api/estimate-analysis-tokens":
+                with self.state.lock:
+                    agent = self.state.store.get_agent(str(payload.get("agent_id") or ""))
+                    if not agent:
+                        return self._json({"ok": False, "error": "unknown_agent"}, 400)
+                    if not agent.get("symbols"):
+                        return self._json({"ok": False, "error": "agent_has_no_symbols"}, 400)
+                    symbol = str(payload.get("symbol") or agent["symbols"][0])
+                    if symbol not in agent["symbols"]:
+                        return self._json({"ok": False, "error": "symbol_not_in_agent"}, 400)
+                    analysis = analyze_symbol(mt5=self.state.app.mt5, cfg=self.state.cfg,
+                                              symbol=symbol, bars_count=300)
+                    if not analysis.get("ok"):
+                        return self._json({"ok": False, "error": "analysis_unavailable"}, 409)
+                    messages = analysis_messages(agent, analysis)
+                characters = sum(len(message["content"]) for message in messages)
+                return self._json({
+                    "ok": True, "backend": self.state.cfg.backend, "symbol": symbol,
+                    "agent_id": agent["id"], "sampled_at": time.time(),
+                    "market_open_estimate": (analysis.get("market") or {}).get("open_estimate"),
+                    "characters": characters, "message_count": len(messages),
+                    "estimated_input_tokens": math.ceil(characters / 4),
+                    "tokenizer": None, "method": "ceil(characters/4)", "exact": False,
+                    "output_tokens": None, "reasoning_tokens": None,
+                    "cached_input_tokens": None, "cost": None,
+                    "provider_attempted": False,
+                    "note": "تخمین تقریبی متن پیام‌ها؛ سربار قالب چت و تفاوت توکنایزر لحاظ نشده است. native بودن منبع تضمین تازگی داده نیست.",
+                })
             if path == "/api/manual/propose":
                 def number(key, required=False):
                     value = payload.get(key)

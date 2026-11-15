@@ -375,6 +375,15 @@ def compact_context(analysis: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def analysis_messages(agent: dict[str, Any], analysis: dict[str, Any]) -> list[dict[str, str]]:
+    """Shared by real analysis and offline sizing; never calls a provider."""
+    return [
+        {"role": "system", "content": _system_prompt(agent)},
+        {"role": "user", "content": "Market context JSON:\n"
+         + json.dumps(compact_context(analysis), ensure_ascii=False, default=str)},
+    ]
+
+
 def _system_prompt(agent: dict[str, Any]) -> str:
     style = agent.get("style") or "balanced"
     return (
@@ -554,18 +563,8 @@ class AgentEngine:
             }
         scenario = analysis.get("scenario") or {}
         if self.llm.configured:
-            context = compact_context(analysis)
             try:
-                payload = self.llm.chat_json(
-                    [
-                        {"role": "system", "content": _system_prompt(agent)},
-                        {
-                            "role": "user",
-                            "content": "Market context JSON:\n"
-                            + json.dumps(context, ensure_ascii=False, default=str),
-                        },
-                    ]
-                )
+                payload = self.llm.chat_json(analysis_messages(agent, analysis))
             except BudgetDenied as exc:
                 return {
                     "action": "wait", "confidence": 0, "source": "model_budget",

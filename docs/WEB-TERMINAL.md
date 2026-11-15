@@ -477,3 +477,20 @@ review. The catalogue supplies no evidence of independent per-model quotas.
 Nothing here bypasses provider limits, buys credit, enables trading, or promises
 unlimited inference. A successful test may itself have used an alternate; inspect
 its recorded attempts and actual response model.
+
+## Offline analysis input estimate
+
+The workspace includes an offline input-token estimate button. Select an existing
+agent first. `/api/estimate-analysis-tokens` builds the same messages as advisory
+inference using a shared builder and 300 bars for one selected agent symbol.
+It reads market data but never invokes a model, creates proposals, records an
+agent run, consumes a test-budget attempt, or writes a provider-usage row.
+
+The result is **ceil(message content characters / 4)**, not tokenizer-measured
+usage. Chat formatting overhead is excluded and tokenization differs across
+models and languages. Output, reasoning, cache hits and real cost remain unknown.
+No prompt text is returned. The response identifies the backend and sample time;
+`native` identifies the source but does not prove quote freshness. Mock order
+quotes are labelled simulated, never live MT5. Starting a native-demo console
+requires the local MT5 connection workflow; no automatic mock fallback should
+be interpreted as a native connection.

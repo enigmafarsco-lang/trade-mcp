@@ -225,6 +225,20 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden)stopCycle(t
 window.addEventListener('pagehide',()=>stopCycle(true));
 setInterval(async()=>{if(lease&&!document.hidden){try{const d=await request('/api/page-cycle',{action:'heartbeat',lease});if(!d.ok)lease=null;}catch(_){node('workspace-action').textContent='heartbeat ناموفق؛ چرخه بدون heartbeat معتبر متوقف خواهد شد.';}}},5000);
 node('workspace-refresh').onclick=refresh;
+node('workspace-estimate').onclick=async()=>{
+ const button=node('workspace-estimate'),result=node('workspace-estimate-result');
+ button.disabled=true;result.textContent='در حال ساخت نمونهٔ تحلیل؛ بدون درخواست مدل…';
+ try{
+  const d=await request('/api/estimate-analysis-tokens',{agent_id:node('workspace-cycle-agent').value});
+  if(!d.ok)throw new Error(d.message||d.error||'تخمین ناموفق بود.');
+  result.textContent=`منبع: ${d.backend}${d.backend==='mock'?' — ساختگی، نه بازار واقعی':''} | نماد: ${d.symbol}
+کاراکتر پیام‌ها: ${d.characters} | ورودی تخمینی: ${d.estimated_input_tokens} توکن
+روش: ${d.method} | توکنایزر: ندارد | شمارش دقیق نیست
+خروجی، استدلال، کش و هزینهٔ واقعی: نامشخص | درخواست مدل: خیر
+${d.note}`;
+ }catch(e){result.textContent=e.message||'تخمین ناموفق بود.';}
+ finally{button.disabled=false;}
+};
 node('workspace-test').onclick=async()=>{
  if(testing||!budgetAllowed||!modelReady)return;
  testing=true;syncTestButton();

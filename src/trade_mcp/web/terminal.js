@@ -124,7 +124,7 @@ async function refreshOrderQuote(){
  el('order-bid').textContent=fmt(d.quote.bid);el('order-ask').textContent=fmt(d.quote.ask);
  el('order-title').textContent='Order: '+d.symbol+' • '+d.account.trade_mode;
  el('order-model-status').textContent=d.llm_configured?'مدل زبانی تنظیم شده است؛ این محاسبات عددی و قاعده‌محورند، نه پاسخ مدل.':'مدل زبانی تنظیم نشده است؛ تحلیل و محاسبهٔ ریسک قاعده‌محور است.';
- el('order-quote-status').textContent='MT5 quote • '+new Date().toLocaleTimeString()+' • polling 2s, not tick streaming';
+ el('order-quote-status').textContent=(d.backend==='mock'?'Simulated quote — mock, not live MT5':d.backend==='native'?'MT5 quote — native, freshness not verified':'Quote — '+(d.backend||'unknown source'))+' • received '+new Date().toLocaleTimeString()+' • polling 2s, not tick streaming';
  }catch(e){if(sequence!==orderQuoteSequence)return;el('order-bid').textContent='—';el('order-ask').textContent='—';el('order-quote-status').textContent=e.message;}finally{orderQuoteBusy=false;}
 }
 for(const button of document.querySelectorAll('[data-order-mode]'))button.onclick=()=>{

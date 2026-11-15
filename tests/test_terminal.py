@@ -429,3 +429,51 @@ def test_cross_origin_posts_are_rejected(mock_app):
         with pytest.raises(HTTPError) as error:
             urlopen(req)
         assert error.value.code == 403
+
+
+def test_offline_token_estimate_uses_shared_messages_without_side_effects(mock_app, monkeypatch):
+    from trade_mcp.agents import LLMClient, analysis_messages
+    captured = []
+    import trade_mcp.console as module
+    original = module.analysis_messages
+    def capture(agent, analysis):
+        messages = original(agent, analysis)
+        assert messages == analysis_messages(agent, analysis)
+        captured.append(messages)
+        return messages
+    monkeypatch.setattr(module, 'analysis_messages', capture)
+    monkeypatch.setattr(LLMClient, 'chat', lambda *a, **kw: pytest.fail('No provider call allowed'))
+    agent = mock_app.store.create_agent({'name':'Offline','symbols':['XAUUSD']})
+    before = (mock_app.store.list_proposals(), mock_app.store.list_model_usage(),
+              mock_app.store.agent_run_history(), mock_app.store.model_budget_status())
+    with console(mock_app) as base:
+        req = Request(base+'/api/estimate-analysis-tokens', data=json.dumps({'agent_id':agent['id']}).encode(),
+                      headers={'Content-Type':'application/json'})
+        with urlopen(req) as response:
+            data = json.load(response)
+        with urlopen(base+'/api/order-ticket?symbol=XAUUSD') as response:
+            assert json.load(response)['backend'] == 'mock'
+    assert data['ok'] and data['backend'] == 'mock'
+    assert data['characters'] == sum(len(m['content']) for m in captured[0])
+    assert data['estimated_input_tokens'] == (data['characters']+3)//4
+    assert data['exact'] is False and data['tokenizer'] is None
+    assert data['provider_attempted'] is False
+    assert all(data[k] is None for k in ('output_tokens','reasoning_tokens','cached_input_tokens','cost'))
+    after = (mock_app.store.list_proposals(), mock_app.store.list_model_usage(),
+             mock_app.store.agent_run_history(), mock_app.store.model_budget_status())
+    assert before == after
+
+
+@pytest.mark.parametrize('payload,error', [({},'unknown_agent'),
+    ({'symbol':'EURUSD'},'symbol_not_in_agent')])
+def test_offline_token_estimate_rejects_invalid_selection(mock_app, payload, error):
+    agent = mock_app.store.create_agent({'name':'Offline','symbols':['XAUUSD']})
+    if payload:
+        payload = {**payload,'agent_id':agent['id']}
+    with console(mock_app) as base:
+        req = Request(base+'/api/estimate-analysis-tokens', data=json.dumps(payload).encode(),
+                      headers={'Content-Type':'application/json'})
+        with pytest.raises(HTTPError) as exc:
+            urlopen(req)
+        assert exc.value.code == 400
+        assert json.load(exc.value)['error'] == error
