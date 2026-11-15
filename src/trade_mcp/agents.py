@@ -251,7 +251,7 @@ class LLMClient:
             })
             raise
         except (urllib.error.URLError, TimeoutError, OSError, ValueError,
-                json.JSONDecodeError, RuntimeError) as exc:
+                json.JSONDecodeError, RuntimeError):
             error = ProviderError("connection_failed", http_status)
             error_code = error.code
             self.last_error = error.safe_dict()

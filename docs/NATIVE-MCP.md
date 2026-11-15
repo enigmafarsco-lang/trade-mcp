@@ -39,7 +39,7 @@
 می‌خورد و با `-s` هم هیچ خطایی نشان نمی‌دهد. برای همین یک اسکریپت آماده هست:
 
 ```bash
-cd /media/joshua/SATA500/Trade/trade-mcp/trade-mcp
+cd /path/to/trade-mcp   # ریشهٔ همین مخزن
 
 # با کلید هر سرور به‌صورت جدا (پیشنهادی)
 .venv/bin/python scripts/mt5_mcp_probe.py \
