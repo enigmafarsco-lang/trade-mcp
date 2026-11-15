@@ -547,6 +547,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/api/model-config':
                 if self.state.page_cycle.status()['active'] or self.state.page_cycle.status()['busy']:
                     return self._json({'ok': False, 'error': 'stop_cycle_before_model_change'})
+                if self.state.cfg.web_model_backend == "opencode-session":
+                    return self._json({"ok": False, "error": "session_model_is_environment_configured"}, 409)
                 if not self.state.cfg.llm_base_url:
                     return self._json({'ok': False, 'error': 'dedicated_web_provider_not_configured',
                                        'message': 'BASE_URL provider وب در محیط تنظیم نشده است.'})
@@ -572,7 +574,7 @@ class Handler(BaseHTTPRequestHandler):
                     ))
                 try:
                     text = llm.chat([{"role": "user", "content": "Reply with OK only. Do not use tools."}])
-                    result = {"ok": bool(text), "backend": "openai-compatible",
+                    result = {"ok": bool(text), "backend": llm.provider if llm.provider == "opencode-session" else "openai-compatible",
                               "message": "پاسخ واقعی مدل دریافت شد؛ هیچ سفارشی ایجاد نشد." if text else "مدل پاسخ خالی داد."}
                 except BudgetDenied as exc:
                     return self._budget_denied(exc)
@@ -649,10 +651,10 @@ class Handler(BaseHTTPRequestHandler):
             "llm": {
                 "configured": llm.configured,
                 "mode": "web",
-                "backend": "openai-compatible",
+                "backend": "opencode-session" if cfg.web_model_backend == "opencode-session" else "openai-compatible",
                 "provider": llm.provider if llm.configured else None,
                 "base_url_configured": bool(cfg.llm_base_url),
-                "model": cfg.llm_model or None,
+                "model": llm.model or None,
                 "billing_project": cfg.llm_billing_project or None,
                 "usage_convention": llm.usage_convention,
                 "api_key_configured": bool(cfg.llm_api_key),
@@ -707,13 +709,13 @@ class Handler(BaseHTTPRequestHandler):
         return {"ok": True, "backend": cfg.backend, "trading_enabled": cfg.allow_trading,
                 "journal_identity": journal_identity(cfg.journal_path),
                 "workspace_identity": workspace_identity(cfg),
-                "model_backend": "openai-compatible", "model_source": "web",
+                "model_backend": "opencode-session" if cfg.web_model_backend == "opencode-session" else "openai-compatible", "model_source": "web",
                 "model_configured": web_llm.configured,
-                "model": cfg.llm_model,
+                "model": web_llm.model,
                 "model_provider": web_llm.provider if web_llm.configured else None,
                 "model_billing_project": cfg.llm_billing_project or None,
                 "model_usage_convention": web_llm.usage_convention,
-                "model_variant": "", "free_fallback": False,
+                "model_variant": cfg.opencode_variant if cfg.web_model_backend == "opencode-session" else "", "free_fallback": False,
                 "model_budget": self._budget_payload(),
                 "model_usage": self.state.store.model_usage_summary(),
                 "model_usage_rows": self.state.store.list_model_usage(limit=10),

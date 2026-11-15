@@ -273,7 +273,7 @@
 
   <!-- settings -->
   <section id="tab-settings">
-    <div class="card"><h2>provider اختصاصی مدل وب</h2><p>ایجنت‌های این وب فقط از provider مستقیم سازگار با OpenAI استفاده می‌کنند که با <code>TRADE_MCP_LLM_BASE_URL</code>، <code>TRADE_MCP_LLM_MODEL</code> و <code>TRADE_MCP_LLM_API_KEY</code> در محیط همین کنسول تنظیم می‌شود. چت توسعهٔ OpenCode و کلیدهای آن به این مسیر داده نمی‌شوند. ابزارهای مدل مسدودند؛ محاسبات و اجرای سفارش در هستهٔ برنامه می‌مانند و هر پیشنهاد به تأیید شما نیاز دارد. آزمایش اتصال یک درخواست واقعی می‌فرستد، از بودجهٔ مشترک کم می‌کند و ممکن است هزینه داشته باشد؛ ابتدا بودجه را در پنل ایجنت فعال کنید.</p><button id="model-test" class="primary">آزمایش پاسخ واقعی مدل</button><p id="model-test-result" role="status"></p></div>
+    <div class="card"><h2>provider اختصاصی مدل وب</h2><p>مسیر پیش‌فرض وب، provider مستقیم سازگار با OpenAI است که با <code>TRADE_MCP_LLM_BASE_URL</code>، <code>TRADE_MCP_LLM_MODEL</code> و <code>TRADE_MCP_LLM_API_KEY</code> در محیط همین کنسول تنظیم می‌شود. در حالت direct، تنظیمات چت توسعه به این مسیر داده نمی‌شوند. انتخاب صریح TRADE_MCP_WEB_MODEL_BACKEND=opencode-session امکان استفاده از مدل رایگان OpenCode در نشست موقت جدا و ثبت توکن‌های برگشتی وب را می‌دهد؛ سهمیه ممکن است با چت مشترک باشد. ابزارهای مدل مسدودند؛ محاسبات و اجرای سفارش در هستهٔ برنامه می‌مانند و هر پیشنهاد به تأیید شما نیاز دارد. آزمایش اتصال یک درخواست واقعی می‌فرستد، از بودجهٔ مشترک کم می‌کند و ممکن است هزینه داشته باشد؛ ابتدا بودجه را در پنل ایجنت فعال کنید.</p><button id="model-test" class="primary">آزمایش پاسخ واقعی مدل</button><p id="model-test-result" role="status"></p></div>
     <div class="card"><h2>پیکربندی فعال</h2><pre id="cfg-json">—</pre></div>
     <div class="card">
       <h2>اتصال OpenCode به همین ابزارها</h2>

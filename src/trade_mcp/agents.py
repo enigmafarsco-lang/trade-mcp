@@ -56,6 +56,8 @@ ADVISORY_MIN_CONFIDENCE = 45
 
 def model_signature(cfg: Config) -> tuple[str, str]:
     """Identity of the dedicated web model used by a successful model test."""
+    if cfg.web_model_backend == "opencode-session":
+        return (cfg.opencode_url, cfg.opencode_model + "#" + cfg.opencode_variant)
     return (str(getattr(cfg, "llm_base_url", "") or ""),
             str(getattr(cfg, "llm_model", "") or ""))
 
@@ -101,6 +103,11 @@ class LLMClient:
         request_kind: str = "agent_run",
     ) -> LLMClient:
         if str(mode).lower() == "web":
+            if cfg.web_model_backend == "opencode-session":
+                from .web_opencode import WebOpenCodeClient
+                return WebOpenCodeClient.from_web_config(cfg, store, request_kind)
+            if cfg.web_model_backend != "direct":
+                raise ValueError("Unsupported WEB_MODEL_BACKEND")
             # Dedicated web path: only the direct OpenAI-compatible settings.
             # A missing configuration stays unconfigured; it never falls back
             # to the development chat's OpenCode provider.
@@ -148,6 +155,12 @@ class LLMClient:
             url += "/chat/completions"
         return url
 
+    def _response_data(self, req):
+        with urllib.request.build_opener(NoRedirect).open(req, timeout=self.timeout) as resp:
+            status = int(getattr(resp, "status", 200) or 200)
+            raw = resp.read(2 * 1024 * 1024).decode("utf-8", "replace")
+        return json.loads(raw), status
+
     def chat(self, messages: list[dict[str, str]], temperature: float = 0.2) -> str:
         self.attempts = []
         self.last_error = None
@@ -177,7 +190,7 @@ class LLMClient:
                 )
                 self.last_error = error.safe_dict()
                 self.attempts.append({
-                    "model": self.model, "variant": "", "status": "denied",
+                    "model": self.model, "variant": getattr(self, "web_variant", ""), "status": "denied",
                     "error": error.reason,
                 })
                 raise error
@@ -202,12 +215,7 @@ class LLMClient:
         success = False
         error_code: str | None = None
         try:
-            with urllib.request.build_opener(NoRedirect).open(
-                req, timeout=self.timeout
-            ) as resp:  # noqa: S310
-                http_status = int(getattr(resp, "status", 200) or 200)
-                raw = resp.read(2 * 1024 * 1024).decode("utf-8", "replace")
-            data = json.loads(raw)
+            data, http_status = self._response_data(req)
             choice = (data.get("choices") or [{}])[0]
             message = choice.get("message") or {}
             content = message.get("content")
@@ -221,9 +229,9 @@ class LLMClient:
             usage = usage_from_response(data, self.usage_convention)
             self.last_usage = usage
             self.response_model = str(data.get("model") or self.model)
-            self.response_variant = ""
+            self.response_variant = getattr(self, "web_variant", "")
             self.attempts.append(
-                {"model": self.model, "variant": "", "status": "responded"}
+                {"model": self.model, "variant": getattr(self, "web_variant", ""), "status": "responded"}
             )
             success = True
             return text
@@ -238,7 +246,7 @@ class LLMClient:
                 )
             self.last_error = error.safe_dict()
             self.attempts.append({
-                "model": self.model, "variant": "", "status": "failed",
+                "model": self.model, "variant": getattr(self, "web_variant", ""), "status": "failed",
                 "error": error.code,
             })
             raise error from None
@@ -246,7 +254,7 @@ class LLMClient:
             error_code = exc.code
             self.last_error = exc.safe_dict()
             self.attempts.append({
-                "model": self.model, "variant": "", "status": "failed",
+                "model": self.model, "variant": getattr(self, "web_variant", ""), "status": "failed",
                 "error": exc.code,
             })
             raise
@@ -256,7 +264,7 @@ class LLMClient:
             error_code = error.code
             self.last_error = error.safe_dict()
             self.attempts.append({
-                "model": self.model, "variant": "", "status": "failed",
+                "model": self.model, "variant": getattr(self, "web_variant", ""), "status": "failed",
                 "error": error.code,
             })
             raise error from None
@@ -271,7 +279,7 @@ class LLMClient:
                     "is_fallback": False,
                     "provider": self.provider,
                     "model": self.model,
-                    "variant": "",
+                    "variant": getattr(self, "web_variant", ""),
                     "billing_project": self.billing_project or None,
                     "ok": success,
                     "error_code": error_code,
@@ -421,7 +429,7 @@ class AgentEngine:
             "decisions": [],
             "used_llm": False,
             "model_backend": (
-                "openai-compatible"
+                "opencode-session" if getattr(self.llm, "provider", "") == "opencode-session" else "openai-compatible"
                 if getattr(self.llm, "mode", "auto") == "web" or not self.cfg.opencode_url
                 else "opencode"
             ),

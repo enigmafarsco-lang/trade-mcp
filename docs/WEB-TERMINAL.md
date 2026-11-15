@@ -494,3 +494,38 @@ No prompt text is returned. The response identifies the backend and sample time;
 quotes are labelled simulated, never live MT5. Starting a native-demo console
 requires the local MT5 connection workflow; no automatic mock fallback should
 be interpreted as a native connection.
+
+## Explicit free OpenCode session connection (v2.2.7)
+
+Set `TRADE_MCP_WEB_MODEL_BACKEND=opencode-session` explicitly to use the
+already authenticated local OpenCode server, with `TRADE_MCP_OPENCODE_URL`,
+`TRADE_MCP_OPENCODE_MODEL` and optional `TRADE_MCP_OPENCODE_VARIANT`.
+Authentication uses the existing secure desktop discovery/launcher workflow;
+never paste the desktop password or MT5 keys into chat. Default backend remains
+`direct`; there is no implicit fallback. Only explicitly free allowlisted model
+IDs are accepted in the session mode. Catalogue prices/entitlements can change.
+
+Each web call creates a NEW deny-all session with the explicit model, verifies
+the server acknowledgement, then uses `/api/session/{id}/generate`. No existing
+development session ID is accepted. The ephemeral session is deleted afterwards;
+the web ledger retains returned usage metadata. OpenCode may include project or
+agent instructions, so its returned token usage can exceed the offline estimate.
+No tools are executed by the application's generate call.
+
+Token categories are reported exactly as returned, with unknown accounting
+convention (no combined total). Server-calculated catalogue cost is NOT a
+provider invoice and is not stored as provider-reported cost. Missing usage or
+cost remains unknown. Failure does not prove zero billed tokens. Shared free
+quota remains shared; separate sessions do not create new quota.
+
+The persisted five-request/300-second budget wraps this path too. It counts
+application generation invocations, NOT internal upstream retries: OpenCode
+v2.2.7's generate implementation uses its own ModelRetry policy. The application
+cannot enforce a provider-level attempt cap or cancel an upstream request merely
+by timing out. No app retry or model rotation is performed. Stop testing on quota
+or rate-limit errors; never switch routes to evade provider restrictions.
+
+After updating, the local operator must explicitly select this backend, reload
+only the relevant MCP/owned console, verify native versus mock data, activate a
+test budget and make one model test. A successful local mock suite does not prove
+live provider entitlement. Keep trading disabled throughout.

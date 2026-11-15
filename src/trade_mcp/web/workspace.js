@@ -110,7 +110,7 @@ async function refresh(){
   budgetAllowed=!!(d.model_budget&&d.model_budget.allowed);
   modelReady=!!d.model_configured;
   node('workspace-status').textContent=`داده: ${d.backend}${d.backend==='mock'?' — ساختگی؛ دادهٔ واقعی نیست':''} | اجرای معامله: ${d.trading_enabled?'فعال؛ هر پیشنهاد نیازمند تأیید شماست':'غیرفعال'} | provider: ${d.model_provider||'—'} | مدل: ${d.model||'تنظیم نشده'}\n${d.scheduler.running?'چرخهٔ ایجنت فعال است':'چرخهٔ خودکار خاموش است؛ دریافت قیمت به معنی معامله نیست.'}`;
-  node('workspace-provider').textContent=`backend: ${d.model_backend||'—'} | provider: ${d.model_provider||'نامشخص'} | مدل: ${d.model||'تنظیم نشده'} | وضعیت: ${d.model_configured?'آماده؛ در خطا هیچ درخواست جایگزینی به OpenCode نمی‌رود':'تنظیم نشده؛ هیچ درخواستی به OpenCode نمی‌رود'}\nبرچسب billing: ${d.model_billing_project||'ندارد'} (فقط metadata؛ اثبات صورت‌حساب جدا نیست)\nقرارداد usage: ${d.model_usage_convention||'unknown'}`;
+  node('workspace-provider').textContent=`backend: ${d.model_backend||'—'} | provider: ${d.model_provider||'نامشخص'} | مدل: ${d.model||'تنظیم نشده'} | وضعیت: ${d.model_configured?'تنظیم شده؛ فقط مسیر صریح انتخاب‌شده استفاده می‌شود':'تنظیم نشده؛ درخواست مدل مسدود است'}\nبرچسب billing: ${d.model_billing_project||'ندارد'} (فقط metadata؛ اثبات صورت‌حساب جدا نیست)\nقرارداد usage: ${d.model_usage_convention||'unknown'}`;
   node('workspace-budget').textContent=budgetText(d.model_budget);
   syncBudgetButton(d.model_budget);
   node('workspace-usage').textContent=usageText(d.model_usage);

@@ -28,6 +28,7 @@ def workspace_identity(cfg):
     # (/api/model-config) for this run only. Base URL, billing label and usage
     # convention are environment-level settings and are part of the identity.
     settings = [journal_identity(cfg.journal_path), cfg.mcp_url,
+                cfg.web_model_backend, cfg.opencode_url if cfg.web_model_backend == "opencode-session" else "",
                 cfg.llm_base_url, cfg.llm_billing_project, cfg.llm_usage_convention,
                 cfg.default_symbol, cfg.timeframes, cfg.training_budget,
                 cfg.max_lot, cfg.max_risk_percent, cfg.max_open_positions, cfg.max_spread_points,
@@ -45,6 +46,7 @@ def console_environment(cfg):
         env.pop('TRADE_MCP_' + key, None)
         env.pop(key, None)
     values = {
+        'WEB_MODEL_BACKEND': cfg.web_model_backend,
         'BACKEND': 'native', 'MCP_URL': cfg.mcp_url, 'MCP_TOKEN': cfg.mcp_token,
         'LLM_BASE_URL': cfg.llm_base_url, 'LLM_MODEL': cfg.llm_model,
         'LLM_API_KEY': cfg.llm_api_key, 'LLM_BILLING_PROJECT': cfg.llm_billing_project,
@@ -58,6 +60,11 @@ def console_environment(cfg):
         'DEVIATION_POINTS': cfg.deviation_points,
     }
     env.update({'TRADE_MCP_'+key: str(value) for key, value in values.items()})
+    if cfg.web_model_backend == 'opencode-session':
+        for key, value in {'OPENCODE_URL': cfg.opencode_url, 'OPENCODE_MODEL': cfg.opencode_model,
+                           'OPENCODE_VARIANT': cfg.opencode_variant,
+                           'OPENCODE_PASSWORD': cfg.opencode_password}.items():
+            env['TRADE_MCP_'+key] = str(value)
     return env
 
 
@@ -78,7 +85,7 @@ class WorkspaceManager:
                 data = json.load(response)
             if (data.get('backend') != 'native' or data.get('trading_enabled') is not False
                     or data.get('workspace_identity') != workspace_identity(cfg)
-                    or data.get('model_backend') != 'openai-compatible'
+                    or data.get('model_backend') != ('opencode-session' if cfg.web_model_backend == 'opencode-session' else 'openai-compatible')
                     or data.get('model_source') != 'web'
                     or not data.get('model_configured')):
                 raise ValueError('workspace mismatch')
@@ -103,7 +110,8 @@ class WorkspaceManager:
             return {'ok': False, 'error': 'terminal_not_connected'}
         if app.mt5.account_info(fresh=True).get('trade_mode') != 'demo':
             return {'ok': False, 'error': 'demo_account_required'}
-        if not (cfg.llm_base_url and cfg.llm_model):
+        from .agents import LLMClient
+        if not LLMClient.from_config(cfg, mode="web").configured:
             return {'ok': False, 'error': 'dedicated_web_model_required'}
         existing = self.status(cfg)
         if existing['state'] == 'stopped':
