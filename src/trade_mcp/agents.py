@@ -60,7 +60,7 @@ def model_signature(cfg: Config) -> tuple[str, str]:
     if cfg.web_model_backend == "opencode-session":
         return (cfg.opencode_url, cfg.opencode_model + "#" + cfg.opencode_variant)
     return (str(getattr(cfg, "llm_base_url", "") or ""),
-            str(getattr(cfg, "llm_model", "") or ""))
+            str(getattr(cfg, "llm_model", "") or "") + ("#fast-advisory-v1" if cfg.llm_fast_advisory else ""))
 
 
 # --------------------------------------------------------------------- llm
@@ -82,6 +82,7 @@ class LLMClient:
     usage_convention: str = "unknown"
     store: Store | None = field(default=None, repr=False)
     request_kind: str = "agent_run"
+    fast_advisory: bool = False
     last_usage: dict[str, Any] | None = None
     last_error: dict[str, Any] | None = None
     attempts: list[dict[str, Any]] = field(default_factory=list, init=False)
@@ -121,6 +122,7 @@ class LLMClient:
                 usage_convention=getattr(cfg, "llm_usage_convention", "unknown"),
                 store=store,
                 request_kind=request_kind,
+                fast_advisory=cfg.llm_fast_advisory,
             )
         if cfg.opencode_url:
             from .opencode import OpenCodeClient
@@ -155,6 +157,22 @@ class LLMClient:
         if not url.endswith("/chat/completions"):
             url += "/chat/completions"
         return url
+
+    @property
+    def request_profile(self):
+        # Explicit opt-in, only our tested exact route and short request kinds.
+        active = (self.fast_advisory and self.mode == 'web'
+            and self.base_url.rstrip('/') == 'https://openrouter.ai/api/v1'
+            and self.model == 'inclusionai/ling-3.2-flash:free'
+            and self.request_kind in {'agent_run', 'model_test'})
+        return 'ling-fast-advisory-v1' if active else 'provider-default'
+
+    def _request_payload(self, messages, temperature):
+        payload = {'model':self.model, 'messages':messages, 'temperature':temperature, 'stream':False}
+        if self.request_profile == 'ling-fast-advisory-v1':
+            payload.update(max_tokens=512, reasoning={'enabled':False},
+                           provider={'require_parameters':True})
+        return payload
 
     def _response_data(self, req):
         with urllib.request.build_opener(NoRedirect).open(req, timeout=self.timeout) as resp:
@@ -201,10 +219,7 @@ class LLMClient:
             self.attempt_index += 1
             attempt_index = self.attempt_index
 
-        body = json.dumps(
-            {"model": self.model, "messages": messages, "temperature": temperature,
-             "stream": False}
-        ).encode()
+        body = json.dumps(self._request_payload(messages, temperature)).encode()
         req = urllib.request.Request(url, data=body, method="POST")
         req.add_header("Content-Type", "application/json")
         if self.api_key:
@@ -224,11 +239,13 @@ class LLMClient:
                 content = "".join(
                     part.get("text", "") for part in content if isinstance(part, dict)
                 )
+            usage = usage_from_response(data, self.usage_convention)
+            self.last_usage = usage
+            if self.request_profile == 'ling-fast-advisory-v1' and choice.get('finish_reason') == 'length':
+                raise ProviderError('invalid_response', http_status)
             text = str(content or "").strip()
             if not text:
                 raise ProviderError("invalid_response", http_status)
-            usage = usage_from_response(data, self.usage_convention)
-            self.last_usage = usage
             self.response_model = str(data.get("model") or self.model)
             self.response_variant = getattr(self, "web_variant", "")
             self.attempts.append(

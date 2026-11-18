@@ -28,7 +28,7 @@ def workspace_identity(cfg):
     # (/api/model-config) for this run only. Base URL, billing label and usage
     # convention are environment-level settings and are part of the identity.
     settings = [cfg.research_python, journal_identity(cfg.journal_path), cfg.mcp_url,
-                cfg.llm_base_url, cfg.llm_billing_project, cfg.llm_usage_convention,
+                cfg.llm_base_url, cfg.llm_billing_project, cfg.llm_usage_convention, cfg.llm_fast_advisory,
                 cfg.default_symbol, cfg.timeframes, cfg.training_budget,
                 cfg.max_lot, cfg.max_risk_percent, cfg.max_open_positions, cfg.max_spread_points,
                 cfg.allowed_symbols, cfg.proposal_ttl, cfg.deviation_points]
@@ -51,6 +51,7 @@ def console_environment(cfg):
         'LLM_BASE_URL': cfg.llm_base_url, 'LLM_MODEL': cfg.llm_model,
         'LLM_API_KEY': cfg.llm_api_key, 'LLM_BILLING_PROJECT': cfg.llm_billing_project,
         'LLM_USAGE_CONVENTION': cfg.llm_usage_convention,
+        'LLM_FAST_ADVISORY': 'true' if cfg.llm_fast_advisory else 'false',
         'ALLOW_TRADING': 'false',
         'JOURNAL': cfg.journal_path, 'SYMBOL': cfg.default_symbol,
         'TIMEFRAMES': ','.join(cfg.timeframes), 'TRAINING_BUDGET': cfg.training_budget,

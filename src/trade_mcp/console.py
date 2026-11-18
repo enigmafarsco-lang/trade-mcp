@@ -717,6 +717,7 @@ class Handler(BaseHTTPRequestHandler):
                 result['response_model'] = getattr(llm, 'response_model', None)
                 result['response_variant'] = getattr(llm, 'response_variant', None)
                 result['usage'] = getattr(llm, 'last_usage', None)
+                result['request_profile'] = getattr(llm, 'request_profile', 'provider-default')
                 result['transport'] = getattr(llm, 'transport_diagnostics', None)
                 if model_key != model_signature(self.state.cfg):
                     return self._json({'ok': False, 'error': 'model_changed_during_test'})
@@ -855,6 +856,7 @@ class Handler(BaseHTTPRequestHandler):
                 "model_provider": web_llm.provider if web_llm.configured else None,
                 "model_billing_project": cfg.llm_billing_project or None,
                 "model_usage_convention": web_llm.usage_convention,
+                "model_request_profile": self.state.model_client("agent_run").request_profile,
                 "model_variant": cfg.opencode_variant if cfg.web_model_backend == "opencode-session" else "", "free_fallback": False,
                 "model_budget": self._budget_payload(),
                 "model_usage": self.state.store.model_usage_summary(),

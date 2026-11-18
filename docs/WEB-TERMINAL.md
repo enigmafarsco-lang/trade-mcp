@@ -662,3 +662,38 @@ buy/sell entry will now be blocked as expired. This intentionally reduces stale
 entries; it does not establish profitability or guarantee scalping suitability.
 Offline tests cover fresh buy/sell, expiry, stale/future ticks, spread widening,
 price drift, invalid/crossed levels and expiry during sizing/margin validation.
+
+### Opt-in short Ling advisory profile (latency experiment, not a guarantee)
+
+Official parameter reference reviewed:
+https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
+
+`TRADE_MCP_LLM_FAST_ADVISORY=true` enables `ling-fast-advisory-v1` ONLY for the
+explicit direct web route `https://openrouter.ai/api/v1`, exact model
+`inclusionai/ling-3.2-flash:free`, and request kinds `model_test`/`agent_run`.
+Other providers/models, development-chat/auto clients, session transport,
+TradingAgents research reports and explanations retain provider defaults.
+The default is false; merely updating source changes no request settings.
+
+The opt-in payload adds `max_tokens:512`, `reasoning:{enabled:false}`, and
+`provider:{require_parameters:true}`. The latter asks routing not to silently
+ignore unsupported parameters; it may reduce endpoint availability or cause
+rejection. Before local opt-in, recheck the exact model's current catalogue
+supports reasoning controls with `mandatory:false` and output token limits.
+Catalogue claims do not guarantee runtime compliance. This is not provider/model
+rotation, and no paid fallback, retry or alternate model is configured here.
+
+Long reasoning was observed in a prior 80-second advisory, but it is not proof
+that reasoning caused all latency. Queueing/network/provider load remain factors.
+Disabling reasoning can affect decision quality. Runtime latency and numerical
+validity still require a bounded authorized test; no speedup is asserted by
+unit tests. Do not raise the 30-second entry age limit to accommodate a slow
+response. All existing order-risk and manual-approval controls stay unchanged.
+
+Truncated (`finish_reason:length`) responses in this profile fail closed, even
+if a partial response contains parseable JSON. No retry, token-limit escalation
+or fallback occurs. Returned usage is retained even for empty/truncated errors;
+no tokens or currency are inferred. The profile is exposed in workspace status
+and model-test replies, forwarded by the workspace launcher, and included in
+model-test/workspace identities so old successful tests are not reused as proof
+of the new profile. Settings persist only when applied to the actual launcher.

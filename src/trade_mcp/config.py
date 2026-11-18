@@ -106,6 +106,7 @@ class Config:
     llm_base_url: str = ""
     llm_api_key: str = field(default="", repr=False)
     llm_model: str = ""
+    llm_fast_advisory: bool = False
     llm_billing_project: str = ""
     llm_usage_convention: str = "unknown"
     news_feeds: tuple[str, ...] = ()
@@ -166,6 +167,7 @@ class Config:
             llm_base_url=(_env("LLM_BASE_URL") or "").strip(),
             llm_api_key=(_env("LLM_API_KEY") or "").strip(),
             llm_model=(_env("LLM_MODEL") or "").strip(),
+            llm_fast_advisory=_env_bool("LLM_FAST_ADVISORY", False),
             llm_billing_project=(_env("LLM_BILLING_PROJECT") or "").strip(),
             llm_usage_convention=normalise_convention(
                 _env("LLM_USAGE_CONVENTION") or "unknown"
