@@ -115,3 +115,24 @@ def test_real_pinned_worker_offline_when_configured(mock_app):
     result = run_worker(mock_app.cfg, {'operation':'backtest','bars':bars})
     assert result['ok'], result
     assert result['stats']['# Trades'] > 0
+
+
+@pytest.mark.parametrize('strategy', ['sma_cross','rsi_reversion','donchian_breakout'])
+def test_strategy_signals_do_not_look_ahead(strategy):
+    import math
+
+    from trade_mcp.research_strategies import strategy_signals
+    bars = [{'close':100+10*math.sin(i/8), 'high':101+10*math.sin(i/8),
+             'low':99+10*math.sin(i/8)} for i in range(150)]
+    full = strategy_signals(bars, strategy)
+    assert full[:30] == [0]*30
+    assert set(full) <= {-1,0,1}
+    assert any(full)
+    for end in (31,60,100):
+        assert strategy_signals(bars[:end], strategy) == full[:end]
+
+
+def test_unknown_strategy_rejected():
+    from trade_mcp.research_strategies import strategy_signals
+    with pytest.raises(ValueError):
+        strategy_signals([], 'untrusted-import')

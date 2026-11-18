@@ -44,25 +44,23 @@ def prepare(payload):
 
 
 def backtest(payload):
-    import numpy as np
     import pandas as pd
     from backtesting import Backtest, Strategy
+    from research_strategies import STRATEGIES, strategy_signals
 
     bars = payload['bars']
+    strategy = payload.get('strategy', 'sma_cross')
+    actions = strategy_signals(bars, strategy)
     data = pd.DataFrame([{k: b[k.lower()] for k in ('Open','High','Low','Close')} for b in bars])
-    def sma(values, length):
-        return pd.Series(values).rolling(length).mean().to_numpy()
+    data['Action'] = actions
     class Cross(Strategy):
         def init(self):
-            self.fast = self.I(sma, self.data.Close, 10)
-            self.slow = self.I(sma, self.data.Close, 30)
+            pass
         def next(self):
-            if not np.isfinite(self.slow[-2]):
-                return
-            if self.fast[-2] <= self.slow[-2] and self.fast[-1] > self.slow[-1]:
-                self.position.close()
+            action = self.data.Action[-1]
+            if action == 1 and not self.position:
                 self.buy(size=1)
-            elif self.fast[-2] >= self.slow[-2] and self.fast[-1] < self.slow[-1]:
+            elif action == -1 and self.position:
                 self.position.close()
     result = Backtest(data, Cross, cash=100000, commission=.001,
                       trade_on_close=False, exclusive_orders=True, finalize_trades=True).run()
@@ -71,7 +69,9 @@ def backtest(payload):
     for key in keys:
         value = float(result[key])
         stats[key] = value if math.isfinite(value) else None
-    return {'ok': True, 'engine': 'backtesting.py', 'strategy': 'SMA 10/30 long-only, next-bar execution',
+    return {'ok': True, 'engine': 'backtesting.py', 'strategy': STRATEGIES[strategy], 'strategy_id': strategy,
+            'provenance': 'Independent educational baseline, not an imported upstream strategy',
+            'execution': 'Long-only; next-bar execution',
             'bars': len(bars), 'stats': stats,
             'assumptions': 'Fixed 1 asset unit, synthetic cash 100000, commission 0.1% per side. '
             'NOT MT5 lots or account-currency P/L. No spread/slippage/financing model. '

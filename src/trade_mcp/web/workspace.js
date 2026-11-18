@@ -247,7 +247,7 @@ for(const operation of ['analyze','backtest'])node('research-'+operation).onclic
  if(operation==='analyze'&&!node('research-consent').checked){out.textContent='ابتدا اجازهٔ درخواست مدل را مشخص کنید.';return;}
  button.disabled=true;out.textContent='در حال پژوهش؛ هیچ سفارشی اجرا نمی‌شود…';
  try{
-  const d=await request('/api/research/'+operation,{agent_id:node('workspace-cycle-agent').value,consent_model_request:node('research-consent').checked});
+  const d=await request('/api/research/'+operation,{strategy:node('research-strategy').value,agent_id:node('workspace-cycle-agent').value,consent_model_request:node('research-consent').checked});
   out.textContent=d.ok?(d.report||JSON.stringify(d,null,2)):(d.message||d.error||'پژوهش ناموفق بود.');
  }catch(e){out.textContent=e.message||'پژوهش ناموفق بود.';}
  finally{button.disabled=false;await refresh();}

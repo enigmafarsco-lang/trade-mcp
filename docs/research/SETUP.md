@@ -85,3 +85,21 @@ without model calls; Backtesting.py ran on synthetic candles. Regression tests
 cover credential stripping, missing configuration, prompt validation, budget and
 ledger routing, and no proposal creation. No live cloud success, MT5 connection,
 browser smoke test or profitable strategy is implied by these tests.
+
+## Selectable educational strategy baselines
+
+The research panel now offers `sma_cross` (10/30), `rsi_reversion` (14-period
+simple rolling RSI, enter below 30, exit above 55), and `donchian_breakout`
+(previous 20-bar high entry, previous 10-bar low exit). API clients pass
+`strategy` to `/api/research/backtest`; omission preserves SMA as the default.
+All are long-only, fixed-unit, next-bar backtests under the existing cost
+assumptions; no automatic execution or model request occurs. Thirty bars are
+reserved for warmup. Signals use only the current and earlier bars.
+
+These are our independent educational implementations, NOT imported strategies
+from Freqtrade, StockSharp, Qlib or AI Hedge Fund. TradingAgents remains the
+actual upstream integration (tool-free market analyst). Those repositories have
+different market/data/execution assumptions; this change does not claim their
+models were ported or pretrained weights installed. Backtesting.py remains the
+execution engine and retains its upstream licensing requirements. No strategy
+is optimized, proven profitable, or approved for live trading.

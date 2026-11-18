@@ -432,10 +432,14 @@ class Handler(BaseHTTPRequestHandler):
                         return self._json({'ok': False, 'error': 'unknown_agent'}, 400)
                     symbol = agent['symbols'][0]
                     if path.endswith('/backtest'):
+                        from .research_strategies import STRATEGIES
+                        strategy = payload.get('strategy', 'sma_cross')
+                        if not isinstance(strategy, str) or strategy not in STRATEGIES:
+                            return self._json({'ok':False,'error':'unknown_research_strategy'}, 400)
                         bars = self.state.app.mt5.candles(symbol, 'H1', 500)[:-1]
                         if len(bars) < 60:
                             return self._json({'ok': False, 'error': 'insufficient_bars'}, 409)
-                        work = {'operation':'backtest', 'bars':bars}
+                        work = {'operation':'backtest', 'bars':bars, 'strategy':strategy}
                     else:
                         report = analyze_symbol(mt5=self.state.app.mt5, cfg=self.state.cfg,
                                                 symbol=symbol, bars_count=300)
