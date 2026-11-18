@@ -537,3 +537,34 @@ nonfree IDs are rejected on this route. The budget, cooldown, authentication,
 backend and development-chat configuration are not changed. A changed model
 requires a new successful test before a page cycle. Startup environment changes
 do not affect an already running process; use this API or the web model editor.
+
+## Explicit desktop attach from the web (no generation)
+
+The model editor now has an explicit **connect to local OpenCode** button.
+Enter an allowlisted free provider/model ID, e.g.
+`opencode/mimo-v2.6-flash-free`, then click connect. This calls
+`POST /api/model-connect-opencode` with `model` and `consent_connect: true`.
+The existing private registration discovery validates the desktop server identity
+and keeps authentication in memory. It never reads another process environment,
+changes the development chat, generates text, reserves a budget attempt, clears a
+cooldown, or changes native/mock transport. Variant resets to provider default.
+Busy page cycles or a running scheduler must be stopped first.
+
+This deliberately changes the web process's runtime model backend. It does not
+persist credentials or model selection: after restart reconnect explicitly, or
+configure the actual launcher environment. In session mode use
+`TRADE_MCP_OPENCODE_URL`, `TRADE_MCP_OPENCODE_MODEL` and
+`TRADE_MCP_OPENCODE_VARIANT`; `TRADE_MCP_LLM_*` configures only the direct backend.
+A configured model is not proof of available quota or successful generation.
+
+The manager can now start/reuse an authenticated native-demo read-only console
+without a configured model. Its identity still checks broker/journal/risk and
+research configuration; the runtime OpenCode selection is not an identity field.
+This lets the user attach a model after opening the console. It never enables
+trading. The manager accepts the two known web backends, not arbitrary backends.
+
+On workspace fetch failure the UI now marks model state unknown, labels saved
+data stale and disables model actions instead of implying a current configuration
+check succeeded. This improves failure handling; it does not prove or repair the
+cause of a local browser `Failed to fetch`. Local console liveness and endpoint
+errors still need inspection before restarting anything.

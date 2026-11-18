@@ -28,7 +28,6 @@ def workspace_identity(cfg):
     # (/api/model-config) for this run only. Base URL, billing label and usage
     # convention are environment-level settings and are part of the identity.
     settings = [cfg.research_python, journal_identity(cfg.journal_path), cfg.mcp_url,
-                cfg.web_model_backend, cfg.opencode_url if cfg.web_model_backend == "opencode-session" else "",
                 cfg.llm_base_url, cfg.llm_billing_project, cfg.llm_usage_convention,
                 cfg.default_symbol, cfg.timeframes, cfg.training_budget,
                 cfg.max_lot, cfg.max_risk_percent, cfg.max_open_positions, cfg.max_spread_points,
@@ -86,9 +85,9 @@ class WorkspaceManager:
                 data = json.load(response)
             if (data.get('backend') != 'native' or data.get('trading_enabled') is not False
                     or data.get('workspace_identity') != workspace_identity(cfg)
-                    or data.get('model_backend') != ('opencode-session' if cfg.web_model_backend == 'opencode-session' else 'openai-compatible')
+                    or data.get('model_backend') not in {'opencode-session', 'openai-compatible'}
                     or data.get('model_source') != 'web'
-                    or not data.get('model_configured')):
+):
                 raise ValueError('workspace mismatch')
             return {'ok': True, 'state': 'ready', 'url': url, 'trading_enabled': False,
                     'model_test': data.get('model_test'), 'agents': data.get('agents', []),
@@ -111,9 +110,6 @@ class WorkspaceManager:
             return {'ok': False, 'error': 'terminal_not_connected'}
         if app.mt5.account_info(fresh=True).get('trade_mode') != 'demo':
             return {'ok': False, 'error': 'demo_account_required'}
-        from .agents import LLMClient
-        if not LLMClient.from_config(cfg, mode="web").configured:
-            return {'ok': False, 'error': 'dedicated_web_model_required'}
         existing = self.status(cfg)
         if existing['state'] == 'stopped':
             try:

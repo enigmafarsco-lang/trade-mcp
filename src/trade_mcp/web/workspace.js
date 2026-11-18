@@ -4,14 +4,14 @@
 const node=id=>document.getElementById(id);
 const make=(tag,text)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;return n;};
 const busy=new Set();let refreshing=false,lease=null,modelLoaded=false,testing=false;
-let budgetAllowed=false,modelReady=false;
+let budgetAllowed=false,modelReady=false,connectionKnown=false;
 const time=v=>v?new Date(v*1000).toLocaleString('fa-IR'):'هنوز اجرا نشده';
 const duration=ms=>{const mins=Math.ceil(ms/60000);return mins>=60?`${Math.floor(mins/60).toLocaleString('fa-IR')} ساعت و ${(mins%60).toLocaleString('fa-IR')} دقیقه`:`${mins.toLocaleString('fa-IR')} دقیقه`;};
 const known=(v)=>v===null||v===undefined?'نامشخص':Number(v).toLocaleString('fa-IR');
 function syncTestButton(){
  const b=node('workspace-test');if(!b)return;
- b.disabled=testing||!budgetAllowed||!modelReady;
- b.textContent=testing?'در حال آزمایش مدل…':!modelReady?'مدل وب تنظیم نشده':!budgetAllowed?'آزمایش مدل — ابتدا بودجه را فعال کنید':'آزمایش پاسخ مدل (ممکن است هزینه داشته باشد)';
+ b.disabled=testing||!connectionKnown||!budgetAllowed||!modelReady;
+ b.textContent=!connectionKnown?'وضعیت اتصال نامشخص — ابتدا بازخوانی کنید':testing?'در حال آزمایش مدل…':!modelReady?'مدل وب تنظیم نشده':!budgetAllowed?'آزمایش مدل — ابتدا بودجه را فعال کنید':'آزمایش پاسخ مدل (ممکن است هزینه داشته باشد)';
 }
 function budgetText(b){
  b=b||{};
@@ -107,6 +107,7 @@ async function refresh(){
  if(refreshing)return;refreshing=true;
  try{
   const d=await request('/api/workspace-status');
+  connectionKnown=true;
   budgetAllowed=!!(d.model_budget&&d.model_budget.allowed);
   modelReady=!!d.model_configured;
   node('workspace-status').textContent=`داده: ${d.backend}${d.backend==='mock'?' — ساختگی؛ دادهٔ واقعی نیست':''} | اجرای معامله: ${d.trading_enabled?'فعال؛ هر پیشنهاد نیازمند تأیید شماست':'غیرفعال'} | provider: ${d.model_provider||'—'} | مدل: ${d.model||'تنظیم نشده'}\n${d.scheduler.running?'چرخهٔ ایجنت فعال است':'چرخهٔ خودکار خاموش است؛ دریافت قیمت به معنی معامله نیست.'}`;
@@ -115,6 +116,7 @@ async function refresh(){
   syncBudgetButton(d.model_budget);
   node('workspace-usage').textContent=usageText(d.model_usage);
   usageRows(d.model_usage_rows||[]);
+  node('research-analyze').disabled=false;
   const cycle=d.page_cycle||{};
   node('workspace-cycle-state').textContent=`${cycle.active?'چرخه فعال':'چرخه متوقف'} | ${cycle.busy?'در حال پایان تحلیل':''} ${cycle.reason||''}`;
   if(!cycle.active)lease=null;
@@ -173,7 +175,11 @@ async function refresh(){
   if(!d.proposals.some(p=>p.status==='pending'||p.status==='blocked'))proposals.append(make('p','پیشنهاد فعال جدیدی وجود ندارد. موارد قدیمی در تاریخچه‌اند.'));
   const runs=node('workspace-run-history');runs.replaceChildren(make('h3','تاریخچهٔ اجراهای ایجنت (اجراهای ثبت‌شده از این نسخه)'));
   for(const item of d.run_history||[]){const detail=make('details');detail.append(make('summary','گزارش تاریخی • '+time(item.created_at)+' • '+item.agent_id),make('pre','وضعیت زیر مربوط به زمان همین اجراست؛ وضعیت فعلی در فهرست پیشنهادهاست.\n'+describe(item.report||{})));runs.append(detail);}
- }catch(_){node('workspace-status').textContent='وضعیت پنل دریافت نشد؛ اتصال وب را بررسی کنید. دادهٔ قبلی ممکن است قدیمی باشد.';}
+ }catch(_){connectionKnown=false;budgetAllowed=false;modelReady=false;syncTestButton();
+  node('workspace-cycle-start').disabled=true;node('research-analyze').disabled=true;
+  for(const b of node('workspace-agents').querySelectorAll('button'))b.disabled=true;
+  node('workspace-status').textContent='ارتباط با کنسول برقرار نشد؛ وضعیت مدل و بودجه نامشخص است، نه الزاماً تنظیم‌نشده. داده‌های زیر مربوط به آخرین دریافت موفق‌اند.';
+  node('workspace-provider').textContent='وضعیت زندهٔ اتصال مدل در دسترس نیست؛ دادهٔ قبلی قابل اتکا نیست.';}
  finally{refreshing=false;}
 }
 async function stopCycle(beacon=false){
@@ -184,6 +190,17 @@ async function stopCycle(beacon=false){
  catch(e){node('workspace-action').textContent=(e&&e.message)||'توقف چرخه ناموفق بود؛ وضعیت را دوباره بررسی کنید.';}
  finally{await refresh();}
 }
+node('workspace-connect-opencode').onclick=async()=>{
+ const button=node('workspace-connect-opencode');button.disabled=true;
+ node('workspace-action').textContent='در حال شناسایی امن OpenCode؛ درخواست تولید متن ارسال نمی‌شود…';
+ try{
+  const model=node('workspace-model-id').value.trim();
+  if(!model)throw new Error('شناسهٔ مدل رایگان را وارد کنید؛ مثلاً opencode/mimo-v2.6-flash-free');
+  const d=await request('/api/model-connect-opencode',{model,consent_connect:true});
+  node('workspace-action').textContent=d.ok?'اتصال سرور تأیید و مدل وب تنظیم شد؛ هنوز پاسخ هوش مصنوعی آزمایش نشده است.':(d.message||d.error);
+ }catch(e){node('workspace-action').textContent=e.message||'اتصال ناموفق بود.';}
+ finally{button.disabled=false;await refresh();}
+};
 node('workspace-save-model').onclick=async()=>{
  const b=node('workspace-save-model');b.disabled=true;
  node('workspace-action').textContent='در حال ذخیرهٔ تنظیمات مدل در همین اجرای وب…';

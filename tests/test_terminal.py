@@ -518,3 +518,62 @@ def test_session_model_config_rejects_nonfree_and_inherited_variant(mock_app, mo
             urlopen(req)
         assert exc.value.code == 400
     assert mock_app.cfg.opencode_model == original
+
+
+def test_explicit_desktop_connection_configures_only_web_without_generation(mock_app, monkeypatch):
+    from trade_mcp.opencode import OpenCodeClient
+    from trade_mcp.workspace import workspace_identity
+    monkeypatch.setattr('trade_mcp.opencode.discover_desktop', lambda: ('http://127.0.0.1:49374','private-desktop-password'))
+    monkeypatch.setattr(OpenCodeClient, '_request', lambda *a, **kw: pytest.fail('No generation from configuration'))
+    identity = workspace_identity(mock_app.cfg)
+    budget = mock_app.store.model_budget_status()
+    with console(mock_app) as base:
+        req = Request(base+'/api/model-connect-opencode', data=json.dumps({
+            'model':'opencode/mimo-v2.6-flash-free','consent_connect':True}).encode(),
+            headers={'Content-Type':'application/json'})
+        with urlopen(req) as r:
+            data = json.load(r)
+        assert data['ok'] and data['generation_requested'] is False
+        with urlopen(base+'/api/workspace-status') as r:
+            raw = r.read().decode()
+        assert 'private-desktop-password' not in raw
+        state = json.loads(raw)
+        assert state['model_configured']
+        assert state['model_backend'] == 'opencode-session'
+        assert state['model'] == 'opencode/mimo-v2.6-flash-free'
+        assert state['model_variant'] == ''
+        assert state['model_test']['state'] == 'not_tested'
+    assert workspace_identity(mock_app.cfg) == identity
+    assert mock_app.store.model_budget_status() == budget
+    assert mock_app.store.list_model_usage() == []
+    assert mock_app.cfg.opencode_password == 'private-desktop-password'
+
+
+def test_desktop_discovery_failure_does_not_modify_configuration(mock_app, monkeypatch):
+    def fail():
+        raise RuntimeError('raw secret must not be exposed')
+    monkeypatch.setattr('trade_mcp.opencode.discover_desktop', fail)
+    before = (mock_app.cfg.web_model_backend, mock_app.cfg.opencode_model, mock_app.cfg.opencode_url)
+    with console(mock_app) as base:
+        req = Request(base+'/api/model-connect-opencode', data=json.dumps({
+            'model':'opencode/mimo-v2.6-flash-free','consent_connect':True}).encode(),
+            headers={'Content-Type':'application/json'})
+        with pytest.raises(HTTPError) as exc:
+            urlopen(req)
+        assert exc.value.code == 409
+        raw = exc.value.read().decode()
+        assert 'raw secret' not in raw
+        assert json.loads(raw)['error'] == 'desktop_discovery_failed'
+    assert before == (mock_app.cfg.web_model_backend, mock_app.cfg.opencode_model, mock_app.cfg.opencode_url)
+
+
+@pytest.mark.parametrize('payload', [{'model':'opencode/mimo-v2.6-flash-free'},
+                                    {'model':'opencode/paid','consent_connect':True}])
+def test_desktop_connect_requires_consent_and_free_model(mock_app, monkeypatch, payload):
+    monkeypatch.setattr('trade_mcp.opencode.discover_desktop', lambda: pytest.fail('Must not discover'))
+    with console(mock_app) as base:
+        req = Request(base+'/api/model-connect-opencode', data=json.dumps(payload).encode(),
+                      headers={'Content-Type':'application/json'})
+        with pytest.raises(HTTPError) as exc:
+            urlopen(req)
+        assert exc.value.code == 400

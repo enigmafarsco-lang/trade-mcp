@@ -594,6 +594,30 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     return self._json({'ok': False, 'error': 'invalid_budget_action'}, 400)
                 return self._json({'ok': True, 'budget': self._budget_payload(status)})
+            if path == '/api/model-connect-opencode':
+                from .opencode import FREE_MODELS, discover_desktop
+                if payload.get('consent_connect') is not True:
+                    return self._json({'ok': False, 'error': 'connection_consent_required'}, 400)
+                model = str(payload.get('model') or '').strip()
+                if model not in FREE_MODELS:
+                    return self._json({'ok': False, 'error': 'explicit_free_model_required'}, 400)
+                with self.state.lock:
+                    cycle = self.state.page_cycle.status()
+                    if cycle['active'] or cycle['busy'] or self.state.scheduler.running:
+                        return self._json({'ok': False, 'error': 'stop_analysis_before_connect'}, 409)
+                    try:
+                        url, password = discover_desktop()
+                    except RuntimeError:
+                        return self._json({'ok': False, 'error': 'desktop_discovery_failed',
+                                           'message': 'OpenCode Desktop باز باشد؛ ثبت محلی امن و هویت سرور تأیید نشد. رمز را در چت نفرستید.'}, 409)
+                    cfg = self.state.cfg
+                    cfg.web_model_backend = 'opencode-session'
+                    cfg.opencode_url, cfg.opencode_password = url, password
+                    cfg.opencode_model, cfg.opencode_variant = model, ''
+                    self.state.model_test = {'state': 'not_tested',
+                        'message': 'سرور OpenCode شناسایی و مدل وب تنظیم شد؛ هنوز پاسخ مدل آزمایش نشده است.'}
+                return self._json({'ok': True, 'backend': 'opencode-session', 'model': model,
+                                   'variant': '', 'generation_requested': False, 'persisted': False})
             if path == '/api/model-config':
                 if self.state.page_cycle.status()['active'] or self.state.page_cycle.status()['busy']:
                     return self._json({'ok': False, 'error': 'stop_cycle_before_model_change'})
@@ -776,6 +800,10 @@ class Handler(BaseHTTPRequestHandler):
                 "workspace_identity": workspace_identity(cfg),
                 "model_backend": "opencode-session" if cfg.web_model_backend == "opencode-session" else "openai-compatible", "model_source": "web",
                 "model_configured": web_llm.configured,
+                "model_configuration_issue": (None if web_llm.configured else
+                    "OpenCode session requires OPENCODE_URL and an allowlisted OPENCODE_MODEL; LLM_* does not configure this backend."
+                    if cfg.web_model_backend == "opencode-session" else
+                    "Direct backend requires LLM_BASE_URL and LLM_MODEL; use explicit OpenCode connection for session mode."),
                 "model": web_llm.model,
                 "model_provider": web_llm.provider if web_llm.configured else None,
                 "model_billing_project": cfg.llm_billing_project or None,
