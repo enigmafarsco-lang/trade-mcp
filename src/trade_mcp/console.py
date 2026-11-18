@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from .agents import AgentEngine, LLMClient, analysis_messages, model_signature
+from .agents import AgentEngine, LLMClient, analysis_messages, compact_context, model_signature
 from .analysis import analyze_symbol
 from .bridge.base import BridgeError
 from .config import Config
@@ -371,6 +371,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "items": fetch_news(self.state.cfg.news_feeds)})
             if path == "/api/workspace-status":
                 return self._json(self._workspace_status())
+            if path == "/api/research/status":
+                from .research import research_status
+                return self._json(research_status(self.state.cfg))
             if path == "/api/model-usage":
                 try:
                     limit = int(query.get("limit") or 20)
@@ -411,6 +414,53 @@ class Handler(BaseHTTPRequestHandler):
                 with self.state.lock:
                     result = self.state.app.mt5.symbol_select(name, enable=bool(payload.get("enable", True)))
                 return self._json({"ok": True, "result": result})
+            if path in {"/api/research/analyze", "/api/research/backtest"}:
+                from datetime import datetime, timezone
+
+                from .research import research_status, run_worker, validated_messages
+                if not research_status(self.state.cfg)['configured']:
+                    return self._json({'ok': False, 'error': 'research_not_configured',
+                                       'message': 'محیط پژوهشی جدا تنظیم نشده است؛ راهنمای اتصال را ببینید.'}, 409)
+                if path.endswith('/analyze') and payload.get('consent_model_request') is not True:
+                    return self._json({'ok': False, 'error': 'model_consent_required'}, 400)
+                with self.state.lock:
+                    agent = self.state.store.get_agent(str(payload.get('agent_id') or ''))
+                    if not agent or not agent.get('symbols'):
+                        return self._json({'ok': False, 'error': 'unknown_agent'}, 400)
+                    symbol = agent['symbols'][0]
+                    if path.endswith('/backtest'):
+                        bars = self.state.app.mt5.candles(symbol, 'H1', 500)[:-1]
+                        if len(bars) < 60:
+                            return self._json({'ok': False, 'error': 'insufficient_bars'}, 409)
+                        work = {'operation':'backtest', 'bars':bars}
+                    else:
+                        report = analyze_symbol(mt5=self.state.app.mt5, cfg=self.state.cfg,
+                                                symbol=symbol, bars_count=300)
+                        if not report.get('ok'):
+                            return self._json({'ok':False,'error':'analysis_unavailable'}, 409)
+                        context = compact_context(report)
+                        context['data_backend'] = self.state.cfg.backend
+                        work = {'operation':'prepare', 'symbol':symbol, 'context':context,
+                                'date':datetime.now(timezone.utc).date().isoformat()}
+                prepared = run_worker(self.state.cfg, work)
+                if not prepared.get('ok'):
+                    return self._json(prepared, 409)
+                if path.endswith('/backtest'):
+                    return self._json({**prepared, 'backend':self.state.cfg.backend,
+                                       'symbol':symbol, 'timeframe':'H1', 'executable':False})
+                llm = self.state.model_client('research_tradingagents')
+                if not llm.configured:
+                    return self._json({'ok':False,'error':'model_not_configured'}, 409)
+                try:
+                    text = llm.chat(validated_messages(prepared))
+                except BudgetDenied as exc:
+                    return self._budget_denied(exc)
+                except ProviderError as exc:
+                    return self._json({'ok':False, **exc.safe_dict()}, 409)
+                return self._json({'ok':True, 'report':text, 'engine':prepared.get('engine'),
+                                   'backend':self.state.cfg.backend, 'symbol':symbol,
+                                   'usage':llm.last_usage, 'executable':False,
+                                   'model':llm.response_model})
             if path == "/api/estimate-analysis-tokens":
                 with self.state.lock:
                     agent = self.state.store.get_agent(str(payload.get("agent_id") or ""))

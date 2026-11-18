@@ -27,7 +27,7 @@ def workspace_identity(cfg):
     # The model ID is intentionally mutable from the web console
     # (/api/model-config) for this run only. Base URL, billing label and usage
     # convention are environment-level settings and are part of the identity.
-    settings = [journal_identity(cfg.journal_path), cfg.mcp_url,
+    settings = [cfg.research_python, journal_identity(cfg.journal_path), cfg.mcp_url,
                 cfg.web_model_backend, cfg.opencode_url if cfg.web_model_backend == "opencode-session" else "",
                 cfg.llm_base_url, cfg.llm_billing_project, cfg.llm_usage_convention,
                 cfg.default_symbol, cfg.timeframes, cfg.training_budget,
@@ -46,6 +46,7 @@ def console_environment(cfg):
         env.pop('TRADE_MCP_' + key, None)
         env.pop(key, None)
     values = {
+        'RESEARCH_PYTHON': cfg.research_python,
         'WEB_MODEL_BACKEND': cfg.web_model_backend,
         'BACKEND': 'native', 'MCP_URL': cfg.mcp_url, 'MCP_TOKEN': cfg.mcp_token,
         'LLM_BASE_URL': cfg.llm_base_url, 'LLM_MODEL': cfg.llm_model,

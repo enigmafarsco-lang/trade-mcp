@@ -101,6 +101,7 @@ class Config:
     opencode_variant: str = ""
     opencode_free_fallback: bool = False
     opencode_password: str = field(default="", repr=False)
+    research_python: str = ""
     web_model_backend: str = "direct"
     llm_base_url: str = ""
     llm_api_key: str = field(default="", repr=False)
@@ -160,6 +161,7 @@ class Config:
             opencode_variant=(_env("OPENCODE_VARIANT") or "").strip(),
             opencode_free_fallback=_env_bool("OPENCODE_FREE_FALLBACK", False),
             opencode_password=(_env("OPENCODE_PASSWORD") or os.environ.get("OPENCODE_PASSWORD") or os.environ.get("OPENCODE_SERVER_PASSWORD", "")),
+            research_python=(_env("RESEARCH_PYTHON") or "").strip(),
             web_model_backend=(_env("WEB_MODEL_BACKEND", "direct") or "direct").strip(),
             llm_base_url=(_env("LLM_BASE_URL") or "").strip(),
             llm_api_key=(_env("LLM_API_KEY") or "").strip(),

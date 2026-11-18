@@ -1,5 +1,10 @@
 # Trading frameworks: Linux and MT5 integration assessment
 
+Implementation update: a bounded TradingAgents tool-free analyst bridge and an
+optional Backtesting.py worker are now implemented. See [SETUP.md](SETUP.md).
+The assessment below records the pre-integration selection rationale; it does
+not describe a full graph integration or a StockSharp migration.
+
 Scope: source inspection of selected official upstream repositories, not a claim
 that all names in the operator's list have been verified. Star counts and names
 without repository URLs are not used as evidence. No upstream code was installed,
@@ -95,5 +100,5 @@ OpenCode free-quota rejection by itself.
 - Disabled by default; missing dependencies/providers produce explicit blockers.
 - Offline regression and Linux smoke tests before any optional demo connection.
 
-This commit supplies a decision record only. It does not claim functional
-integration, Linux StockSharp execution, or a successful cloud-model response.
+This file is a decision record. The bounded implementation is documented in
+SETUP.md; Linux StockSharp execution and live cloud success remain unverified.
