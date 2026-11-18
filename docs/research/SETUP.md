@@ -209,3 +209,17 @@ Output inside the checkout is allowed only under a Git-ignored directory. Report
 files use exclusive creation; historical logs are never replaced. Raw test output
 and environment variables are not written into the report. A Git commit alone
 does not prove a clean checkout, so source hashes are included as well.
+
+## Offline upstream-role preview from the web
+
+`POST /api/research/prepare` accepts an existing `agent_id` and `role` (market,
+bull, bear). It gathers broker context and calls only the isolated upstream
+prompt-preparation worker, returning validated `messages`, role/source revision,
+actual host UTC timestamp and character count. It never constructs or invokes
+a cloud model client, requires no cloud key or budget, and does not write usage
+or proposals. `generation_requested:false`, `model_response:false` and null
+usage distinguish preview from a real model result. No token estimate is
+substituted for actual usage. The web preview and JSON-download controls expose
+this explicitly. Exports include the prompt/market context, so do not share them
+as if they were generic logs. No automatic export/server persistence is added.
+This capability does not fix provider quota or establish strategy profitability.

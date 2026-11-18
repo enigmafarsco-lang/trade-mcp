@@ -249,11 +249,12 @@ node('research-download').onclick=()=>{
  const a=document.createElement('a');a.href=url;a.download='research-'+new Date().toISOString().replace(/[:.]/g,'-')+'.json';
  a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 };
-for(const operation of ['analyze','backtest','compare'])node('research-'+operation).onclick=async()=>{
+for(const operation of ['analyze','backtest','compare','prepare'])node('research-'+operation).onclick=async()=>{
  const out=node('research-result');
  if(operation==='analyze'&&!node('research-consent').checked){out.textContent='ابتدا اجازهٔ درخواست مدل را مشخص کنید.';return;}
- for(const op of ['analyze','backtest','compare'])node('research-'+op).disabled=true;
- out.textContent='در حال پژوهش؛ هیچ سفارشی اجرا نمی‌شود…';
+ for(const op of ['analyze','backtest','compare','prepare'])node('research-'+op).disabled=true;
+ out.textContent=operation==='prepare'?'آماده‌سازی آفلاین ورودی؛ هیچ مدل ابری فراخوانی نمی‌شود…':'در حال پژوهش؛ هیچ سفارشی اجرا نمی‌شود…';
+ researchReport=null;node('research-download').disabled=true;
  try{
   const d=await request('/api/research/'+operation,{role:node('research-role').value,strategy:node('research-strategy').value,agent_id:node('workspace-cycle-agent').value,consent_model_request:node('research-consent').checked});
   if(operation!=='analyze'){researchReport=d;node('research-download').disabled=false;}
@@ -263,7 +264,7 @@ for(const operation of ['analyze','backtest','compare'])node('research-'+operati
   if(operation!=='analyze'&&e.payload){researchReport=e.payload;node('research-download').disabled=false;}
   out.textContent=e.message||'پژوهش ناموفق بود.';
  }
- finally{for(const op of ['analyze','backtest','compare'])node('research-'+op).disabled=false;await refresh();}
+ finally{for(const op of ['analyze','backtest','compare','prepare'])node('research-'+op).disabled=false;await refresh();}
 };
 node('workspace-estimate').onclick=async()=>{
  const button=node('workspace-estimate'),result=node('workspace-estimate-result');

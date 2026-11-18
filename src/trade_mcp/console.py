@@ -417,7 +417,7 @@ class Handler(BaseHTTPRequestHandler):
                 with self.state.lock:
                     result = self.state.app.mt5.symbol_select(name, enable=bool(payload.get("enable", True)))
                 return self._json({"ok": True, "result": result})
-            if path in {"/api/research/analyze", "/api/research/backtest", "/api/research/compare"}:
+            if path in {"/api/research/analyze", "/api/research/backtest", "/api/research/compare", "/api/research/prepare"}:
                 from datetime import datetime, timezone
 
                 from .research import (
@@ -471,6 +471,16 @@ class Handler(BaseHTTPRequestHandler):
                                        'snapshot':snapshot}, 200 if prepared.get('ok') else 409)
                 if not prepared.get('ok'):
                     return self._json(prepared, 409)
+                if path.endswith('/prepare'):
+                    messages = validated_messages(prepared)
+                    return self._json({'ok':True, 'operation':'prepare',
+                        'engine':prepared.get('engine'), 'role':role, 'messages':messages,
+                        'backend':self.state.cfg.backend, 'symbol':symbol,
+                        'generated_at':datetime.now(timezone.utc).isoformat(),
+                        'generation_requested':False, 'model_response':False, 'executable':False,
+                        'usage':None, 'characters':sum(len(m['content']) for m in messages),
+                        'source_revision':'9fa1196fffbcfd9de5146d2dd2869df84ab99838',
+                        'warning':'Prompt preview only, NOT model analysis. Export includes market context.'})
                 llm = self.state.model_client('research_tradingagents')
                 if not llm.configured:
                     return self._json({'ok':False,'error':'model_not_configured'}, 409)

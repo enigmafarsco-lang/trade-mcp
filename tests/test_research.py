@@ -237,3 +237,35 @@ def test_actual_upstream_research_roles_prepare_without_generation(mock_app, rol
     assert 'one-sided' in messages[0]['content']
     assert role in result['engine']
     assert mock_app.store.list_model_usage() == []
+
+
+@pytest.mark.parametrize('role', ['market','bull','bear'])
+def test_prompt_preview_api_never_calls_model_or_budget(mock_app, monkeypatch, role):
+    from urllib.request import Request, urlopen
+
+    from test_terminal import console
+
+    from trade_mcp.agents import LLMClient
+    mock_app.cfg.research_python = sys.executable
+    agent = mock_app.store.create_agent({'name':'Preview','symbols':['XAUUSD']})
+    monkeypatch.setattr(LLMClient, 'chat', lambda *a, **k: pytest.fail('Preview must never generate'))
+    def prepare(cfg, work):
+        assert work['operation'] == 'prepare' and work['role'] == role
+        assert work['context']['data_backend'] == 'mock'
+        return {'ok':True, 'messages':[{'role':'user','content':'Broker snapshot'}], 'engine':'fixture'}
+    monkeypatch.setattr('trade_mcp.research.run_worker', prepare)
+    budget = mock_app.store.model_budget_status()
+    proposals = mock_app.store.list_proposals()
+    with console(mock_app) as base:
+        req = Request(base+'/api/research/prepare', data=json.dumps({'agent_id':agent['id'],
+                      'role':role}).encode(), headers={'Content-Type':'application/json'})
+        with urlopen(req) as response:
+            data = json.load(response)
+    assert data['generation_requested'] is False and data['model_response'] is False
+    assert data['usage'] is None and data['executable'] is False
+    assert data['characters'] == len('Broker snapshot')
+    assert data['role'] == role and data['backend'] == 'mock'
+    assert data['generated_at'].endswith('+00:00')
+    assert mock_app.store.model_budget_status() == budget
+    assert mock_app.store.list_model_usage() == []
+    assert mock_app.store.list_proposals() == proposals
