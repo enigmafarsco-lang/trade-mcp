@@ -7,6 +7,8 @@ from .agents import LLMClient
 from .model_usage import ProviderError
 from .opencode import FREE_MODELS, ModelServiceError, OpenCodeClient
 
+ADAPTER_REVISION = "session-model-readback-v2"
+
 
 class WebOpenCodeClient(LLMClient):
     @classmethod
@@ -52,10 +54,10 @@ class WebOpenCodeClient(LLMClient):
         self.probe_only = True
         try:
             self._response_data(None)
-            return {'ok':True, 'transport':dict(self.transport_diagnostics), 'generation_requested':False}
+            return {'ok':True, 'adapter_revision':ADAPTER_REVISION, 'transport':dict(self.transport_diagnostics), 'generation_requested':False}
         except ProviderError as exc:
             exc.transport = dict(self.transport_diagnostics)
-            return {'ok':False, **exc.safe_dict()}
+            return {'ok':False, 'adapter_revision':ADAPTER_REVISION, **exc.safe_dict()}
         finally:
             self.probe_only = False
 

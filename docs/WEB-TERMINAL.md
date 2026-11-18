@@ -597,3 +597,11 @@ chat session. The HTTP client accepts successful 204 No Content replies without
 trying to parse JSON (model switching and session deletion use 204 in v2.2.7).
 The handshake-only check exercises this path without generation or budget use.
 A failed readback is still a blocker, not permission to trust a model-switch POST.
+
+Workspace status includes a `runtime` object with the live console PID, start
+time, console revision and loaded session-adapter revision. Session-check replies
+include `adapter_revision` on both success and classified failure. These are
+in-memory protocol markers, not a Git commit hash or proof of working provider
+access. Use them to detect stale processes: pulling code does not reload an
+already imported Python module. Do not delete bytecode caches or unrelated
+processes merely because Git HEAD and a live API response disagree.

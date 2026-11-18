@@ -577,3 +577,15 @@ def test_desktop_connect_requires_consent_and_free_model(mock_app, monkeypatch, 
         with pytest.raises(HTTPError) as exc:
             urlopen(req)
         assert exc.value.code == 400
+
+
+def test_status_proves_live_runtime_revisions(mock_app):
+    import os
+
+    with console(mock_app) as base:
+        with urlopen(base+'/api/workspace-status') as r:
+            runtime = json.load(r)['runtime']
+        assert runtime['pid'] == os.getpid()
+        assert runtime['started_at'] > 0
+        assert runtime['console_revision'] == 'runtime-proof-v1'
+        assert runtime['session_adapter_revision'] == 'session-model-readback-v2'

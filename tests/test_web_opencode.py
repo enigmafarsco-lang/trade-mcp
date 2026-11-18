@@ -203,3 +203,16 @@ def test_opencode_no_content_response_is_success(monkeypatch):
             return Response()
     monkeypatch.setattr('urllib.request.build_opener', lambda *args: Opener())
     assert OpenCodeClient('http://localhost:49374')._request('POST','/api/session/ses_owned/model',{}) == {}
+
+
+def test_failed_probe_also_identifies_loaded_adapter(mock_app, monkeypatch):
+    def request(self, method, path, payload=None):
+        if path == '/api/info':
+            return {'version':'2.2.7','pid':123,'urls':[]}
+        if path == '/api/session':
+            return {'data':{**payload,'permissions':[],'id':'ses_owned'}}
+        return {}
+    monkeypatch.setattr(OpenCodeClient, '_request', request)
+    result = client(mock_app).check_session()
+    assert not result['ok']
+    assert result['adapter_revision'] == 'session-model-readback-v2'

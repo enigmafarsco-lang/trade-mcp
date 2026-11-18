@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import json
 import math
+import os
 import re
 import sys
 import threading
@@ -49,12 +50,14 @@ from .store import Store
 from .training import backtest, training_snapshot
 
 WEB_DIR = Path(__file__).with_name("web")
+CONSOLE_REVISION = "runtime-proof-v1"
 
 
 class ConsoleState:
     """Shared, thread-safe state for the HTTP handlers."""
 
     def __init__(self, app: Any):
+        self.started_at = time.time()
         self.app = app
         self.lock = threading.Lock()
         self.scheduler = _Scheduler(self, self.lock)
@@ -805,7 +808,11 @@ class Handler(BaseHTTPRequestHandler):
                               "confirmable": bool(cfg.allow_trading and item['status'] == 'pending' and not expired and item['id'] not in blocked_ids)})
         from .workspace import journal_identity, workspace_identity
         web_llm = self.state.model_client("status")
+        from .web_opencode import ADAPTER_REVISION
         return {"ok": True, "backend": cfg.backend, "trading_enabled": cfg.allow_trading,
+                "runtime": {"pid": os.getpid(), "started_at": self.state.started_at,
+                            "console_revision": CONSOLE_REVISION,
+                            "session_adapter_revision": ADAPTER_REVISION},
                 "journal_identity": journal_identity(cfg.journal_path),
                 "workspace_identity": workspace_identity(cfg),
                 "model_backend": "opencode-session" if cfg.web_model_backend == "opencode-session" else "openai-compatible", "model_source": "web",
