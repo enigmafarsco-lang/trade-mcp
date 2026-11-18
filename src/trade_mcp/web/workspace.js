@@ -132,6 +132,11 @@ async function refresh(){
   const testLines=[`آخرین آزمایش پاسخ مدل: ${test.state==='not_tested'?'هنوز انجام نشده':`${test.state==='failed'?'ناموفق':test.state==='ready'?'موفق':test.state} — ${time(test.tested_at)}`}`];
   if(test.message)testLines.push(test.message);
   if(test.code)testLines.push('کد: '+test.code);
+  if(test.rate_limit_diagnostic){
+   const diagnostic=test.rate_limit_diagnostic;
+   const labels={upstream_rate_limit_reported:'سرویس محدودیت بالادستی را اعلام کرده',daily_limit_reported:'سرویس سقف روزانه را اعلام کرده',per_minute_limit_reported:'سرویس سقف دقیقه‌ای را اعلام کرده'};
+   testLines.push('جزئیات محدودیت: '+((diagnostic.reported_reasons||[]).map(x=>labels[x]||'نامشخص').join('؛ ')||'منشأ نامشخص')+' — صرفاً گفتهٔ سرویس، نه تأیید مستقل.');
+  }
   if(test.response_model)testLines.push('مدل پاسخ‌دهندهٔ تست: '+test.response_model);
   for(const a of test.model_attempts||[])testLines.push('تلاش: '+a.model+' • '+(a.status||'—')+(a.error?' • '+a.error:''));
   if(test.retry_after_ms)testLines.push('provider تا حدود '+duration(Number(test.retry_after_ms))+' دیگر درخواست جدید نمی‌پذیرد.');

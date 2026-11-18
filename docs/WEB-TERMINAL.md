@@ -612,3 +612,20 @@ equivalent provider-default representations. Other explicit variants remain
 exact-match; this does not permit variant rotation, a different model, or weaker
 permissions. The live adapter marker for this correction is
 `session-default-alias-v3`.
+
+### Bounded safe rate-limit explanations
+
+Direct-provider 429 failures now attach `rate_limit_diagnostic` to the safe
+error and in-memory model-test status. Only fixed labels are extracted from
+explicit statements in JSON `error.message` or `error.metadata.raw`. Provider
+names, arbitrary text, IDs, headers and raw bodies are never echoed. Daily or
+per-minute statements do not establish whether enforcement originated at the
+router or upstream; only an explicit upstream statement yields
+`upstream_reported`, still marked `independently_verified:false`.
+HTTP 429 alone remains `origin:unknown`. The web displays these fixed reasons.
+
+This does not change request payloads, classify past ledger rows retroactively,
+store diagnostics in the usage database, retry requests, reset budgets, change
+models, or fix service capacity. In-memory evidence is lost on restart; save the
+safe test-result JSON when conducting an authorized future test. Existing rows
+with only a generic classified error cannot be reconstructed.

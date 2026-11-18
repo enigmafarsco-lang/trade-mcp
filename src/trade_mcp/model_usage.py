@@ -211,6 +211,9 @@ class ProviderError(RuntimeError):
         }
         if self.retry_after_ms is not None:
             result["retry_after_ms"] = self.retry_after_ms
+        diagnostic = getattr(self, 'rate_limit_diagnostic', None)
+        if diagnostic is not None:
+            result['rate_limit_diagnostic'] = diagnostic
         transport = getattr(self, 'transport', None)
         if isinstance(transport, dict):
             # Only locally generated enums/booleans, never raw server data.
@@ -274,6 +277,42 @@ def _retry_after_ms(body: str, headers: Any = None) -> int | None:
     return None
 
 
+def rate_limit_diagnostic(body: str) -> dict[str, Any]:
+    """Record fixed labels from explicit error statements, never raw text/metadata.
+
+    These are claims in a provider response, not independent attribution proof.
+    Catalogue prices and HTTP status alone cannot identify the throttling source.
+    """
+    try:
+        parsed = json.loads((body or '')[:32768])
+    except (TypeError, ValueError):
+        parsed = {}
+    error = parsed.get('error') if isinstance(parsed, dict) else None
+    error = error if isinstance(error, dict) else {}
+    metadata = error.get('metadata')
+    metadata = metadata if isinstance(metadata, dict) else {}
+    # Ignore arbitrary other fields (including keys, headers, prompts and IDs).
+    parts = [value.lower() for value in (error.get('message'), metadata.get('raw'))
+             if isinstance(value, str)]
+    text = ' '.join(parts)
+    upstream = any(marker in text for marker in (
+        'rate-limited upstream', 'rate limited upstream', 'upstream rate limit',
+        'upstream provider rate limit'))
+    daily = any(marker in text for marker in ('daily request limit', 'free-models-per-day',
+                                               'free models per day', 'daily free limit'))
+    minute = any(marker in text for marker in ('requests per minute', 'per-minute rate limit'))
+    reasons = []
+    if upstream:
+        reasons.append('upstream_rate_limit_reported')
+    if daily:
+        reasons.append('daily_limit_reported')
+    if minute:
+        reasons.append('per_minute_limit_reported')
+    return {'origin': 'unknown' if daily or minute or not upstream else 'upstream_reported',
+            'reported_reasons': reasons, 'evidence': 'provider_error_statement' if reasons else 'insufficient',
+            'independently_verified': False}
+
+
 def classify_http_error(status: int, body: str, headers: Any = None) -> ProviderError:
     """Classify a bounded response without echoing its body or headers."""
     text = (body or "").lower()
@@ -292,7 +331,10 @@ def classify_http_error(status: int, body: str, headers: Any = None) -> Provider
         code = "endpoint_unavailable"
     else:
         code = "connection_failed"
-    return ProviderError(code, status, retry_after_ms=_retry_after_ms(body, headers))
+    result = ProviderError(code, status, retry_after_ms=_retry_after_ms(body, headers))
+    if code == 'rate_limited':
+        result.rate_limit_diagnostic = rate_limit_diagnostic(body)
+    return result
 
 
 def budget_message(status: dict[str, Any]) -> str:
