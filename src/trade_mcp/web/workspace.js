@@ -242,15 +242,28 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden)stopCycle(t
 window.addEventListener('pagehide',()=>stopCycle(true));
 setInterval(async()=>{if(lease&&!document.hidden){try{const d=await request('/api/page-cycle',{action:'heartbeat',lease});if(!d.ok)lease=null;}catch(_){node('workspace-action').textContent='heartbeat ناموفق؛ چرخه بدون heartbeat معتبر متوقف خواهد شد.';}}},5000);
 node('workspace-refresh').onclick=refresh;
-for(const operation of ['analyze','backtest'])node('research-'+operation).onclick=async()=>{
- const button=node('research-'+operation),out=node('research-result');
+let researchReport=null;
+node('research-download').onclick=()=>{
+ if(!researchReport)return;
+ const url=URL.createObjectURL(new Blob([JSON.stringify(researchReport,null,2)],{type:'application/json'}));
+ const a=document.createElement('a');a.href=url;a.download='research-'+new Date().toISOString().replace(/[:.]/g,'-')+'.json';
+ a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+};
+for(const operation of ['analyze','backtest','compare'])node('research-'+operation).onclick=async()=>{
+ const out=node('research-result');
  if(operation==='analyze'&&!node('research-consent').checked){out.textContent='ابتدا اجازهٔ درخواست مدل را مشخص کنید.';return;}
- button.disabled=true;out.textContent='در حال پژوهش؛ هیچ سفارشی اجرا نمی‌شود…';
+ for(const op of ['analyze','backtest','compare'])node('research-'+op).disabled=true;
+ out.textContent='در حال پژوهش؛ هیچ سفارشی اجرا نمی‌شود…';
  try{
   const d=await request('/api/research/'+operation,{strategy:node('research-strategy').value,agent_id:node('workspace-cycle-agent').value,consent_model_request:node('research-consent').checked});
-  out.textContent=d.ok?(d.report||JSON.stringify(d,null,2)):(d.message||d.error||'پژوهش ناموفق بود.');
- }catch(e){out.textContent=e.message||'پژوهش ناموفق بود.';}
- finally{button.disabled=false;await refresh();}
+  if(operation!=='analyze'){researchReport=d;node('research-download').disabled=false;}
+  const display={...d};if(display.snapshot){display.snapshot={...display.snapshot};delete display.snapshot.bars;}
+  out.textContent=d.ok?(d.report||JSON.stringify(display,null,2)):(d.message||d.error||'پژوهش ناموفق بود.');
+ }catch(e){
+  if(operation!=='analyze'&&e.payload){researchReport=e.payload;node('research-download').disabled=false;}
+  out.textContent=e.message||'پژوهش ناموفق بود.';
+ }
+ finally{for(const op of ['analyze','backtest','compare'])node('research-'+op).disabled=false;await refresh();}
 };
 node('workspace-estimate').onclick=async()=>{
  const button=node('workspace-estimate'),result=node('workspace-estimate-result');

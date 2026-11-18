@@ -121,3 +121,31 @@ normalizing exposure. It has no protective SL/TP and is research-only, never an
 execution proposal. The same research process isolation, next-bar fill, synthetic
 cash and simplified commission assumptions apply. Real isolated-worker tests
 exercise this direct import on synthetic data; they do not validate profitability.
+
+## Single-snapshot comparison and reproducible report
+
+`POST /api/research/compare` with an existing `agent_id` fetches H1 candles once,
+drops the last (potentially open) candle, and runs all four strategies in one
+isolated worker on that exact input. There is no model request, budget change,
+proposal, optimization, ranking or order. The comparison button is in the same
+research panel. Partial strategy failures return HTTP 409 with per-strategy
+results; they are not silently reported as a successful complete comparison.
+
+Both individual backtests and comparison replies include `generated_at` (actual
+UTC ISO timestamp), a `snapshot` with canonical OHLC and supplied numeric bar
+times, and a SHA-256 over its canonical JSON. Missing bar times remain null in
+metadata; no dates are invented. The snapshot hash identifies inputs, not their
+freshness, accuracy or source authenticity. Invalid/nonpositive/nonfinite OHLC
+or inconsistent ranges are rejected. Comparison uses the same candle data, not
+the same exposure: original SmaCross uses default equity sizing and long/short,
+whereas the three independent baselines use one unit and long-only. Returns
+must not be ranked as comparable risk-adjusted performance.
+
+The web **save backtest report (JSON)** button downloads the full response,
+including candles and per-strategy provenance/assumptions, to the user's browser.
+It also supports classified failed responses. This does not automatically write
+a server log or include prompts, credentials or account balances. Treat exported
+broker candle data according to your data-sharing restrictions. Local automation
+can save the exact API JSON into an existing ignored log directory; do not use
+shell text templates with unexpanded date expressions. Preserve full UTC time,
+input hash, errors and exposure warnings in any derived human-readable report.

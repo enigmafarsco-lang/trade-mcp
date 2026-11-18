@@ -1,7 +1,9 @@
 """Optional report/backtest bridge. Never imports an order executor."""
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import os
 import subprocess
 from pathlib import Path
@@ -50,3 +52,27 @@ def validated_messages(result):
     if sum(len(m['content']) for m in messages) > 100000:
         raise ValueError('Research prompt too large')
     return [{'role':m['role'], 'content':m['content']} for m in messages]
+
+
+def snapshot_record(bars):
+    """Canonical reproducible input; reject malformed OHLC rather than repair it."""
+    if not isinstance(bars, list) or not 60 <= len(bars) <= 499:
+        raise ValueError('Invalid snapshot size')
+    clean = []
+    for bar in bars:
+        row = {}
+        for key in ('open', 'high', 'low', 'close'):
+            value = bar.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+                raise ValueError('Invalid price')
+            row[key] = float(value)
+        if row['low'] > min(row['open'], row['close']) or row['high'] < max(row['open'], row['close']):
+            raise ValueError('Invalid OHLC range')
+        # Preserve source bar time when supplied, without inventing dates.
+        value = bar.get('time')
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+            row['time'] = value
+        clean.append(row)
+    encoded = json.dumps(clean, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+    return {'sha256': hashlib.sha256(encoded).hexdigest(), 'bars': clean,
+            'count': len(clean), 'first_time': clean[0].get('time'), 'last_time': clean[-1].get('time')}

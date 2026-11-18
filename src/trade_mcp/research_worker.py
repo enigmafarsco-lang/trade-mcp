@@ -87,6 +87,21 @@ def backtest(payload):
             'Final liquidation enabled. Not optimized or out-of-sample validated.'}
 
 
+def compare(payload):
+    from research_strategies import STRATEGIES
+
+    results = []
+    for strategy in STRATEGIES:
+        try:
+            results.append(backtest({'bars': payload['bars'], 'strategy': strategy}))
+        except ImportError:
+            results.append({'ok': False, 'strategy_id': strategy, 'error': 'research_dependencies_missing'})
+        except Exception:
+            results.append({'ok': False, 'strategy_id': strategy, 'error': 'research_worker_failed'})
+    return {'ok': all(r['ok'] for r in results), 'operation': 'compare', 'results': results,
+            'warning': 'Identical candles, NOT identical exposure. No ranking or live suitability implied.'}
+
+
 def main():
     payload = json.loads(sys.stdin.read(2_000_001))
     # Block ordinary socket networking, including external upstream data tools.
@@ -97,6 +112,8 @@ def main():
         with contextlib.redirect_stdout(io.StringIO()):
             if payload['operation'] == 'prepare':
                 result = prepare(payload)
+            elif payload['operation'] == 'compare':
+                result = compare(payload)
             elif payload['operation'] == 'backtest':
                 result = backtest(payload)
             else:

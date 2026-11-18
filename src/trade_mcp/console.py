@@ -417,21 +417,27 @@ class Handler(BaseHTTPRequestHandler):
                 with self.state.lock:
                     result = self.state.app.mt5.symbol_select(name, enable=bool(payload.get("enable", True)))
                 return self._json({"ok": True, "result": result})
-            if path in {"/api/research/analyze", "/api/research/backtest"}:
+            if path in {"/api/research/analyze", "/api/research/backtest", "/api/research/compare"}:
                 from datetime import datetime, timezone
 
-                from .research import research_status, run_worker, validated_messages
+                from .research import (
+                    research_status,
+                    run_worker,
+                    snapshot_record,
+                    validated_messages,
+                )
                 if not research_status(self.state.cfg)['configured']:
                     return self._json({'ok': False, 'error': 'research_not_configured',
                                        'message': 'محیط پژوهشی جدا تنظیم نشده است؛ راهنمای اتصال را ببینید.'}, 409)
                 if path.endswith('/analyze') and payload.get('consent_model_request') is not True:
                     return self._json({'ok': False, 'error': 'model_consent_required'}, 400)
+                is_backtest = path.endswith(('/backtest', '/compare'))
                 with self.state.lock:
                     agent = self.state.store.get_agent(str(payload.get('agent_id') or ''))
                     if not agent or not agent.get('symbols'):
                         return self._json({'ok': False, 'error': 'unknown_agent'}, 400)
                     symbol = agent['symbols'][0]
-                    if path.endswith('/backtest'):
+                    if is_backtest:
                         from .research_strategies import STRATEGIES
                         strategy = payload.get('strategy', 'sma_cross')
                         if not isinstance(strategy, str) or strategy not in STRATEGIES:
@@ -439,7 +445,12 @@ class Handler(BaseHTTPRequestHandler):
                         bars = self.state.app.mt5.candles(symbol, 'H1', 500)[:-1]
                         if len(bars) < 60:
                             return self._json({'ok': False, 'error': 'insufficient_bars'}, 409)
-                        work = {'operation':'backtest', 'bars':bars, 'strategy':strategy}
+                        try:
+                            snapshot = snapshot_record(bars)
+                        except (ValueError, TypeError, AttributeError):
+                            return self._json({'ok':False,'error':'invalid_research_candles'}, 409)
+                        work = {'operation':'compare' if path.endswith('/compare') else 'backtest',
+                                'bars':snapshot['bars'], 'strategy':strategy}
                     else:
                         report = analyze_symbol(mt5=self.state.app.mt5, cfg=self.state.cfg,
                                                 symbol=symbol, bars_count=300)
@@ -450,11 +461,13 @@ class Handler(BaseHTTPRequestHandler):
                         work = {'operation':'prepare', 'symbol':symbol, 'context':context,
                                 'date':datetime.now(timezone.utc).date().isoformat()}
                 prepared = run_worker(self.state.cfg, work)
+                if is_backtest:
+                    return self._json({**prepared, 'backend':self.state.cfg.backend,
+                                       'symbol':symbol, 'timeframe':'H1', 'executable':False,
+                                       'generated_at':datetime.now(timezone.utc).isoformat(),
+                                       'snapshot':snapshot}, 200 if prepared.get('ok') else 409)
                 if not prepared.get('ok'):
                     return self._json(prepared, 409)
-                if path.endswith('/backtest'):
-                    return self._json({**prepared, 'backend':self.state.cfg.backend,
-                                       'symbol':symbol, 'timeframe':'H1', 'executable':False})
                 llm = self.state.model_client('research_tradingagents')
                 if not llm.configured:
                     return self._json({'ok':False,'error':'model_not_configured'}, 409)

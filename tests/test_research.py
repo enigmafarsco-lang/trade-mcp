@@ -157,3 +157,65 @@ def test_real_official_strategy_when_configured(mock_app):
     assert result['stats']['# Trades'] > 0
     assert 'Long/short' in result['execution']
     assert mock_app.store.list_model_usage() == []
+
+
+def test_comparison_api_fetches_once_and_preserves_boundaries(mock_app, monkeypatch):
+    from urllib.request import Request, urlopen
+
+    from test_terminal import console
+
+    from trade_mcp.agents import LLMClient
+    from trade_mcp.research import snapshot_record
+    mock_app.cfg.research_python = sys.executable
+    agent = mock_app.store.create_agent({'name':'Compare','symbols':['XAUUSD']})
+    candles = Mock(wraps=mock_app.mt5.candles)
+    monkeypatch.setattr(mock_app.mt5, 'candles', candles)
+    monkeypatch.setattr(LLMClient, 'chat', lambda *a: pytest.fail('No model permitted'))
+    def worker(cfg, work):
+        assert work['operation'] == 'compare'
+        return {'ok':True, 'results':[{'strategy_id':'fixture','ok':True}]}
+    worker_mock = Mock(side_effect=worker)
+    monkeypatch.setattr('trade_mcp.research.run_worker', worker_mock)
+    before = mock_app.store.list_proposals()
+    with console(mock_app) as base:
+        req = Request(base+'/api/research/compare', data=json.dumps({'agent_id':agent['id']}).encode(),
+                      headers={'Content-Type':'application/json'})
+        with urlopen(req) as response:
+            report = json.load(response)
+    assert candles.call_count == 1
+    assert worker_mock.call_count == 1
+    assert report['snapshot']['sha256'] == snapshot_record(report['snapshot']['bars'])['sha256']
+    assert worker_mock.call_args.args[1]['bars'] == report['snapshot']['bars']
+    assert report['generated_at'].endswith('+00:00')
+    assert report['executable'] is False
+    assert mock_app.store.list_model_usage() == []
+    assert mock_app.store.list_proposals() == before
+
+
+@pytest.mark.parametrize('price', [float('nan'), float('inf'), -1, 0, True, '100'])
+def test_snapshot_rejects_invalid_prices(price):
+    from trade_mcp.research import snapshot_record
+    bars = [{'open':100,'high':101,'low':99,'close':100} for _ in range(60)]
+    bars[-1]['close'] = price
+    with pytest.raises(ValueError):
+        snapshot_record(bars)
+
+
+def test_real_comparison_worker_when_configured(mock_app):
+    import math
+    import os
+    interpreter = os.environ.get('RESEARCH_TEST_PYTHON')
+    if not interpreter:
+        pytest.skip('Optional isolated upstream environment not selected')
+    mock_app.cfg.research_python = interpreter
+    bars = []
+    for i in range(200):
+        p = 100+10*math.sin(i/8)
+        bars.append({'open':p,'high':p+1,'low':p-1,'close':p+.2})
+    result = run_worker(mock_app.cfg, {'operation':'compare','bars':bars})
+    assert result['ok'], result
+    from trade_mcp.research_strategies import STRATEGIES
+    assert [r['strategy_id'] for r in result['results']] == list(STRATEGIES)
+    for row in result['results']:
+        assert row['bars'] == 200
+        assert 'stats' in row and 'assumptions' in row
