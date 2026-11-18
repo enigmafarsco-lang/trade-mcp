@@ -92,6 +92,13 @@ function describe(report){
   if(d.model_error)lines.push(`توقف مدل: ${d.model_error.message} (${d.model_error.code})`);
   if(d.reason)lines.push(d.reason);
   if(d.note)lines.push(d.note);
+  if(d.post_response_check){
+   const check=d.post_response_check;
+   const reasons={analysis_expired:'عمر تحلیل بیش از ۳۰ ثانیه',original_quote_time_invalid_or_expired:'زمان قیمت ورودی تحلیل نامعتبر یا منقضی',fresh_quote_time_invalid_or_stale:'تیک تازه قدیمی یا زمان آن نامعتبر',fresh_quote_or_point_invalid:'قیمت یا مشخصات نماد نامعتبر',spread_too_wide_after_response:'اسپرد پس از پاسخ بیش از سقف',decision_levels_invalid:'SL/TP نامعتبر',decision_levels_crossed_or_wrong_side:'قیمت از سطوح تصمیم عبور کرده',entry_drift_exceeded:'تغییر قیمت بیش از یک‌چهارم فاصلهٔ اولیه تا SL'};
+   lines.push(`کنترل پس از پاسخ: ${check.ok?'مجاز برای ادامهٔ بررسی ریسک':'مسدود؛ پیشنهاد ساخته نشد'} | عمر تحلیل: ${known(check.analysis_age_seconds)} ثانیه | عمر تیک: ${known(check.tick_age_seconds)} ثانیه`);
+   for(const reason of check.reasons||[])lines.push(reasons[reason]||reason);
+   if(d.model_action)lines.push('تصمیم اولیهٔ مدل: '+d.model_action+'؛ برنامه آن را به توقف ایمن تبدیل کرد.');
+  }
   const technical=d.technical_analysis||{},scenario=technical.scenario||{};
   if(technical.summary)lines.push('تحلیل فنی قاعده‌محور — نه تصمیم مدل و نه سفارش:\n'+technical.summary);
   for(const warning of technical.warnings||[])lines.push('هشدار بازار/برنامه: '+warning);

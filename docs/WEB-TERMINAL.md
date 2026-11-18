@@ -629,3 +629,36 @@ store diagnostics in the usage database, retry requests, reset budgets, change
 models, or fix service capacity. In-memory evidence is lost on restart; save the
 safe test-result JSON when conducting an authorized future test. Existing rows
 with only a generic classified error cannot be reconstructed.
+
+### Post-response agent entry safety
+
+Agent buy/sell decisions now carry a fail-closed `post_response_check` before
+creating any proposal. This applies to cloud and deterministic agent paths,
+including advisory/guarded/auto modes; it does not enable trading or change
+manual confirmation requirements. A model WAIT does not create a proposal and
+needs no entry check. A rejected buy/sell is reported as action=wait,
+status=blocked, with original `model_action`, fixed reason codes and unchanged
+model-source provenance. It is NOT reported as a model-generated WAIT.
+
+Conservative entry limits (not tunable via the model): at most 30 seconds from
+starting the analysis to proposal creation; original quote timestamp also at
+most 30 seconds old; newly fetched tick at most 10 seconds old or 2 seconds in
+the future; actual bid/ask spread below the existing configured ceiling; absolute
+same-side entry drift at most 0.25 times the ORIGINAL entry-to-stop distance.
+Missing/nonfinite/invalid prices, time, point, or crossed/wrong-side SL/TP fail
+closed. The model's levels are never shifted to pass these checks.
+
+The executor prices and sizes from the SAME tick checked by this internal guard,
+then performs its existing current symbol/account/positions/margin/risk checks.
+It checks expiry again after those bridge calls, before persisting a proposal.
+It does not silently replace that entry with a newer tick after sizing. This
+is not an atomic broker snapshot: the market may still move afterward. Existing
+proposal expiry, confirmation drift checks and execution risk guards remain in
+force. Direct manual proposal callers are not covered by this agent-specific
+age policy. No auto-refresh/retry or second LLM call is introduced.
+
+An 80-second model response can still be a valid research/WAIT response, but its
+buy/sell entry will now be blocked as expired. This intentionally reduces stale
+entries; it does not establish profitability or guarantee scalping suitability.
+Offline tests cover fresh buy/sell, expiry, stale/future ticks, spread widening,
+price drift, invalid/crossed levels and expiry during sizing/margin validation.

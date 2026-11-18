@@ -48,6 +48,7 @@ def propose_open(
     stop_loss: float | None = None,
     take_profit: float | None = None,
     comment: str = "trade-mcp",
+    entry_guard=None,
 ) -> dict[str, Any]:
     side = str(side).lower()
     if side not in {"buy", "sell"}:
@@ -56,7 +57,16 @@ def propose_open(
     symbol = mt5.resolve_symbol(symbol or cfg.default_symbol)
     info = mt5.symbol_info(symbol)
     digits = int(float(info.get("digits") or 2))
-    entry = _market_price(mt5, symbol, side)
+    if entry_guard is not None:
+        tick = mt5.tick(symbol)
+        check = entry_guard(tick, info)
+        if not check.get('ok'):
+            return {'ok':False, 'error':'post_response_check_failed',
+                    'message':'Entry conditions no longer valid; no proposal created.',
+                    'post_response_check':check}
+        entry = float(tick['ask'] if side == 'buy' else tick['bid'])
+    else:
+        entry = _market_price(mt5, symbol, side)
     account = mt5.account_info(fresh=True)
     positions = mt5.positions()
 
@@ -121,6 +131,14 @@ def propose_open(
         "digits": digits,
         "sizing": sizing,
     }
+    if entry_guard is not None:
+        # Sizing/margin bridge calls can also be slow. Expire the SAME priced
+        # tick rather than silently substituting a new entry after calculations.
+        check = entry_guard(tick, info)
+        if not check.get('ok'):
+            return {'ok':False, 'error':'post_response_check_failed',
+                    'message':'Entry conditions expired during validation; no proposal created.',
+                    'post_response_check':check}
     proposal = store.create_proposal(payload, ttl=cfg.proposal_ttl)
     blocked = has_blockers(issues)
     estimated_risk = (loss_per_lot(info, abs(entry-float(stop_loss)))*volume

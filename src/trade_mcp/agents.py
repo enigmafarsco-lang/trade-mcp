@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 import urllib.error
 import urllib.request
@@ -455,6 +456,7 @@ class AgentEngine:
     def _run_symbol(
         self, agent: dict[str, Any], symbol: str, report: dict[str, Any]
     ) -> dict[str, Any]:
+        snapshot_started = time.monotonic()
         analysis = analyze_symbol(
             mt5=self.mt5,
             cfg=self.cfg,
@@ -500,6 +502,14 @@ class AgentEngine:
             entry["note"] = "بدون معامله"
             return entry
 
+        def entry_guard(tick, info):
+            from .agent_safety import post_response_check
+            check = post_response_check(quote=analysis.get('quote') or {}, tick=tick, info=info,
+                decision=decision, elapsed=time.monotonic()-snapshot_started, now=time.time(),
+                max_spread_points=self.cfg.max_spread_points)
+            entry['post_response_check'] = check
+            return check
+
         proposal = propose_open(
             mt5=self.mt5,
             cfg=self.cfg,
@@ -514,8 +524,14 @@ class AgentEngine:
             stop_loss=decision.get("stop_loss"),
             take_profit=decision.get("take_profit"),
             comment=f"agent:{agent.get('id')}",
+            entry_guard=entry_guard,
         )
         if not proposal.get("ok"):
+            if proposal.get('error') == 'post_response_check_failed':
+                entry['model_action'] = action
+                entry['action'] = 'wait'
+                entry['status'] = 'blocked'
+                entry['wait_reasons'] = proposal['post_response_check']['reasons']
             entry["note"] = f"proposal refused: {proposal.get('error')} - {proposal.get('message')}"
             return entry
 
@@ -717,7 +733,7 @@ def _as_float(value: Any) -> float | None:
         out = float(value)
     except (TypeError, ValueError):
         return None
-    return out or None
+    return out if math.isfinite(out) and out != 0 else None
 
 
 def run_agent_once(app, agent_id: str) -> dict[str, Any]:
