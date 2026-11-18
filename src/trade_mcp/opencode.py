@@ -134,6 +134,8 @@ class OpenCodeClient:
                                      headers=headers, method=method)
         try:
             with urllib.request.build_opener(NoRedirect).open(req, timeout=self.timeout) as response:
+                if getattr(response, 'status', None) == 204:
+                    return {}
                 return json.load(response)
         except urllib.error.HTTPError as exc:
             body = exc.read(32768).decode('utf-8', 'replace')

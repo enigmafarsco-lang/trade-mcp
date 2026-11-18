@@ -136,3 +136,70 @@ def test_session_probe_never_generates_or_reserves_budget(mock_app, monkeypatch)
     assert calls[-1] == ('DELETE','/api/session/ses_probe')
     assert mock_app.store.model_budget_status() == before
     assert mock_app.store.list_model_usage() == []
+
+
+def test_model_mismatch_uses_official_switch_then_verified_readback(mock_app, monkeypatch):
+    calls = []
+    expected = {}
+    def request(self, method, path, payload=None):
+        calls.append((method,path))
+        if path == '/api/info':
+            return {'version':'2.2.7','pid':123,'urls':[]}
+        if path == '/api/session':
+            expected.update(payload)
+            return {'data': {**payload,'id':'ses_owned','model':{}}}
+        if path.endswith('/model'):
+            assert payload['model'] == expected['model']
+            return {}  # HTTP 204
+        if method == 'GET':
+            return {'data':{**expected,'id':'ses_owned'}}
+        assert method == 'DELETE'  # Probe never invokes generate.
+        return {}
+    monkeypatch.setattr(OpenCodeClient, '_request', request)
+    result = client(mock_app).check_session()
+    assert result['ok']
+    assert result['transport']['model_acknowledged'] is True
+    assert result['transport']['generation_submitted'] is False
+    assert ('POST','/api/session/ses_owned/model') in calls
+    assert ('GET','/api/session/ses_owned') in calls
+    assert mock_app.store.list_model_usage() == []
+
+
+@pytest.mark.parametrize('mismatch', ['model','permissions','id'])
+def test_model_switch_never_bypasses_failed_readback(mock_app, monkeypatch, mismatch):
+    expected = {}
+    def request(self, method, path, payload=None):
+        if path == '/api/info':
+            return {'version':'2.2.7','pid':123,'urls':[]}
+        if path == '/api/session':
+            expected.update(payload)
+            return {'data':{**payload,'model':{},'id':'ses_owned'}}
+        if path.endswith('/model'):
+            return {}
+        if method == 'GET':
+            result = {**expected,'id':'ses_owned'}
+            result[mismatch] = {'model':{},'permissions':[],'id':'ses_unrelated'}[mismatch]
+            return {'data':result}
+        assert not path.endswith('/generate')
+        return {}
+    monkeypatch.setattr(OpenCodeClient, '_request', request)
+    result = client(mock_app).check_session()
+    assert not result['ok']
+    assert result['transport']['generation_submitted'] is False
+    assert result['transport']['stage'] == 'session_model_readback'
+
+
+def test_opencode_no_content_response_is_success(monkeypatch):
+    class Response:
+        status = 204
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def read(self, *args):
+            pytest.fail('204 response must not be parsed as JSON')
+    class Opener:
+        def open(self, *args, **kwargs):
+            return Response()
+    monkeypatch.setattr('urllib.request.build_opener', lambda *args: Opener())
+    assert OpenCodeClient('http://localhost:49374')._request('POST','/api/session/ses_owned/model',{}) == {}

@@ -587,3 +587,13 @@ strictly read-only on the server (it creates/deletes its own temporary session).
 Use it to diagnose handshake failures before another live test. Historical
 ledger rows do not retroactively gain stage details; an application attempt row
 alone does not prove an upstream generation occurred.
+
+If session creation acknowledges permissions but omits or differs on the model,
+the adapter now uses the official v2 `POST /api/session/{id}/model` route on that
+newly created session, then `GET /api/session/{id}`. Generation remains blocked
+unless readback confirms the same session ID, exact provider/model/default-or-
+explicit variant and unchanged deny-all permissions. It never switches a desktop
+chat session. The HTTP client accepts successful 204 No Content replies without
+trying to parse JSON (model switching and session deletion use 204 in v2.2.7).
+The handshake-only check exercises this path without generation or budget use.
+A failed readback is still a blocker, not permission to trust a model-switch POST.

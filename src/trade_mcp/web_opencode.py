@@ -82,15 +82,31 @@ class WebOpenCodeClient(LLMClient):
                 sid = None
                 raise ProviderError('invalid_response')
             # Refuse inference if the server did not acknowledge isolation/model.
-            actual = session.get('model') or {}
-            model_matches = (isinstance(actual, dict)
-                and actual.get('providerID') == selection['providerID']
-                and actual.get('id') == selection['id']
-                and (actual.get('variant') or '') == (selection.get('variant') or ''))
+            def model_matches(info):
+                actual = info.get('model') or {}
+                return (isinstance(actual, dict)
+                    and actual.get('providerID') == selection['providerID']
+                    and actual.get('id') == selection['id']
+                    and (actual.get('variant') or '') == (selection.get('variant') or ''))
+
             self.transport_diagnostics.update(permissions_acknowledged=session.get('permissions') == permissions,
-                                              model_acknowledged=model_matches)
-            if session.get('permissions') != permissions or not model_matches:
+                                              model_acknowledged=model_matches(session))
+            if session.get('permissions') != permissions:
                 raise ProviderError('invalid_response')
+            if not model_matches(session):
+                # Some servers do not return the selected model on creation.
+                # Explicitly select it only on OUR new session, then read back.
+                self.transport_diagnostics['stage'] = 'session_model_select'
+                self.oc._request('POST', '/api/session/'+sid+'/model', {'model': selection})
+                self.transport_diagnostics['stage'] = 'session_model_readback'
+                result = self.oc._request('GET', '/api/session/'+sid)
+                verified = result.get('data') or {}
+                same_session = verified.get('id') == sid
+                self.transport_diagnostics.update(
+                    permissions_acknowledged=same_session and verified.get('permissions') == permissions,
+                    model_acknowledged=same_session and model_matches(verified))
+                if not all(self.transport_diagnostics[key] for key in ('permissions_acknowledged', 'model_acknowledged')):
+                    raise ProviderError('invalid_response')
             if getattr(self, 'probe_only', False):
                 return {'checked':True}, 200
             messages = json.loads(req.data)['messages']
