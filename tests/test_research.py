@@ -136,3 +136,24 @@ def test_unknown_strategy_rejected():
     from trade_mcp.research_strategies import strategy_signals
     with pytest.raises(ValueError):
         strategy_signals([], 'untrusted-import')
+
+
+def test_real_official_strategy_when_configured(mock_app):
+    import math
+    import os
+    interpreter = os.environ.get('RESEARCH_TEST_PYTHON')
+    if not interpreter:
+        pytest.skip('Optional isolated upstream environment not selected')
+    mock_app.cfg.research_python = interpreter
+    bars = []
+    for i in range(200):
+        p = 100+10*math.sin(i/8)
+        bars.append({'open':p,'high':p+1,'low':p-1,'close':p+.2})
+    result = run_worker(mock_app.cfg, {'operation':'backtest','bars':bars,
+                                      'strategy':'upstream_sma_cross'})
+    assert result['ok'], result
+    assert 'Direct import' in result['provenance']
+    assert '767746127' in result['source']
+    assert result['stats']['# Trades'] > 0
+    assert 'Long/short' in result['execution']
+    assert mock_app.store.list_model_usage() == []

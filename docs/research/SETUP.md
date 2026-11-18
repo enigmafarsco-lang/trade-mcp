@@ -103,3 +103,21 @@ different market/data/execution assumptions; this change does not claim their
 models were ported or pretrained weights installed. Backtesting.py remains the
 execution engine and retains its upstream licensing requirements. No strategy
 is optimized, proven profitable, or approved for live trading.
+
+## Actual upstream strategy: official SmaCross
+
+`upstream_sma_cross` directly imports `backtesting.test._test.SmaCross` from the
+isolated pinned backtesting==0.6.5 installation. It is NOT our long-only baseline.
+Reviewed source revision: `767746127e75dc1fe99bc72a3e75fe2637ceef60`, file
+`backtesting/test/_test.py`, lines 57–72. No upstream source is vendored. Upstream
+AGPL licensing still applies. This is a private test-module API, so the adapter
+rejects other package versions rather than silently importing changed behavior.
+
+The original class uses 10/30 SMA crossover, reverses long/short, and uses the
+upstream default size (near-full available synthetic equity), NOT one unit or
+MT5 risk sizing. We intentionally do not alter that behavior and label it in
+both UI and output. Do not compare its returns with fixed-unit baselines without
+normalizing exposure. It has no protective SL/TP and is research-only, never an
+execution proposal. The same research process isolation, next-bar fill, synthetic
+cash and simplified commission assumptions apply. Real isolated-worker tests
+exercise this direct import on synthetic data; they do not validate profitability.

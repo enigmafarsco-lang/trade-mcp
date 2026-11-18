@@ -1,5 +1,6 @@
 """Independent educational baselines, not copied upstream trading strategies."""
 STRATEGIES = {
+    'upstream_sma_cross': 'Backtesting.py 0.6.5 official SmaCross (long/short, default sizing)',
     'sma_cross': 'SMA 10/30 trend crossover',
     'rsi_reversion': 'RSI 14 mean reversion, enter below 30, exit above 55',
     'donchian_breakout': 'Donchian 20-bar breakout, 10-bar exit',
@@ -8,7 +9,7 @@ STRATEGIES = {
 
 def strategy_signals(bars, strategy='sma_cross'):
     """Return close-time actions; execution belongs to the NEXT bar only."""
-    if strategy not in STRATEGIES:
+    if strategy not in STRATEGIES or strategy == 'upstream_sma_cross':
         raise ValueError('Unknown research strategy')
     closes = [float(b['close']) for b in bars]
     actions = [0] * len(bars)
