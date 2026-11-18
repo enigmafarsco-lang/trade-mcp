@@ -219,3 +219,21 @@ def test_real_comparison_worker_when_configured(mock_app):
     for row in result['results']:
         assert row['bars'] == 200
         assert 'stats' in row and 'assumptions' in row
+
+
+@pytest.mark.parametrize('role', ['bull','bear'])
+def test_actual_upstream_research_roles_prepare_without_generation(mock_app, role):
+    import os
+    interpreter = os.environ.get('RESEARCH_TEST_PYTHON')
+    if not interpreter:
+        pytest.skip('Optional isolated upstream environment not selected')
+    mock_app.cfg.research_python = interpreter
+    result = run_worker(mock_app.cfg, {'operation':'prepare', 'role':role,
+        'symbol':'XAUUSD', 'context':{'data_backend':'mock','quote':{'bid':2673.5}}})
+    assert result['ok'], result
+    messages = validated_messages(result)
+    assert len(messages) == 2
+    assert 'XAUUSD' in messages[1]['content']
+    assert 'one-sided' in messages[0]['content']
+    assert role in result['engine']
+    assert mock_app.store.list_model_usage() == []

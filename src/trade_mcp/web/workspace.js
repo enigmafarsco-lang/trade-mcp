@@ -255,7 +255,7 @@ for(const operation of ['analyze','backtest','compare'])node('research-'+operati
  for(const op of ['analyze','backtest','compare'])node('research-'+op).disabled=true;
  out.textContent='در حال پژوهش؛ هیچ سفارشی اجرا نمی‌شود…';
  try{
-  const d=await request('/api/research/'+operation,{strategy:node('research-strategy').value,agent_id:node('workspace-cycle-agent').value,consent_model_request:node('research-consent').checked});
+  const d=await request('/api/research/'+operation,{role:node('research-role').value,strategy:node('research-strategy').value,agent_id:node('workspace-cycle-agent').value,consent_model_request:node('research-consent').checked});
   if(operation!=='analyze'){researchReport=d;node('research-download').disabled=false;}
   const display={...d};if(display.snapshot){display.snapshot={...display.snapshot};delete display.snapshot.bars;}
   out.textContent=d.ok?(d.report||JSON.stringify(display,null,2)):(d.message||d.error||'پژوهش ناموفق بود.');

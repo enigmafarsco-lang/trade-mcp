@@ -149,3 +149,41 @@ broker candle data according to your data-sharing restrictions. Local automation
 can save the exact API JSON into an existing ignored log directory; do not use
 shell text templates with unexpanded date expressions. Preserve full UTC time,
 input hash, errors and exposure warnings in any derived human-readable report.
+
+## Actual TradingAgents researcher roles
+
+The research report selector now supports the original pinned upstream
+`create_bull_researcher` and `create_bear_researcher` factories as well as the
+market analyst. These are direct imports from revision
+`9fa1196fffbcfd9de5146d2dd2869df84ab99838`, not our technical baselines.
+They prepare one deliberately one-sided argument from the supplied broker
+snapshot. News/sentiment/fundamentals are marked absent. There is no automatic
+debate, consensus, trained strategy, new data tool, or trading execution. Each
+explicit report uses one existing budgeted model-client call, only after consent.
+Offline prompt preparation tests invoke both actual upstream factories without
+calling a model. API field: `role` = `market` (default), `bull`, or `bear`.
+
+## Alternative cloud access: explicit, read-only OpenRouter check
+
+Official source checked: https://openrouter.ai/docs/api/reference/limits .
+It documents authenticated `GET /api/v1/key` for account/key limits and a
+`free_model_daily_requests` object when supplied. Do not guess quota from local
+OpenCode unauthenticated endpoints. No free catalogue guarantees availability.
+
+A new optional command, `python -m trade_mcp.cloud_access`, checks only the
+fixed official OpenRouter `/key` and `/models` GET endpoints. It uses
+`OPENROUTER_API_KEY` provisioned locally by the user, never CLI arguments or chat.
+Without a key it returns `api_key_required` without making a network request.
+It prints only safe quota numbers and explicitly zero-priced `:free` catalogue
+IDs. It does not generate, select a model, change web config, activate a budget,
+create an account, purchase credit or touch the usage ledger. Redirects are
+refused. Errors never echo response bodies. This is not a substitute for provider
+terms/privacy review or a successful bounded generation test.
+
+If the user independently provisions access, the existing direct web backend
+can use `TRADE_MCP_LLM_BASE_URL=https://openrouter.ai/api/v1`,
+`TRADE_MCP_LLM_API_KEY` supplied securely, an explicitly chosen
+`TRADE_MCP_LLM_MODEL`, and `TRADE_MCP_WEB_MODEL_BACKEND=direct`.
+Do NOT apply these automatically or use them to bypass an existing provider
+restriction. Do not use a random/free router or paid fallback. New generation
+requires separate explicit budget authorization; old authorization is spent.

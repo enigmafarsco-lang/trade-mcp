@@ -452,13 +452,16 @@ class Handler(BaseHTTPRequestHandler):
                         work = {'operation':'compare' if path.endswith('/compare') else 'backtest',
                                 'bars':snapshot['bars'], 'strategy':strategy}
                     else:
+                        role = payload.get('role', 'market')
+                        if not isinstance(role, str) or role not in {'market','bull','bear'}:
+                            return self._json({'ok':False,'error':'unknown_research_role'}, 400)
                         report = analyze_symbol(mt5=self.state.app.mt5, cfg=self.state.cfg,
                                                 symbol=symbol, bars_count=300)
                         if not report.get('ok'):
                             return self._json({'ok':False,'error':'analysis_unavailable'}, 409)
                         context = compact_context(report)
                         context['data_backend'] = self.state.cfg.backend
-                        work = {'operation':'prepare', 'symbol':symbol, 'context':context,
+                        work = {'operation':'prepare', 'role':role, 'symbol':symbol, 'context':context,
                                 'date':datetime.now(timezone.utc).date().isoformat()}
                 prepared = run_worker(self.state.cfg, work)
                 if is_backtest:
