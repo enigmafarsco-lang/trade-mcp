@@ -36,6 +36,29 @@ class WebOpenCodeClient(LLMClient):
             raise RuntimeError('Loopback OpenCode URL required')
         return self.base_url.rstrip('/') + '/api/session'
 
+    def chat(self, messages, temperature=0.2):
+        self.transport_diagnostics = {'stage': 'before_request', 'generation_submitted': False}
+        try:
+            return super().chat(messages, temperature)
+        except ProviderError as exc:
+            exc.transport = dict(self.transport_diagnostics)
+            self.last_error = exc.safe_dict()
+            raise
+
+    def check_session(self):
+        """Create/validate/delete our own session, never invoke generate."""
+        self._endpoint()
+        self.transport_diagnostics = {'stage':'before_request', 'generation_submitted':False}
+        self.probe_only = True
+        try:
+            self._response_data(None)
+            return {'ok':True, 'transport':dict(self.transport_diagnostics), 'generation_requested':False}
+        except ProviderError as exc:
+            exc.transport = dict(self.transport_diagnostics)
+            return {'ok':False, **exc.safe_dict()}
+        finally:
+            self.probe_only = False
+
     def _response_data(self, req):
         permissions = [{'action': '*', 'resource': '*', 'effect': 'deny'}]
         provider, _, model = self.model.partition('/')
@@ -44,23 +67,37 @@ class WebOpenCodeClient(LLMClient):
             selection['variant'] = self.oc.variant
         sid = None
         try:
+            self.transport_diagnostics['stage'] = 'server_identity'
             if self.oc.health().get('api') != 'v2':
                 raise ProviderError('endpoint_unavailable')
+            self.transport_diagnostics['stage'] = 'session_create'
             result = self.oc._request('POST', '/api/session', {
                 'title': 'trade-mcp web isolated analysis', 'model': selection,
                 'permissions': permissions,
             })
+            self.transport_diagnostics['stage'] = 'session_validation'
             session = result.get('data') or {}
             sid = session.get('id')
             if not isinstance(sid, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', sid):
                 sid = None
                 raise ProviderError('invalid_response')
             # Refuse inference if the server did not acknowledge isolation/model.
-            if session.get('permissions') != permissions or session.get('model') != selection:
+            actual = session.get('model') or {}
+            model_matches = (isinstance(actual, dict)
+                and actual.get('providerID') == selection['providerID']
+                and actual.get('id') == selection['id']
+                and (actual.get('variant') or '') == (selection.get('variant') or ''))
+            self.transport_diagnostics.update(permissions_acknowledged=session.get('permissions') == permissions,
+                                              model_acknowledged=model_matches)
+            if session.get('permissions') != permissions or not model_matches:
                 raise ProviderError('invalid_response')
+            if getattr(self, 'probe_only', False):
+                return {'checked':True}, 200
             messages = json.loads(req.data)['messages']
             prompt = '\n\n'.join(m['role']+': '+m['content'] for m in messages)
+            self.transport_diagnostics.update(stage='session_generate', generation_submitted=True)
             data = self.oc._request('POST', '/api/session/'+sid+'/generate', {'prompt': prompt}).get('data') or {}
+            self.transport_diagnostics['stage'] = 'generation_response'
             tokens = data.get('tokens') or {}
             cache = tokens.get('cache') or {}
             # Keep the returned categories unmodified. Inclusion semantics are

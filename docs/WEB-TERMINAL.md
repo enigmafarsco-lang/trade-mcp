@@ -568,3 +568,22 @@ data stale and disables model actions instead of implying a current configuratio
 check succeeded. This improves failure handling; it does not prove or repair the
 cause of a local browser `Failed to fetch`. Local console liveness and endpoint
 errors still need inspection before restarting anything.
+
+### Session handshake diagnostics without generation
+
+An `invalid_response` may be a locally rejected session acknowledgement, not a
+provider/model output. Model tests now include safe `transport` fields: `stage`,
+`generation_submitted`, `permissions_acknowledged`, and `model_acknowledged`.
+They contain no raw response, credentials or prompts. Submitted means the
+application invoked the generate route; it does not prove provider acceptance.
+Missing versus empty default variants compare equally, but another model,
+nondefault variant or missing deny-all permissions still fail closed.
+
+`POST /api/model-session-check` with `{"consent_connect":true}` verifies only
+server identity and a newly created isolated session's acknowledgement, then
+deletes that session. It NEVER calls generate or reserves budget/records provider
+usage. It requires the explicit configured opencode-session backend. This is not
+strictly read-only on the server (it creates/deletes its own temporary session).
+Use it to diagnose handshake failures before another live test. Historical
+ledger rows do not retroactively gain stage details; an application attempt row
+alone does not prove an upstream generation occurred.

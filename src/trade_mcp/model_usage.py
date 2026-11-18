@@ -211,6 +211,12 @@ class ProviderError(RuntimeError):
         }
         if self.retry_after_ms is not None:
             result["retry_after_ms"] = self.retry_after_ms
+        transport = getattr(self, 'transport', None)
+        if isinstance(transport, dict):
+            # Only locally generated enums/booleans, never raw server data.
+            result['transport'] = {key: transport[key] for key in (
+                'stage', 'generation_submitted', 'permissions_acknowledged', 'model_acknowledged'
+            ) if key in transport}
         return result
 
 

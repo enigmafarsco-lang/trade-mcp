@@ -80,3 +80,59 @@ def test_session_quota_failure_records_unknown_usage_and_cooldown(mock_app, monk
     assert row['input_tokens'] is None
     assert row['error_code'] == 'quota_exhausted'
     assert not mock_app.store.model_budget_status()['allowed']
+
+
+def test_default_variant_normalization_and_safe_diagnostics(mock_app, monkeypatch):
+    c = client(mock_app)
+    c.oc.variant = ''
+    def request(self, method, path, payload=None):
+        if path == '/api/info':
+            return {'version':'2.2.7','pid':123,'urls':[]}
+        if path == '/api/session':
+            return {'data': {**payload, 'model':{**payload['model'],'variant':''}, 'id':'ses_web'}}
+        if path.endswith('/generate'):
+            return {'data': {'text':'OK','tokens':{}}}
+        return {}
+    monkeypatch.setattr(OpenCodeClient, '_request', request)
+    mock_app.store.activate_model_budget()
+    assert c.chat([]) == 'OK'
+    assert c.transport_diagnostics['generation_submitted'] is True
+    assert c.transport_diagnostics['stage'] == 'generation_response'
+
+
+def test_rejected_acknowledgement_explains_no_generation(mock_app, monkeypatch):
+    c = client(mock_app)
+    def request(self, method, path, payload=None):
+        if path == '/api/info':
+            return {'version':'2.2.7','pid':123,'urls':[]}
+        if path == '/api/session':
+            return {'data': {**payload, 'permissions':[], 'id':'ses_web'}}
+        assert not path.endswith('/generate')
+        return {}
+    monkeypatch.setattr(OpenCodeClient, '_request', request)
+    mock_app.store.activate_model_budget()
+    with pytest.raises(ProviderError) as exc:
+        c.chat([])
+    diagnostic = exc.value.safe_dict()['transport']
+    assert diagnostic == {'stage':'session_validation', 'generation_submitted':False,
+                          'permissions_acknowledged':False, 'model_acknowledged':True}
+
+
+def test_session_probe_never_generates_or_reserves_budget(mock_app, monkeypatch):
+    calls = []
+    def request(self, method, path, payload=None):
+        calls.append((method,path))
+        if path == '/api/info':
+            return {'version':'2.2.7','pid':123,'urls':[]}
+        if path == '/api/session':
+            return {'data':{**payload,'id':'ses_probe'}}
+        assert method == 'DELETE'
+        return {}
+    monkeypatch.setattr(OpenCodeClient, '_request', request)
+    before = mock_app.store.model_budget_status()
+    result = client(mock_app).check_session()
+    assert result['ok'] and result['generation_requested'] is False
+    assert result['transport']['model_acknowledged'] is True
+    assert calls[-1] == ('DELETE','/api/session/ses_probe')
+    assert mock_app.store.model_budget_status() == before
+    assert mock_app.store.list_model_usage() == []

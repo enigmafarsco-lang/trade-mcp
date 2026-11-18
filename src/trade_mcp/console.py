@@ -594,6 +594,15 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     return self._json({'ok': False, 'error': 'invalid_budget_action'}, 400)
                 return self._json({'ok': True, 'budget': self._budget_payload(status)})
+            if path == '/api/model-session-check':
+                from .web_opencode import WebOpenCodeClient
+                if payload.get('consent_connect') is not True:
+                    return self._json({'ok':False,'error':'connection_consent_required'}, 400)
+                llm = self.state.model_client('session_check')
+                if not isinstance(llm, WebOpenCodeClient) or not llm.configured:
+                    return self._json({'ok':False,'error':'opencode_session_not_configured'}, 409)
+                result = llm.check_session()
+                return self._json(result, 200 if result['ok'] else 409)
             if path == '/api/model-connect-opencode':
                 from .opencode import FREE_MODELS, discover_desktop
                 if payload.get('consent_connect') is not True:
@@ -675,6 +684,7 @@ class Handler(BaseHTTPRequestHandler):
                 result['response_model'] = getattr(llm, 'response_model', None)
                 result['response_variant'] = getattr(llm, 'response_variant', None)
                 result['usage'] = getattr(llm, 'last_usage', None)
+                result['transport'] = getattr(llm, 'transport_diagnostics', None)
                 if model_key != model_signature(self.state.cfg):
                     return self._json({'ok': False, 'error': 'model_changed_during_test'})
                 self.state.model_test = {**result, "state": "ready" if result['ok'] else "failed", "tested_at": time.time(),
