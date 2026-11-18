@@ -187,3 +187,25 @@ can use `TRADE_MCP_LLM_BASE_URL=https://openrouter.ai/api/v1`,
 Do NOT apply these automatically or use them to bypass an existing provider
 restriction. Do not use a random/free router or paid fallback. New generation
 requires separate explicit budget authorization; old authorization is spent.
+
+## Machine-generated offline deployment verification
+
+Run from the canonical checkout using the main test interpreter:
+
+```sh
+.venv/bin/python scripts/verify_research.py \
+  --research-python "$PWD/.venv-research/bin/python" --output-dir "$PWD/logs"
+```
+
+The command executes the research and cloud-access **offline test suites**, reads
+counts separately from pytest JUnit XML, records exit codes, actual UTC clock
+values, Git HEAD and SHA-256 of relevant source files. It does not copy manually
+written test counts. Any failed/error/skipped/empty suite prevents full success.
+It exits nonzero on incomplete verification and preserves the JSON report.
+It never invokes a live provider, changes configuration or starts/restarts the
+console. Console checks and native backtests remain separate local operations.
+The clock values are those of the host, not proof its clock is correct.
+Output inside the checkout is allowed only under a Git-ignored directory. Report
+files use exclusive creation; historical logs are never replaced. Raw test output
+and environment variables are not written into the report. A Git commit alone
+does not prove a clean checkout, so source hashes are included as well.
