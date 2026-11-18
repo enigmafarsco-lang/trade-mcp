@@ -588,4 +588,4 @@ def test_status_proves_live_runtime_revisions(mock_app):
         assert runtime['pid'] == os.getpid()
         assert runtime['started_at'] > 0
         assert runtime['console_revision'] == 'runtime-proof-v1'
-        assert runtime['session_adapter_revision'] == 'session-model-readback-v2'
+        assert runtime['session_adapter_revision'] == 'session-default-alias-v3'

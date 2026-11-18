@@ -7,7 +7,7 @@ from .agents import LLMClient
 from .model_usage import ProviderError
 from .opencode import FREE_MODELS, ModelServiceError, OpenCodeClient
 
-ADAPTER_REVISION = "session-model-readback-v2"
+ADAPTER_REVISION = "session-default-alias-v3"
 
 
 class WebOpenCodeClient(LLMClient):
@@ -84,12 +84,16 @@ class WebOpenCodeClient(LLMClient):
                 sid = None
                 raise ProviderError('invalid_response')
             # Refuse inference if the server did not acknowledge isolation/model.
+            def normalized_variant(value):
+                # OpenCode 2.3 returns the literal 'default' for unspecified variants.
+                return '' if value in (None, '', 'default') else value
+
             def model_matches(info):
                 actual = info.get('model') or {}
                 return (isinstance(actual, dict)
                     and actual.get('providerID') == selection['providerID']
                     and actual.get('id') == selection['id']
-                    and (actual.get('variant') or '') == (selection.get('variant') or ''))
+                    and normalized_variant(actual.get('variant')) == normalized_variant(selection.get('variant')))
 
             self.transport_diagnostics.update(permissions_acknowledged=session.get('permissions') == permissions,
                                               model_acknowledged=model_matches(session))

@@ -215,4 +215,35 @@ def test_failed_probe_also_identifies_loaded_adapter(mock_app, monkeypatch):
     monkeypatch.setattr(OpenCodeClient, '_request', request)
     result = client(mock_app).check_session()
     assert not result['ok']
-    assert result['adapter_revision'] == 'session-model-readback-v2'
+    assert result['adapter_revision'] == 'session-default-alias-v3'
+
+
+@pytest.mark.parametrize('configured,returned,accepted', [
+    ('', 'default', True), ('', '', True), ('', None, True),
+    ('default', '', True), ('default', 'default', True),
+    ('', 'high', False), ('high', 'default', False), ('high', 'high', True),
+])
+def test_server_default_variant_alias_is_not_arbitrary_variant_fallback(
+        mock_app, monkeypatch, configured, returned, accepted):
+    c = client(mock_app)
+    c.oc.variant = configured
+    expected = {}
+    def request(self, method, path, payload=None):
+        if path == '/api/info':
+            return {'version':'2.3.0','pid':123,'urls':[]}
+        if path == '/api/session':
+            expected.update(payload)
+            return {'data':{**payload,'id':'ses_owned',
+                            'model':{**payload['model'],'variant':returned}}}
+        if path.endswith('/model'):
+            return {}
+        if method == 'GET':
+            return {'data':{**expected,'id':'ses_owned',
+                            'model':{**expected['model'],'variant':returned}}}
+        assert method == 'DELETE'
+        return {}
+    monkeypatch.setattr(OpenCodeClient, '_request', request)
+    result = c.check_session()
+    assert result['ok'] is accepted
+    assert result['transport']['generation_submitted'] is False
+    assert mock_app.store.list_model_usage() == []

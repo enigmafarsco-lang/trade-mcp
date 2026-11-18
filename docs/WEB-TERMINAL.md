@@ -605,3 +605,10 @@ in-memory protocol markers, not a Git commit hash or proof of working provider
 access. Use them to detect stale processes: pulling code does not reload an
 already imported Python module. Do not delete bytecode caches or unrelated
 processes merely because Git HEAD and a live API response disagree.
+
+OpenCode 2.3.0 can return the literal variant `default` when no variant was
+specified. The adapter treats only missing/null, empty string and `default` as
+equivalent provider-default representations. Other explicit variants remain
+exact-match; this does not permit variant rotation, a different model, or weaker
+permissions. The live adapter marker for this correction is
+`session-default-alias-v3`.
