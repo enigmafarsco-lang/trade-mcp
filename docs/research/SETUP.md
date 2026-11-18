@@ -223,3 +223,34 @@ substituted for actual usage. The web preview and JSON-download controls expose
 this explicitly. Exports include the prompt/market context, so do not share them
 as if they were generic logs. No automatic export/server persistence is added.
 This capability does not fix provider quota or establish strategy profitability.
+
+## Safe local endpoint verification and time-quality metadata
+
+After loading the code and restarting only the verified console, run:
+
+```sh
+.venv/bin/python scripts/verify_role_previews.py --agent-id EXISTING_AGENT_ID
+```
+
+This explicitly performs three offline preview operations against the loopback
+console, requiring native transport, trading disabled, revoked model budget and
+stopped cycles before starting. It compares safe before/after status fields,
+ledger count and the recent proposal-ID window (not the full database count).
+It never calls generation, changes budgets, or creates agents. Only sanitized
+counts/flags are saved to an exclusively created, UTC-named JSON file in the
+ignored logs directory. Prompts, context, credentials and raw responses are not
+logged. Failure exits nonzero. Concurrent activity can cause the boundary check
+to fail; it is not a server-side transaction or order safety lock.
+
+Snapshot validation rejects duplicate/reversed times and partially missing
+numeric bar times instead of silently sorting, filling or repairing candles.
+When times exist, `snapshot.time_check` flags a last bar more than five minutes
+ahead of the host clock. A historical backtest may still run and retain the
+warning. Missing times are `unknown`, and `not_future` does not prove freshness,
+market opening, broker timezone or host clock synchronization. The report does
+not compare against a hardcoded calendar date.
+
+The cloud report button is now disabled when the web model or budget is
+unavailable; offline preview/backtest remain distinct controls. Background status
+refresh cannot re-enable the report button while a research action is running.
+No cloud access, new provider entitlement or successful generation is implied.

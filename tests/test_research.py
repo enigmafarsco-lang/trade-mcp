@@ -269,3 +269,27 @@ def test_prompt_preview_api_never_calls_model_or_budget(mock_app, monkeypatch, r
     assert mock_app.store.model_budget_status() == budget
     assert mock_app.store.list_model_usage() == []
     assert mock_app.store.list_proposals() == proposals
+
+
+@pytest.mark.parametrize('mode', ['duplicate','reversed','partial'])
+def test_snapshot_rejects_unreliable_time_order(mode):
+    from trade_mcp.research import snapshot_record
+    bars = [{'open':100,'high':101,'low':99,'close':100,'time':1000+i*3600} for i in range(60)]
+    if mode == 'duplicate':
+        bars[-1]['time'] = bars[-2]['time']
+    elif mode == 'reversed':
+        bars.reverse()
+    else:
+        del bars[-1]['time']
+    with pytest.raises(ValueError):
+        snapshot_record(bars)
+
+
+def test_snapshot_flags_future_without_claiming_freshness(monkeypatch):
+    from trade_mcp.research import snapshot_record
+    monkeypatch.setattr('trade_mcp.research.time.time', lambda: 100)
+    bars = [{'open':100,'high':101,'low':99,'close':100,'time':1000+i*3600} for i in range(60)]
+    assert snapshot_record(bars)['time_check']['status'] == 'future'
+    for bar in bars:
+        del bar['time']
+    assert snapshot_record(bars)['time_check']['status'] == 'unknown'

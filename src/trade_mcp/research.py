@@ -6,6 +6,7 @@ import json
 import math
 import os
 import subprocess
+import time
 from pathlib import Path
 
 
@@ -73,6 +74,13 @@ def snapshot_record(bars):
         if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
             row['time'] = value
         clean.append(row)
+    times = [bar.get('time') for bar in clean]
+    supplied = [value for value in times if value is not None]
+    if supplied and (len(supplied) != len(clean) or any(b <= a for a, b in zip(supplied, supplied[1:], strict=False))):
+        raise ValueError('Missing, duplicate or unordered candle times')
     encoded = json.dumps(clean, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
     return {'sha256': hashlib.sha256(encoded).hexdigest(), 'bars': clean,
-            'count': len(clean), 'first_time': clean[0].get('time'), 'last_time': clean[-1].get('time')}
+            'count': len(clean), 'first_time': clean[0].get('time'), 'last_time': clean[-1].get('time'),
+            'time_check': {'reference':'host_clock', 'checked_at':time.time(),
+                'status':'unknown' if not supplied else 'future' if supplied[-1] > time.time()+300 else 'not_future',
+                'warning':'Historical input; this is not a freshness or clock-synchronization guarantee.'}}
