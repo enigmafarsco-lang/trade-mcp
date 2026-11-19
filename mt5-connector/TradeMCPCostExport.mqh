@@ -4,7 +4,7 @@ bool Money(ulong ticket, ENUM_DEAL_PROPERTY_DOUBLE field, double &value)
    ResetLastError();
    return HistoryDealGetDouble(ticket, field, value) && MathIsValidNumber(value);
 }
-bool ExportCostSnapshot(datetime From, int MaxDeals)
+bool ExportCostSnapshot(datetime history_from, int max_deals)
 {
    if(!TerminalInfoInteger(TERMINAL_CONNECTED)) return false;
    long login = AccountInfoInteger(ACCOUNT_LOGIN);
@@ -12,18 +12,18 @@ bool ExportCostSnapshot(datetime From, int MaxDeals)
    string currency = AccountInfoString(ACCOUNT_CURRENCY);
    datetime generated = TimeGMT();
    datetime until = TimeTradeServer();
-   if(until <= 0 || From <= 0 || From >= until || MaxDeals < 1 || MaxDeals > 100000)
+   if(until <= 0 || history_from <= 0 || history_from >= until || max_deals < 1 || max_deals > 100000)
       return false;
-   if(!HistorySelect(From, until)) return false;
+   if(!HistorySelect(history_from, until)) return false;
    int count = HistoryDealsTotal();
-   if(count > MaxDeals) return false; // Never silently truncate history.
+   if(count > max_deals) return false; // Never silently truncate history.
    string tmp = "trade-mcp-costs.tmp";
    int f = FileOpen(tmp, FILE_WRITE|FILE_CSV|FILE_ANSI, '\t', CP_UTF8);
    if(f == INVALID_HANDLE) return false;
    ResetLastError();
    uint header_bytes = FileWrite(f, "meta", "1", (string)login,
              server, currency,
-             (string)(long)generated, (string)(long)From, (string)(long)until,
+             (string)(long)generated, (string)(long)history_from, (string)(long)until,
              (string)count);
    bool ok = (header_bytes > 0 && GetLastError() == 0);
    for(int i=0; i<count && ok; i++)
