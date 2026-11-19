@@ -88,7 +88,10 @@ def propose_open(
             max_lot=cfg.max_lot,
         )
         if not sizing.get("ok"):
-            return {"ok": False, "error": "sizing_failed", "message": sizing.get("error")}
+            return {"ok": False, "error": "sizing_failed", "message": sizing.get("error"),
+                    "sizing": sizing, "checked_entry": entry,
+                    "stop_loss": stop_loss, "take_profit": take_profit,
+                    "effective_sizing_balance": sizing_balance(account, cfg)}
         volume = float(sizing["volume"])
     volume, vol_warnings = normalise_volume(float(volume), info)
 

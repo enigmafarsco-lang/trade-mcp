@@ -697,3 +697,20 @@ no tokens or currency are inferred. The profile is exposed in workspace status
 and model-test replies, forwarded by the workspace launcher, and included in
 model-test/workspace identities so old successful tests are not reused as proof
 of the new profile. Settings persist only when applied to the actual launcher.
+
+### Structured proposal rejection, distinct from model failure
+
+A successful buy/sell model decision may still be refused by sizing. Agent
+reports now set `status:rejected`, `blocked:true`, blocker codes and a
+`proposal_error` object when `propose_open` fails. Sizing refusals include the
+actual checked entry, unchanged requested SL/TP, effective sizing balance and
+numeric sizing diagnostics. These are from the attempted proposal, NOT inferred
+from the earlier technical scenario (which may use different levels or price).
+The UI explicitly shows that no proposal was created and displays minimum lot
+loss versus permitted risk. A model SELL remains a SELL with rejection status;
+it is not relabeled as a successful order or a model WAIT. Post-response expiry
+continues to be shown separately as a program-imposed blocked WAIT.
+
+No minimum-lot override, budget increase, SL tightening or account-equity sizing
+is introduced. Training budget and all configured risk limits remain unchanged.
+Historical saved reports are not rewritten and do not gain missing fields.

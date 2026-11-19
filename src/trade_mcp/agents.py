@@ -544,6 +544,13 @@ class AgentEngine:
             entry_guard=entry_guard,
         )
         if not proposal.get("ok"):
+            entry['status'] = 'rejected'
+            entry['blocked'] = True
+            entry['blockers'] = [proposal.get('error') or 'proposal_refused']
+            entry['proposal_error'] = {k:proposal[k] for k in (
+                'error', 'message', 'sizing', 'checked_entry', 'stop_loss', 'take_profit',
+                'effective_sizing_balance'
+            ) if k in proposal}
             if proposal.get('error') == 'post_response_check_failed':
                 entry['model_action'] = action
                 entry['action'] = 'wait'

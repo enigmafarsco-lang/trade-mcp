@@ -92,6 +92,13 @@ function describe(report){
   if(d.model_error)lines.push(`توقف مدل: ${d.model_error.message} (${d.model_error.code})`);
   if(d.reason)lines.push(d.reason);
   if(d.note)lines.push(d.note);
+  if(d.proposal_error){
+   const error=d.proposal_error,sizing=error.sizing||{};
+   lines.push('پیشنهاد ساخته نشد — '+(error.error||'نامشخص')+' | '+(error.message||''));
+   if(error.error==='sizing_failed')lines.push(`مبنای حجم: ${known(error.effective_sizing_balance)} | بودجهٔ زیان: ${known(sizing.risk_amount)} | حداقل لات: ${known(sizing.minimum_volume)} | زیان تخمینی حداقل لات در SL: ${known(sizing.minimum_volume_loss)}
+ورود بررسی‌شده: ${known(error.checked_entry)} | SL: ${known(error.stop_loss)} | حجم خام: ${known(sizing.raw_volume)}
+ریسک یا SL برای عبور از این مانع تغییر نکرده است؛ این اعداد مجوز معامله نیستند.`);
+  }
   if(d.post_response_check){
    const check=d.post_response_check;
    const reasons={analysis_expired:'عمر تحلیل بیش از ۳۰ ثانیه',original_quote_time_invalid_or_expired:'زمان قیمت ورودی تحلیل نامعتبر یا منقضی',fresh_quote_time_invalid_or_stale:'تیک تازه قدیمی یا زمان آن نامعتبر',fresh_quote_or_point_invalid:'قیمت یا مشخصات نماد نامعتبر',spread_too_wide_after_response:'اسپرد پس از پاسخ بیش از سقف',decision_levels_invalid:'SL/TP نامعتبر',decision_levels_crossed_or_wrong_side:'قیمت از سطوح تصمیم عبور کرده',entry_drift_exceeded:'تغییر قیمت بیش از یک‌چهارم فاصلهٔ اولیه تا SL'};
