@@ -154,3 +154,22 @@ def test_v2_closed_losses_use_real_costs_and_persist_latch(mock_app):
     finally:
         reopened.close()
     mt5.close_position.assert_not_called()
+
+
+def test_balance_record_stays_blocked_with_private_safe_inventory():
+    from trade_mcp.account_operations import UnallocatedOperationsError
+    _, _, snapshot, _ = evidence()
+    snapshot['deals'].append(dict(snapshot['deals'][0], ticket='999', position_id='0',
+                                  type=2, profit=987654.32, comment='private'))
+    account = dict(login=1, server='Demo', currency='USD', trade_mode='demo')
+    mt5 = Mock()
+    mt5.account_info.return_value = account
+    cfg = SimpleNamespace(cost_snapshot_path='snapshot')
+    with patch('trade_mcp.guard_costs.read_cost_snapshot', return_value=snapshot), pytest.raises(
+            UnallocatedOperationsError) as caught:
+        load_guard_snapshot(mt5, cfg, account)
+    assert caught.value.code == 'unallocated_account_operations'
+    assert caught.value.summary['by_deal_type']['balance'] == 1
+    assert caught.value.summary['allocation_verified'] is False
+    assert '987654' not in str(caught.value.summary)
+    assert 'private' not in str(caught.value.summary)

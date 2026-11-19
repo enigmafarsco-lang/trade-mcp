@@ -2,6 +2,7 @@
 import time
 from pathlib import Path
 
+from .account_operations import account_operation_summary
 from .bridge.base import BridgeError
 from .cost_reconciliation import CostCorrelationError, correlate_deal_costs, coverage_summary
 from .cost_snapshot import read_cost_snapshot
@@ -36,16 +37,17 @@ def cost_health(mt5, cfg):
         if account_key(mt5.account_info(fresh=True)) != identity:
             return {**base, 'error': 'account_changed'}
         stage = 'correlation'
+        operations = account_operation_summary(snapshot)
         try:
             joined = correlate_deal_costs(deals, snapshot)
         except CostCorrelationError as exc:
             return {**base, 'error': 'cost_check_failed', 'stage': stage,
-                    'reason': exc.code, 'coverage': coverage}
+                    'reason': exc.code, 'coverage': coverage, 'account_operations': operations}
 
         stage = 'account_recheck'
         if account_key(mt5.account_info(fresh=True)) != identity:
             return {**base, 'error': 'account_changed'}
-        return {**base, 'ok': True, 'coverage': coverage, 'matched_deals': joined['matched'],
+        return {**base, 'ok': True, 'coverage': coverage, 'account_operations': operations, 'matched_deals': joined['matched'],
                 'snapshot_only_deals': joined['snapshot_only_deals'],
                 'snapshot_age_seconds': round(time.time()-snapshot['generated_at'], 2),
                 'note': 'diagnostic_only_no_order_authorization'}

@@ -3,6 +3,7 @@ import copy
 import math
 from pathlib import Path
 
+from .account_operations import UnallocatedOperationsError, account_operation_summary
 from .cost_reconciliation import correlate_deal_costs
 from .cost_snapshot import CostSnapshotError, read_cost_snapshot
 
@@ -16,12 +17,12 @@ def load_guard_snapshot(mt5, cfg, account):
                                   currency=account['currency'], max_age=10)
     if snapshot['source'] != 'mql5_cost_snapshot_v2':
         raise CostSnapshotError('Guardian requires snapshot v2')
-    # Separate account-level charges have no justified allocation to a position.
-    if any(d['type'] not in (0, 1) or int(d['position_id']) <= 0 for d in snapshot['deals']):
-        raise CostSnapshotError('Unallocated charges block guardian accounting')
     after = mt5.account_info(fresh=True)
     if any(str(account[k]) != str(after.get(k)) for k in ('login', 'server', 'currency', 'trade_mode')):
         raise CostSnapshotError('Account changed during cost read')
+    operations = account_operation_summary(snapshot)
+    if operations['unallocated_records']:
+        raise UnallocatedOperationsError(operations)
     return snapshot
 
 

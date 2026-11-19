@@ -225,3 +225,35 @@ Snapshot/diagnostic responses still return execution_eligible=false: they are no
 activation tokens. The complete current guard contract and runtime limitations
 are in `docs/DEMO-CASH-POLICY.md` under Optional native v2 cost source. No default
 activation, provider call, new order endpoint or broker action is added.
+
+### Account-operation inventory (still blocked, no implicit allocation)
+
+An unallocated record is not necessarily a trading fee. The new
+`account_operations.account_operation_summary` names only MT5 DEAL_TYPE categories
+(balance, credit, charge, correction, commission variants, interest, dividend,
+tax, canceled deals, unknown, and trades lacking a position). It returns category
+counts, counts of nonzero financial fields and profit-sign counts **without any
+amounts, comments, ticket IDs, account identity or timestamps**. A balance record
+is not automatically called a deposit; no record is declared economically harmless
+based on type, sign or comment alone. `allocation_verified` remains false.
+
+`load_guard_snapshot` rechecks live account identity and then raises
+`UnallocatedOperationsError` with fixed `code=unallocated_account_operations` and
+this count-only `summary`. The guard is still blocked. The web cost-reconciliation
+response includes `account_operations` alongside coverage when correlation is
+reached, so the local agent can inspect safe evidence without dumping raw rows.
+The general correlation reason remains unallocated_account_charge for backward
+compatibility. No costs are deleted, apportioned, assumed zero or hidden by changing
+From. This revision changes diagnostics, not acceptance policy.
+
+Local OpenCode verification (Python-only, no monitor recompile): fast-forward,
+restart only the console with unchanged environment and call
+GET /api/cost-reconciliation once. Return the sanitized account_operations counts
+and reason/coverage. If calling load_guard_snapshot directly, catch
+UnallocatedOperationsError and report only its code/summary, never raw exceptions
+or records. Do not enable policy/trading, modify inputs or start a cloud window.
+The report generator accepts unallocated_records, balance_operations,
+credit_operations, commission_operations, charge_operations and
+other_account_operations as additional count-only fields. Sum commission variants
+for commission_operations; put remaining categories in other_account_operations.
+Do not label source acceptance pass while unallocated operations remain blocked.
