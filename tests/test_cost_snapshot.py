@@ -41,3 +41,30 @@ def test_fail_closed(tmp_path, text):
 def test_stale_or_future(tmp_path, now):
     with pytest.raises(CostSnapshotError):
         read(tmp_path, now=now)
+
+
+def test_monitor_has_no_execution_or_network_calls():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / 'mt5-connector'
+    for name in ('TradeMCPCostExport.mqh', 'TradeMCPCostMonitor.mq5',
+                 'TradeMCPCostSnapshot.mq5'):
+        source = (root / name).read_text()
+        for forbidden in ('OrderSend(', 'OrderSendAsync(', 'WebRequest(',
+                          'SocketConnect(', '#include <Trade/'):
+            assert forbidden not in source
+    monitor = (root / 'TradeMCPCostMonitor.mq5').read_text()
+    assert 'EventSetTimer(IntervalSeconds)' in monitor
+    assert 'EventKillTimer()' in monitor
+
+
+def test_shared_exporter_checks_account_and_publication():
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / 'mt5-connector' /
+              'TradeMCPCostExport.mqh').read_text()
+    assert 'AccountInfoInteger(ACCOUNT_LOGIN) != login' in source
+    assert 'AccountInfoString(ACCOUNT_SERVER) != server' in source
+    assert 'AccountInfoString(ACCOUNT_CURRENCY) != currency' in source
+    assert 'HistoryDealsTotal() != count' in source
+    assert 'return FileMove(' in source

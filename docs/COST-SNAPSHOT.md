@@ -41,3 +41,32 @@ Floating P/L, opening-volume/closing-volume reconciliation, timestamp conversion
 account-switch-during-export detection and late-booked costs need independent
 validation before execution integration. Do not treat this snapshot as a hard
 monetary stop or activation authorization. No automated live-account use.
+
+## Periodic read-only publication
+
+`TradeMCPCostMonitor.mq5` is an optional timer EA that republishes the same strict
+v1 snapshot every five seconds (configurable 2–20). It has no trading functions;
+leave its Allow Algo Trading permission disabled. The name EA describes MT5's
+lifecycle/timer mechanism, not permission to execute trades. It does not need
+ticks to refresh. No program is installed, attached or activated automatically.
+
+Both the script and monitor now include `TradeMCPCostExport.mqh`. Copy that header
+beside the source when compiling: Scripts for the one-shot script, or Experts for
+the timer monitor. Compile the monitor separately; previous successful compilation
+of the standalone script does not verify this revision or the monitor.
+Use a dedicated empty chart; do not replace an existing trading EA. Run **only one
+snapshot writer per terminal**, never the script and monitor concurrently.
+
+The exporter captures account identity at start and rechecks it and connection
+state before publication, rejects exports taking over 25 seconds, checks writes,
+and returns publication failure instead of reporting success. It retains the
+previous output on abort, which the Python reader will eventually reject as stale.
+These checks reduce, but cannot provide transactional isolation from, terminal
+account/history changes. A switch away and back during export is not detectable.
+All prior execution restrictions and lifecycle/late-charge limitations remain.
+No freshness threshold is increased. Full history is rewritten on every interval;
+keep the interval bounded and MaxDeals capped. This is not an incremental ledger.
+
+Removing the monitor from its chart stops its timer. The remaining file is not
+proof that the monitor is running. Host file permissions and a single trusted
+writer remain mandatory. No Python execution adapter consumes these files yet.
