@@ -125,3 +125,53 @@ used to guess undocumented broker functionality. This does not prove the server
 honors the field. Native cash-policy orders intentionally send no magic; later
 readback must match nonce, opening history/time and position identifier. Merely
 seeing a `tmcp:` comment without a journal reservation never establishes ownership.
+
+## Optional native v2 cost source (source integration, not runtime acceptance)
+
+When the explicitly enabled demo policy runs on `native` and
+`TRADE_MCP_COST_SNAPSHOT_PATH` is configured, the guardian now uses the v2 adapter
+in `guard_costs.py`. This changes that path from diagnostic-only to an available
+**opt-in policy data source**. Defaults and trading permissions are unchanged;
+configuring the path alone, or getting a passing diagnostic, does not start it.
+
+The adapter requires USD demo identity, snapshot v2, at most 10 seconds of age,
+and unchanged live account identity after reading. V1, stale/missing data and
+unallocated account-level charges block; there is no silent native fallback.
+Before entry, genuine shared native/snapshot samples must match the explicit cost
+fields. The whole unrelated native day need not fit the snapshot: per-owned-
+position ticket sets, however, must match exactly in BOTH directions. This is
+scoping by persisted ownership, not dropping unmatched owned trades to pass.
+
+For reserved positions the adapter checks deal direction/entry/price profit,
+known costs, volumes, opening comments, unique journal owner, chronological volume
+coverage, live ticket/identifier/direction/comment/volume, and remaining volume.
+Unowned additions and reversals block. Floating profit/swap come from official
+snapshot fields only after position identity and volume agree. Existing SL checks,
+net thresholds, durable close claim, no replay, and persistent loss latch remain.
+Account and snapshot age are checked again immediately before a requested close.
+Read/identity failure after claiming a close leaves it unresolved, never blindly
+resubmitted. Missing cost data does not trigger a guessed monetary exit; the
+broker-side protective SL remains essential during outages.
+
+No native or historical positions are adopted without this account's persisted
+random reservation. Existing policy history must remain fully covered; shortening
+the exporter window can block old owned reconciliation and must not reset it.
+Opening time checks still use native normalized history; server timezone behavior
+must be validated. A new entry is not an instruction to widen SL or risk caps.
+
+### What this does not guarantee
+
+The 5-second exporter plus serialized native calls is not hard real-time; the
+10-second freshness limit is not a latency or loss bound. Open exits use currently
+booked costs and floating P/L, not unknown future closing commission/slippage.
+Later broker charges may revise booked results; separate unallocatable charges
+block rather than being assigned arbitrarily. MT5 snapshots are not atomic
+transactions and some changes can preserve row counts. Net -10/+2 is therefore
+an approximate monitored trigger, not a guaranteed broker cash stop/target.
+
+Offline fake-broker tests verify source integration, refusal of mismatched/partial
+owned evidence, no adoption, close once at known net threshold, dry-run no orders,
+and the v2 three-loss latch across journal reopen. They are not live execution
+acceptance. User-local v2 validation so far had zero open positions, so live
+floating P/L and actual close submission remain unverified. Do not mark them pass
+or automatically activate based on the existence of this implementation.

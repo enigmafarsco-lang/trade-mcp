@@ -47,6 +47,17 @@ def reserve_entry(mt5, cfg, store):
             raise ValueError('Native unique comment parameter required')
         ownership = 'comment_reservation'
         samples = mt5.deals(date_from=int(time.time())-86400,date_to=int(time.time()))
+        if getattr(cfg, 'cost_snapshot_path', ''):
+            from .cost_reconciliation import correlate_deal_costs
+            from .guard_costs import load_guard_snapshot
+            snapshot = load_guard_snapshot(mt5, cfg, account)
+            # Pre-entry compatibility proof uses actual shared recent tickets,
+            # not unrelated older native history or an invented zero cost.
+            ids = {str(d['ticket']) for d in snapshot['deals']}
+            shared = [d for d in samples if str(d['ticket']) in ids and d.get('type') in {'buy', 'sell'}][-20:]
+            if not shared:
+                raise ValueError('No shared native/snapshot cost samples')
+            samples = correlate_deal_costs(shared, snapshot)['deals']
         samples = [d for d in samples if d.get('type') in {'buy','sell'}][-20:]
         if not samples or not all(d.get('costs_complete') is True for d in samples):
             raise ValueError('Native cost completeness must be demonstrated before entry')
@@ -74,7 +85,8 @@ def entry_result(store, key, marker, accepted):
 def inspect_positions(mt5, cfg, store, execute=False):
     if not cfg.demo_cash_policy:
         return {'ok':True,'enabled':False}
-    key = account_key(mt5.account_info(fresh=True))
+    account = mt5.account_info(fresh=True)
+    key = account_key(account)
     positions = mt5.positions()
     state = state_for(store, key)
     intents = state['intents']
@@ -84,6 +96,11 @@ def inspect_positions(mt5, cfg, store, execute=False):
     deals = mt5.deals(date_from=max(0,int(oldest)-60), date_to=int(time.time())+1)
     if len(deals) >= 10000:
         raise ValueError('History may be truncated; trading blocked')
+    snapshot = None
+    if cfg.backend == 'native' and getattr(cfg, 'cost_snapshot_path', ''):
+        from .guard_costs import enrich_owned_history, load_guard_snapshot
+        snapshot = load_guard_snapshot(mt5, cfg, account)
+        deals, positions = enrich_owned_history(deals, positions, snapshot, intents)
     # Unknown ownership/entry types must not be guessed from ticket or symbol.
     def position_id(p):
         return int(p.get('identifier') or p.get('ticket') or 0)
@@ -156,6 +173,13 @@ def inspect_positions(mt5, cfg, store, execute=False):
             if store.cash_guard_update(key, claim):
                 # Durable claim BEFORE side effect. No automatic resubmission on
                 # timeout, partial close or rejection: unresolved state blocks entry.
+                if snapshot is not None:
+                    # Freshness/account recheck immediately before the side effect.
+                    # No blind retry: a failed check leaves the durable close claim.
+                    if time.time()-snapshot['generated_at'] > 10:
+                        raise ValueError('Cost source aged before close')
+                    if account_key(mt5.account_info(fresh=True)) != key:
+                        raise ValueError('Account changed before close')
                 result = mt5.close_position(int(p['ticket']), deviation=cfg.deviation_points)
                 row['close_retcode'] = result.get('retcode')
     def reconcile(current):

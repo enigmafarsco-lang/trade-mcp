@@ -106,3 +106,27 @@ remotes or put credentials in chat. The local GitHub connection needs attention;
 use the host's normal GitHub connection/authentication UI. Keep the sanitized
 commit locally until authentication is restored. Arena cannot fetch an unpushed
 local commit. The user may also supply the sanitized report file directly.
+
+## Native v2 guardian source verification (Python-only revision)
+
+The current source includes the optional v2 adapter described in
+`docs/DEMO-CASH-POLICY.md`. Earlier claims of missing source integration no longer
+apply; runtime execution acceptance is still separate.
+
+```text
+Fetch/fast-forward this branch preserving local data/settings. No MQL5 recompile
+is needed if the running monitor already publishes validated v2.
+Keep ALLOW_TRADING=false and DEMO_CASH_POLICY=false; keep cycles stopped.
+Do not reset/activate the cloud budget or open an order for this verification.
+Run tests/test_guard_costs.py and tests/test_demo_guard.py and record their actual
+results under guardian_offline_tests, not as live guardian/order success.
+Using the existing console environment and independently retrieved demo/USD
+account identity, call guard_costs.load_guard_snapshot once against the existing
+monitor file. No policy activation or inspect_positions execution is required.
+Report only source version, age, counts and success/fixed failure classification;
+never raw account/position/deal values. Use guard_cost_source for this check.
+Do not adopt positions, create reservations, alter journal, clear latch or call
+any propose/confirm/close function. With zero positions, floating_net_pnl remains
+not_run. With no owned intent, do not mark guardian/order acceptance as pass.
+Save and push only a sanitized measured-status report on this same branch.
+```

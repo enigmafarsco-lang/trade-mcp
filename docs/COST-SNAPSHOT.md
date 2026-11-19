@@ -215,3 +215,13 @@ Do not publish comments, tickets, account identity, raw amounts or file contents
 Save and push only a sanitized measured-status report to the current branch.
 No cloud/model requests, dependency installs or order activation.
 ```
+
+### Guardian integration update
+
+The opt-in native demo guardian can now consume v2 through `guard_costs.py` when
+both the existing demo policy and its configured snapshot path are selected.
+Earlier statements that no guardian adapter exists describe older revisions.
+Snapshot/diagnostic responses still return execution_eligible=false: they are not
+activation tokens. The complete current guard contract and runtime limitations
+are in `docs/DEMO-CASH-POLICY.md` under Optional native v2 cost source. No default
+activation, provider call, new order endpoint or broker action is added.
