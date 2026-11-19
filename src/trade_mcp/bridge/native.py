@@ -207,6 +207,53 @@ def _side(value: Any) -> str:
     return text or "buy"
 
 
+def _deal_enum(row, names, mapping, field):
+    """Only explicit row enums; never infer side from entry or a nested order."""
+    keys = {_key(name) for name in names}
+    values = []
+    unknown = False
+    for name, raw in row.items():
+        if _key(name) not in keys:
+            continue
+        token = ''
+        if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
+            token = str(raw)
+        elif isinstance(raw, str):
+            text = raw.strip()
+            if re.fullmatch(r'[0-9]+', text):
+                token = str(int(text))
+            elif re.match(r'[A-Za-z]', text):
+                token = _key(text)
+        value = mapping.get(token)
+        if value is None:
+            unknown = True
+        else:
+            values.append(value)
+    if len(set(values)) > 1:
+        raise BridgeError('Conflicting native deal enum fields',
+                          code=f'native_deal_{field}_ambiguous')
+    return values[0] if values and not unknown else 'unknown'
+
+
+def deal_side(row):
+    mapping = {'0': 'buy', 'buy': 'buy', 'long': 'buy', 'dealtypebuy': 'buy',
+               '1': 'sell', 'sell': 'sell', 'short': 'sell', 'dealtypesell': 'sell'}
+    for number, name in enumerate(('balance', 'credit', 'charge', 'correction', 'bonus',
+                                  'commission', 'commissiondaily', 'commissionmonthly',
+                                  'commissionagentdaily', 'commissionagentmonthly', 'interest',
+                                  'buycanceled', 'sellcanceled', 'dividend', 'dividendfranked', 'tax'), 2):
+        mapping.update({str(number): name, name: name, 'dealtype'+name: name})
+    return _deal_enum(row, ('type', 'deal_type', 'side', 'direction', 'action'), mapping, 'side')
+
+
+def deal_entry(row):
+    mapping = {'0': 'in', 'in': 'in', 'dealentryin': 'in',
+               '1': 'out', 'out': 'out', 'dealentryout': 'out',
+               '2': 'inout', 'inout': 'inout', 'dealentryinout': 'inout',
+               '3': 'out_by', 'outby': 'out_by', 'dealentryoutby': 'out_by'}
+    return _deal_enum(row, ('entry', 'deal_entry', 'entry_type'), mapping, 'entry')
+
+
 # --------------------------------------------------------------------------- #
 # Bridge                                                                       #
 # --------------------------------------------------------------------------- #
@@ -651,17 +698,14 @@ class NativeBridge:
                 raise BridgeError("Native history repeats a deal identifier",
                                   code="native_deal_ticket_duplicate")
             seen_tickets.add(ticket)
-            entry = as_text(find(row, "entry", "deal_entry"), "").lower()
             out.append(
                 {
                     "ticket": ticket,
                     "position_id": as_int(find(row, "position_id", "position")),
                     "order_id": as_int(find(row, "order_id", "order")),
                     "symbol": as_text(find(row, "symbol", "name")),
-                    "type": _side(find(row, "type", "deal_type", "side")),
-                    "entry": ({"0":"in", "1":"out", "2":"inout", "3":"out_by"}.get(entry)
-                              or ("out_by" if "out_by" in entry else "inout" if "inout" in entry
-                                  else "out" if "out" in entry else "in" if entry in {"in","deal_entry_in"} else "unknown")),
+                    "type": deal_side(row),
+                    "entry": deal_entry(row),
                     "volume": as_float(find(row, "volume", "lots")),
                     "price": as_float(find(row, "price")),
                     "profit": financial(find(row, "profit")),

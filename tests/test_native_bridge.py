@@ -696,3 +696,68 @@ def test_repeated_native_deal_ids_are_rejected(monkeypatch):
     with pytest.raises(BridgeError) as caught:
         native.request('history_deals')
     assert caught.value.code == 'native_deal_ticket_duplicate'
+
+
+@pytest.mark.parametrize('field', ['type', 'deal_type', 'side', 'direction', 'action'])
+@pytest.mark.parametrize('value', ['sell', 'SELL', 'DEAL_TYPE_SELL', 1])
+def test_history_explicit_side_fields_not_default_buy(monkeypatch, field, value):
+    native = NativeBridge()
+    monkeypatch.setattr(native, 'call', lambda *a: {'deals': [
+        {'ticket': 1, field: value, 'entry': 'in'}]})
+    assert native.request('history_deals')[0]['type'] == 'sell'
+
+
+@pytest.mark.parametrize('value', ['out_by', 'out by', 'OUT-BY', 'DEAL_ENTRY_OUT_BY', 3])
+def test_history_close_by_is_not_ordinary_out(monkeypatch, value):
+    native = NativeBridge()
+    monkeypatch.setattr(native, 'call', lambda *a: {'deals': [
+        {'ticket': 1, 'direction': 'sell', 'entry': value}]})
+    assert native.request('history_deals')[0]['entry'] == 'out_by'
+
+
+def test_missing_side_is_unknown_not_buy_and_does_not_borrow_nested_order(monkeypatch):
+    native = NativeBridge()
+    monkeypatch.setattr(native, 'call', lambda *a: {'deals': [
+        {'ticket': 1, 'order': {'type': 'buy'}, 'entry': 'in'},
+        {'ticket': 2, 'direction': 'unrecognized', 'entry': 'without entry'}]})
+    rows = native.request('history_deals')
+    assert all(row['type'] == 'unknown' for row in rows)
+    assert rows[1]['entry'] == 'unknown'
+
+
+@pytest.mark.parametrize('row,code', [
+    ({'type': 'buy', 'direction': 'sell'}, 'native_deal_side_ambiguous'),
+    ({'entry': 'out', 'entry_type': 'out by'}, 'native_deal_entry_ambiguous'),
+])
+def test_conflicting_native_enums_fail_closed(monkeypatch, row, code):
+    from trade_mcp.bridge.base import BridgeError
+    native = NativeBridge()
+    monkeypatch.setattr(native, 'call', lambda *a: {'deals': [dict(row, ticket=1)]})
+    with pytest.raises(BridgeError) as caught:
+        native.request('history_deals')
+    assert caught.value.code == code
+
+
+def test_native_direction_and_close_by_join_real_cost_contract(monkeypatch):
+    import time
+
+    from trade_mcp.cost_reconciliation import correlate_deal_costs
+    native = NativeBridge()
+    monkeypatch.setattr(native, 'call', lambda *a: {'deals': [
+        {'deal': '100', 'position_id': '20', 'direction': 'sell', 'entry': 'out by',
+         'volume': .1, 'profit': 1.0}]})
+    snapshot = dict(source='mql5_cost_snapshot_v2', generated_at=int(time.time()), deals=[
+        dict(ticket='100', position_id='20', type=1, entry=3, volume=.1,
+             profit=1.0, swap=0, commission=0, fee=0, costs_complete=True)])
+    joined = correlate_deal_costs(native.request('history_deals'), snapshot)
+    assert joined['matched'] == 1
+    assert joined['deals'][0]['type'] == 'sell'
+    assert joined['deals'][0]['entry'] == 'out_by'
+
+
+@pytest.mark.parametrize('value', [True, -1, 1.0, '1.0', '1.1', '-1', '0x1'])
+def test_deal_side_does_not_reinterpret_invalid_numeric_enum(monkeypatch, value):
+    native = NativeBridge()
+    monkeypatch.setattr(native, 'call', lambda *a: {'deals': [
+        {'ticket': 1, 'direction': value, 'entry': 'in'}]})
+    assert native.request('history_deals')[0]['type'] == 'unknown'

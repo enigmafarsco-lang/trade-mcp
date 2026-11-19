@@ -297,3 +297,28 @@ No raw inspection, monitor input change, MQL5 compile, policy activation, cloud
 request or order is necessary. Do not assume a normalization fix until the actual
 mismatched field is established. The report generator accepts corresponding
 identity_compared_trades and identity_{position,side,entry}_mismatches counts.
+
+### Native side and close-by normalization correction
+
+The latest count-only runtime evidence showed every normalized native side as buy,
+with 2402 side mismatches and four entry mismatches. The old generic `_side(None)`
+defaulted to buy, and history lookup did not include direction/action. History now
+uses an explicit **top-level** enum reader for type/deal_type/side/direction/action.
+Missing/unrecognized fields become unknown, never buy; conflicting recognized
+aliases fail with a fixed ambiguous-field error. Nested order types are not used.
+Numeric deal enums must be integer tokens, not booleans, floats, fractions or
+negative values. This change is limited to deal history, not order submission.
+
+Entry/entry_type/deal_entry normalization recognizes exact IN/OUT/INOUT/OUT_BY
+enums and equivalent separators, including `out by` and `DEAL_ENTRY_OUT_BY`.
+It no longer uses substring matching that misclassified close-by as ordinary out
+or interpreted arbitrary text containing `out` as a real exit. No side is inferred
+from whether a deal opens/closes, symbol, price or volume. Snapshot side/entry is
+not copied into native data to force agreement.
+
+Local verification: deploy Python only, restart only the console with existing
+environment and repeat GET /api/cost-reconciliation once. Return sanitized
+identity_comparison and reason/coverage/account_operations. No recompile, changed
+monitor inputs, orders, cloud windows, or policy activation. If output remains
+unknown or mismatched, record that; alias support is not evidence that the local
+terminal actually uses those fields until observed.

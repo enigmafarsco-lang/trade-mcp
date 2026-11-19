@@ -63,7 +63,8 @@ def cost_health(mt5, cfg):
         return {**base, 'error': 'cost_check_failed', 'stage': stage, 'reason': exc.code}
     except BridgeError as exc:
         safe_codes = {'native_deal_ticket_missing', 'native_deal_ticket_invalid',
-                      'native_deal_ticket_ambiguous', 'native_deal_ticket_duplicate'}
+                      'native_deal_ticket_ambiguous', 'native_deal_ticket_duplicate',
+                      'native_deal_side_ambiguous', 'native_deal_entry_ambiguous'}
         return {**base, 'error': 'cost_check_failed', 'stage': stage,
                 'reason': exc.code if exc.code in safe_codes else 'native_history_unavailable'}
     except Exception:
