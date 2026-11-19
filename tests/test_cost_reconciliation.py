@@ -99,3 +99,39 @@ def test_v2_join_preserves_source_label():
     result = correlate_deal_costs(native, snapshot, now=1001)
     assert result['deals'][0]['cost_source'] == 'mql5_cost_snapshot_v2'
     assert result['execution_eligible'] is False
+
+
+def test_positive_balance_not_added_to_any_trade_profit():
+    native, snapshot = fixture()
+    snapshot['deals'].append(dict(ticket='999', position_id='0', type=2, entry=0,
+                                  volume=0, profit=10000, swap=0, commission=0, fee=0,
+                                  costs_complete=True))
+    original = copy.deepcopy(snapshot)
+    result = correlate_deal_costs(native, snapshot, now=1001)
+    assert result['deals'][0]['profit'] == 0
+    assert result['deals'][0]['commission'] == -.2
+    assert result['excluded_positive_balance_records'] == 1
+    assert result['matched'] == 1
+    assert snapshot == original  # Raw balance record remains preserved.
+
+
+def test_matching_native_balance_is_explicitly_excluded():
+    native, snapshot = fixture()
+    balance = dict(ticket='999', position_id='0', type=2, entry=0, volume=0,
+                   profit=10000, swap=0, commission=0, fee=0, costs_complete=True)
+    snapshot['deals'].append(balance)
+    native.append(dict(balance, type='balance', entry='in'))
+    result = correlate_deal_costs(native, snapshot, now=1001)
+    assert result['excluded_native_balance_records'] == 1
+    assert len(result['deals']) == 1
+
+
+@pytest.mark.parametrize('change', [{'profit': -100}, {'fee': -.1}, {'volume': .1},
+                                   {'type': 7}, {'costs_complete': False}])
+def test_unqualified_balance_still_blocks_correlation(change):
+    native, snapshot = fixture()
+    balance = dict(ticket='999', position_id='0', type=2, entry=0, volume=0,
+                   profit=10000, swap=0, commission=0, fee=0, costs_complete=True)
+    snapshot['deals'].append(dict(balance, **change))
+    with pytest.raises(CostSnapshotError):
+        correlate_deal_costs(native, snapshot, now=1001)

@@ -257,3 +257,21 @@ credit_operations, commission_operations, charge_operations and
 other_account_operations as additional count-only fields. Sum commission variants
 for commission_operations; put remaining categories in other_account_operations.
 Do not label source acceptance pass while unallocated operations remain blocked.
+
+### Positive balance versus a charge
+
+See `docs/DEMO-CASH-POLICY.md` for the narrow positive-balance exclusion. This is
+not a claim of verified deposit provenance. Raw records and diagnostic totals stay
+preserved; positive unattributed income is never applied to a position's P/L or
+loss streak. Only explicitly zero-volume, zero-cost, positionless positive BALANCE
+rows qualify. All costs/unknowns still block. The report generator supports counts
+`excluded_positive_balance_records` and `blocking_unallocated_records`.
+
+Python-only local verification: preserve the existing monitor inputs, update this
+branch and restart only the console with its unchanged environment. Call
+GET /api/cost-reconciliation once and report sanitized account_operations,
+coverage and reason/result. Call load_guard_snapshot once to check the stricter
+10-second guardian source gate; record its actual result separately from order
+acceptance. No MQL5 compile, policy activation, cloud request or order is needed.
+If volume/entry do not satisfy the strict rule, report blocked; do not edit the
+file or relax the predicate to force a pass.

@@ -16,12 +16,31 @@ NONTRADE_TYPES = {
 }
 
 
+def is_positive_balance_operation(row):
+    """Conservative exclusion from position P/L, not a verified deposit label.
+
+    A strictly positive balance-only credit cannot reduce position net P/L when
+    excluded. Never offset a loss or clear a loss streak with unattributed income.
+    Negative balance adjustments/charges and incomplete records are not accepted.
+    """
+    try:
+        values = [row[k] for k in ('profit', 'swap', 'commission', 'fee', 'volume')]
+        if any(isinstance(v, bool) or v is None or not math.isfinite(float(v)) for v in values):
+            return False
+        profit, swap, commission, fee, volume = map(float, values)
+        return (row['type'] == 2 and int(row['position_id']) == 0 and row['entry'] == 0
+                and row.get('costs_complete') is True and profit > 0
+                and swap == commission == fee == volume == 0)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+
+
 def account_operation_summary(snapshot):
     """Count classified records only; never return comments, IDs, amounts or dates."""
     counts = dict.fromkeys((*NONTRADE_TYPES.values(), 'unknown', 'trade_without_position'), 0)
     fields = dict.fromkeys(('profit', 'swap', 'commission', 'fee'), 0)
     signs = dict.fromkeys(('positive_profit', 'negative_profit', 'zero_profit'), 0)
-    total = 0
+    total = excluded = 0
     for row in snapshot['deals']:
         kind = row['type']
         if kind in (0, 1) and int(row['position_id']) > 0:
@@ -29,6 +48,7 @@ def account_operation_summary(snapshot):
         name = 'trade_without_position' if kind in (0, 1) else NONTRADE_TYPES.get(kind, 'unknown')
         counts[name] += 1
         total += 1
+        excluded += int(is_positive_balance_operation(row))
         for field in fields:
             value = row[field]
             if isinstance(value, bool) or value is None or not math.isfinite(float(value)):
@@ -37,6 +57,8 @@ def account_operation_summary(snapshot):
         profit = float(row['profit'])
         signs['positive_profit' if profit > 0 else 'negative_profit' if profit < 0 else 'zero_profit'] += 1
     return {'unallocated_records': total, 'by_deal_type': counts,
+            'excluded_positive_balance_records': excluded,
+            'blocking_unallocated_records': total-excluded,
             'nonzero_field_counts': fields, 'profit_sign_counts': signs,
             'allocation_verified': False}
 

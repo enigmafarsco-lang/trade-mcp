@@ -20,7 +20,8 @@ CHECKS = {"compile", "snapshot_fresh", "account_match", "financial_fields",
           "guard_cost_source", "guardian_offline_tests"}
 COUNTS = {"deals", "positions", "cloud_requests", "orders_submitted",
           "unallocated_records", "balance_operations", "credit_operations",
-          "commission_operations", "charge_operations", "other_account_operations"}
+          "commission_operations", "charge_operations", "other_account_operations",
+          "excluded_positive_balance_records", "blocking_unallocated_records"}
 
 
 def sanitize(value: object) -> dict:

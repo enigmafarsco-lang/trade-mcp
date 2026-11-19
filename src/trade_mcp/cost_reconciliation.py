@@ -10,6 +10,7 @@ import copy
 import math
 import time
 
+from .account_operations import is_positive_balance_operation
 from .cost_snapshot import CostSnapshotError
 
 
@@ -47,11 +48,16 @@ def correlate_deal_costs(native_deals, snapshot, *, now=None):
         raise CostCorrelationError('unsupported_cost_source')
     if not 0 <= _number(now) - _number(snapshot.get('generated_at')) <= 30:
         raise CostCorrelationError('snapshot_stale')
-    indexed = {}
+    indexed, balance_operations = {}, {}
+    snapshot_tickets = set()
     for row in snapshot['deals']:
         ticket = str(row['ticket'])
-        if ticket in indexed or int(ticket) <= 0:
+        if ticket in snapshot_tickets or int(ticket) <= 0:
             raise CostCorrelationError('snapshot_ticket_invalid_or_duplicate')
+        snapshot_tickets.add(ticket)
+        if is_positive_balance_operation(row):
+            balance_operations[ticket] = row
+            continue
         if row['type'] not in (0, 1) or int(row['position_id']) <= 0:
             raise CostCorrelationError('unallocated_account_charge')
         if row.get('costs_complete') is not True:
@@ -61,13 +67,27 @@ def correlate_deal_costs(native_deals, snapshot, *, now=None):
         indexed[ticket] = row
     result = []
     seen = set()
+    excluded_native = 0
     for native in native_deals:
         ticket = str(native['ticket'])
         if ticket in seen:
             raise CostCorrelationError('native_ticket_duplicate')
+        seen.add(ticket)
+        if ticket in balance_operations:
+            credit = balance_operations[ticket]
+            if (int(native.get('position_id', -1)) != 0 or
+                    native.get('type') not in {'balance', '2', 'deal_type_balance'} or
+                    native.get('entry') != 'in' or _number(native.get('volume')) != 0):
+                raise CostCorrelationError('deal_identity_mismatch')
+            for key in FIELDS:
+                supplied = native.get(key)
+                if (key == 'profit' or supplied is not None) and not math.isclose(
+                        _number(supplied), _number(credit[key]), abs_tol=1e-7, rel_tol=0):
+                    raise CostCorrelationError('financial_source_mismatch')
+            excluded_native += 1
+            continue
         if ticket not in indexed:
             raise CostCorrelationError('native_ticket_outside_snapshot')
-        seen.add(ticket)
         cost = indexed[ticket]
         if (int(native['position_id']) != int(cost['position_id']) or
                 native['type'] != ('buy' if cost['type'] == 0 else 'sell') or
@@ -86,6 +106,8 @@ def correlate_deal_costs(native_deals, snapshot, *, now=None):
         result.append(item)
     return {'deals': result, 'matched': len(result),
             'snapshot_only_deals': len(indexed.keys() - seen),
+            'excluded_positive_balance_records': len(balance_operations),
+            'excluded_native_balance_records': excluded_native,
             'execution_eligible': False, 'lifecycle_complete': False}
 
 

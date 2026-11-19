@@ -175,3 +175,36 @@ and the v2 three-loss latch across journal reopen. They are not live execution
 acceptance. User-local v2 validation so far had zero open positions, so live
 floating P/L and actual close submission remain unverified. Do not mark them pass
 or automatically activate based on the existence of this implementation.
+
+## Conservative positive-balance exclusion
+
+The latest local evidence contains one positive DEAL_TYPE_BALANCE row with explicit
+zero swap/commission/fee. It is **not proved to be an initial deposit**. Blanket
+rejection of all non-trade rows also rejects harmless positive account funding.
+The policy now distinguishes a narrowly qualified non-position positive balance:
+
+- type exactly BALANCE (2), position_id=0, entry=IN (0), explicit volume=0;
+- explicit finite profit strictly positive;
+- explicit finite swap, commission and fee exactly zero, costs_complete=true.
+
+Such a row is preserved in the raw snapshot/account ledger and counted explicitly,
+but excluded from **every position's** trading P/L. Its economic purpose is not
+inferred and it is not allocated to a position. This is conservative for exit and
+loss-streak decisions: excluding unattributed positive income cannot increase a
+position's net P/L or turn a losing trade into a winning trade. It never clears
+the loss latch or counts as a win. Current live equity already reflects account
+operations; the adapter never adds the credit again to equity or sizing balance.
+The USD 10 planned risk cap is unchanged.
+
+Negative/zero balance adjustments, credits of other types, nonzero costs,
+nonzero/missing volume, unknown types, incomplete fields and positionless trading
+records still block. A known positive balance with a fee does not qualify even if
+its overall total is positive. Real trading costs are never zero-filled or erased.
+V1 lacks explicit volume and cannot use this exception. No input window is changed.
+
+`allocation_verified` remains false and `unallocated_records` includes these rows;
+`excluded_positive_balance_records` and `blocking_unallocated_records` explain the
+distinction. Diagnostic correlation can succeed with a qualified positive balance
+without thereby authorizing execution. Existing fresh-account, v2, 10-second age,
+owned-history, protective SL, durable close, and three-loss checks remain intact.
+This supersedes the earlier blanket statement that every non-trade record blocks.

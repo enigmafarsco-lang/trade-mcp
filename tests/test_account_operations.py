@@ -37,3 +37,26 @@ def test_trade_without_position_and_normal_trade_are_distinct():
 def test_unknown_amount_cannot_be_classified_as_zero():
     with pytest.raises(CostSnapshotError):
         account_operation_summary({'deals': [dict(record(2), commission=None)]})
+
+
+def credit():
+    return dict(record(2), entry=0, volume=0, costs_complete=True)
+
+
+def test_qualified_balance_income_is_not_allocated_or_counted_as_profit():
+    summary = account_operation_summary({'deals': [credit()]})
+    assert summary['unallocated_records'] == 1
+    assert summary['excluded_positive_balance_records'] == 1
+    assert summary['blocking_unallocated_records'] == 0
+    assert summary['allocation_verified'] is False
+
+
+@pytest.mark.parametrize('change', [
+    {'profit': -1}, {'profit': 0}, {'volume': .1}, {'volume': None},
+    {'commission': -.01}, {'fee': -.01}, {'swap': -.01},
+    {'type': 3}, {'position_id': '10'}, {'costs_complete': False}, {'entry': 1},
+])
+def test_credit_exclusion_does_not_hide_costs_or_ambiguity(change):
+    summary = account_operation_summary({'deals': [dict(credit(), **change)]})
+    assert summary['excluded_positive_balance_records'] == 0
+    assert summary['blocking_unallocated_records'] == 1

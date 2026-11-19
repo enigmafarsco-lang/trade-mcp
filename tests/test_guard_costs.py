@@ -136,6 +136,8 @@ def test_v2_closed_losses_use_real_costs_and_persist_latch(mock_app):
         c = dict(snap['deals'][0], ticket=str(opened['ticket']), position_id=str(pid), comment=marker)
         costs.extend([c, dict(c, ticket=str(exited['ticket']), entry=1, type=1, profit=-1)])
         intents[marker] = dict(intent['tmcp:owned'], position_id=pid)
+    costs.append(dict(ticket='9999', position_id='0', type=2, entry=0, volume=0,
+                      profit=100000, swap=0, commission=0, fee=0, costs_complete=True))
     snapshot = dict(source='mql5_cost_snapshot_v2', generated_at=int(time.time()),
                     deals=costs, positions=[])
     mt5 = Mock()
@@ -173,3 +175,20 @@ def test_balance_record_stays_blocked_with_private_safe_inventory():
     assert caught.value.summary['allocation_verified'] is False
     assert '987654' not in str(caught.value.summary)
     assert 'private' not in str(caught.value.summary)
+
+
+def test_qualified_positive_balance_preserved_but_not_added_to_owned_pnl():
+    deals, positions, snapshot, intents = evidence()
+    snapshot['deals'].append(dict(ticket='999', position_id='0', type=2, entry=0,
+                                  volume=0, profit=10000, swap=0, commission=0,
+                                  fee=0, costs_complete=True))
+    account = dict(login=1, server='Demo', currency='USD', trade_mode='demo')
+    mt5 = Mock()
+    mt5.account_info.return_value = account
+    with patch('trade_mcp.guard_costs.read_cost_snapshot', return_value=snapshot):
+        loaded = load_guard_snapshot(mt5, SimpleNamespace(cost_snapshot_path='file'), account)
+    assert len(loaded['deals']) == 2  # Preserve the original account ledger row.
+    enriched, floating = enrich_owned_history(deals, positions, loaded, intents)
+    net = sum(enriched[0][k] for k in ('profit', 'swap', 'commission', 'fee'))
+    net += floating[0]['profit']+floating[0]['swap']
+    assert net == pytest.approx(-10.1)

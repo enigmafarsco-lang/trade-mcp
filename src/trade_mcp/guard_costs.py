@@ -21,7 +21,7 @@ def load_guard_snapshot(mt5, cfg, account):
     if any(str(account[k]) != str(after.get(k)) for k in ('login', 'server', 'currency', 'trade_mode')):
         raise CostSnapshotError('Account changed during cost read')
     operations = account_operation_summary(snapshot)
-    if operations['unallocated_records']:
+    if operations['blocking_unallocated_records']:
         raise UnallocatedOperationsError(operations)
     return snapshot
 
