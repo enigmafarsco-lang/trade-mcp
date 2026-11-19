@@ -42,13 +42,17 @@ Native bridge requests are serialized and can themselves be slow. This is not
 hard real-time and needs a running, connected console. The guardian only sends
 closes when `ALLOW_TRADING=true` and the current account passes the USD demo check.
 
-Each accepted policy entry has a durable journal reservation, random `tmcp:`
-comment and dedicated magic 73104219. Only positions matched to those stored
-reservations are owned. Historical agent trades, manual positions and another
+Each accepted policy entry has a durable journal reservation and random 25-character
+`tmcp:` comment. Native orders use the documented comment parameter, not an
+unsupported magic argument. Other supported transports retain dedicated magic
+73104219 as an additional check. Ownership mode is stored per reservation;
+existing magic-based reservations are not silently downgraded. Only positions
+matched to those stored reservations are owned. Historical agent trades, manual positions and another
 robot's positions are NOT adopted or closed. Account-scoped state is keyed by
 hashed login/server. Position identifiers (not just order/deal tickets) reconcile
-fills, restart state and deal history. Broker-modified comments/unknown mappings
-fail closed rather than guessing ownership. An unresolved reservation blocks
+fills, restart state and deal history. For native comment ownership, the opening deal must also match the reserved
+comment and opening time, and its position ID must agree with the position.
+Broker-modified comments/unknown mappings fail closed rather than guessing ownership. An unresolved reservation blocks
 new entries, including after an ambiguous open outcome.
 
 For an owned open position, net-to-date is broker floating profit + current swap
@@ -107,8 +111,8 @@ known). A `costs_complete` flag requires finite numeric values, not merely key
 presence. Missing floating position P/L is also unknown.
 
 Before reserving an entry on the native backend, the policy requires a documented
-magic/magic_number input on the native order tool and complete monetary fields
-in recent trading-deal samples. No history/sample proof means no policy entry.
+string comment input accepting the full 25-character nonce on the native order
+tool and complete monetary fields in recent trading-deal samples. No history/sample proof means no policy entry.
 This read-only capability test must precede any controlled execution acceptance.
 It deliberately blocks the currently reported incomplete terminal data.
 
@@ -118,4 +122,6 @@ retain one reconnect attempt. Magic is no longer silently dropped: a nonzero
 magic is sent only under the tool schema's explicitly documented parameter and
 type; absent support fails before submission. Arbitrary extra arguments are not
 used to guess undocumented broker functionality. This does not prove the server
-honors the field; later live readback must still match nonce/magic/identifier.
+honors the field. Native cash-policy orders intentionally send no magic; later
+readback must match nonce, opening history/time and position identifier. Merely
+seeing a `tmcp:` comment without a journal reservation never establishes ownership.

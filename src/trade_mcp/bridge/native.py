@@ -707,8 +707,18 @@ class NativeBridge:
                           code='cash_policy_magic_unsupported')
 
     def _cmd_cash_policy_capabilities(self, **_):
-        name, kind = self._cash_magic_parameter()
-        return {'magic_supported':True, 'magic_parameter':name, 'magic_type':kind}
+        with self._lock:
+            tools = self._connect().list_tools()
+        tool = next((t for t in tools if t.get('name') == 'trade_send_market_order'), {})
+        properties = (tool.get('inputSchema') or {}).get('properties') or {}
+        comment = properties.get('comment') or {}
+        supported = (comment.get('type') == 'string' and comment.get('maxLength', 31) >= 25
+                     and comment.get('minLength', 0) <= 25
+                     and not any(k in comment for k in ('pattern','enum','const')))
+        return {'ownership_supported':supported, 'ownership_method':'comment_reservation',
+                'comment_parameter':'comment' if supported else None,
+                'magic_supported':any((properties.get(k) or {}).get('type') in {'integer','number','string'}
+                                      for k in ('magic','magic_number'))}
 
     def _cmd_trade_open(
         self,

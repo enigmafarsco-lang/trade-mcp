@@ -645,3 +645,17 @@ def test_native_missing_costs_remain_unknown_and_zero_is_known(monkeypatch):
     assert not rows[0]['costs_complete']
     assert rows[1]['costs_complete'] and rows[1]['fee'] == 0
     assert not rows[2]['costs_complete'] and rows[2]['commission'] is None
+
+
+@pytest.mark.parametrize('comment,supported', [({'type':'string','maxLength':31},True),
+    ({'type':'string','maxLength':20},False), ({},False),
+    ({'type':'string','enum':['fixed']},False)])
+def test_native_comment_ownership_capabilities_are_explicit(monkeypatch,comment,supported):
+    native = NativeBridge()
+    class Client:
+        def list_tools(self):
+            return [{'name':'trade_send_market_order','inputSchema':{'properties':{'comment':comment}}}]
+    monkeypatch.setattr(native,'_connect',lambda:Client())
+    result = native.request('cash_policy_capabilities')
+    assert result['ownership_supported'] is supported
+    assert result['magic_supported'] is False

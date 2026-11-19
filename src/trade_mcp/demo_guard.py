@@ -40,10 +40,12 @@ def state_for(store, key):
 def reserve_entry(mt5, cfg, store):
     account = mt5.account_info(fresh=True)
     key = account_key(account)
+    ownership = 'magic_comment'
     if cfg.backend == 'native':
         capability = mt5.request('cash_policy_capabilities')
-        if capability.get('magic_supported') is not True:
-            raise ValueError('Native magic parameter required')
+        if capability.get('ownership_supported') is not True or capability.get('ownership_method') != 'comment_reservation':
+            raise ValueError('Native unique comment parameter required')
+        ownership = 'comment_reservation'
         samples = mt5.deals(date_from=int(time.time())-86400,date_to=int(time.time()))
         samples = [d for d in samples if d.get('type') in {'buy','sell'}][-20:]
         if not samples or not all(d.get('costs_complete') is True for d in samples):
@@ -56,7 +58,7 @@ def reserve_entry(mt5, cfg, store):
     def change(state):
         if state['latched'] or any(i['status'] != 'closed' for i in state['intents'].values()):
             raise ValueError('Loss latch or unresolved entry/exit blocks trading')
-        state['intents'][marker] = {'status':'reserved','started_at':time.time(), 'position_id':None}
+        state['intents'][marker] = {'status':'reserved','started_at':time.time(), 'position_id':None, 'ownership':ownership}
     store.cash_guard_update(key, change)
     return key, marker
 
@@ -98,10 +100,13 @@ def inspect_positions(mt5, cfg, store, execute=False):
     closed = []
     rows = []
     for marker, intent in intents.items():
-        matches = [p for p in positions if p.get('comment') == marker and p.get('magic') == MAGIC]
+        def owns(item, marker=marker, intent=intent):
+            return item.get('comment') == marker and (intent.get('ownership') == 'comment_reservation'
+                                                     or item.get('magic') == MAGIC)
+        matches = [p for p in positions if owns(p)]
         ids = {position_id(p) for p in matches}
         ids.update(pid for pid, items in groups.items() if any(
-            d.get('comment') == marker and d.get('magic') == MAGIC and d.get('entry') == 'in' for d in items))
+            owns(d) and d.get('entry') == 'in' for d in items))
         if intent.get('position_id'):
             ids.add(intent['position_id'])
         if len(ids) != 1 or 0 in ids:
@@ -113,6 +118,9 @@ def inspect_positions(mt5, cfg, store, execute=False):
         items = groups.get(pid, [])
         if not items or not any(d.get('entry') == 'in' for d in items):
             raise ValueError('Opening deal history required to account for costs')
+        if intent.get('ownership') == 'comment_reservation' and not any(
+                owns(d) and d.get('entry') == 'in' and amount(d['time']) >= intent['started_at']-5 for d in items):
+            raise ValueError('Reserved opening comment and time must match position history')
         if any(d.get('entry') not in {'in','out','out_by'} for d in items):
             raise ValueError('Reversal/unknown deal entry requires manual reconciliation')
         if any(d.get('costs_complete') is False for d in items):
@@ -126,7 +134,7 @@ def inspect_positions(mt5, cfg, store, execute=False):
             closed.append((max(amount(d['time']) for d in items), pid, marker, net))
             continue
         p = active[pid]
-        if p.get('magic') != MAGIC or p.get('comment') != marker:
+        if not owns(p):
             raise ValueError('Position identity no longer matches owned entry')
         if amount(p.get('sl',0)) <= 0:
             raise ValueError('Broker-side protective SL required')

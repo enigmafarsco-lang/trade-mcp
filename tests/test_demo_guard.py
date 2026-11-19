@@ -180,9 +180,32 @@ def test_cash_confirmation_tags_only_new_owned_entry(mock_app):
 
 def test_native_entry_blocked_before_reservation_if_costs_unverified(mock_app):
     broker,account,_,deals,_ = fixture_broker()
-    broker.request = lambda *a:{'magic_supported':True}
+    broker.request = lambda *a:{'ownership_supported':True,'ownership_method':'comment_reservation'}
     deals.append({**deal(1,10,'in'),'type':'buy','costs_complete':False})
     cfg = mock_app.cfg.with_overrides(demo_cash_policy=True,backend='native')
     with pytest.raises(ValueError):
         reserve_entry(broker,cfg,mock_app.store)
     assert state_for(mock_app.store,account_key(account))['intents'] == {}
+
+
+def test_native_comment_reservation_without_magic_can_match_only_owned_position(mock_app):
+    broker,account,positions,deals,calls = fixture_broker()
+    cfg = mock_app.cfg.with_overrides(demo_cash_policy=True,allow_trading=True,backend='native')
+    broker.request = lambda *a:{'ownership_supported':True,'ownership_method':'comment_reservation'}
+    # Unrelated old deals establish transport cost completeness, not ownership.
+    deals.append({**deal(1,999,'in'),'type':'buy','costs_complete':True})
+    key,marker = reserve_entry(broker,cfg,mock_app.store)
+    assert state_for(mock_app.store,key)['intents'][marker]['ownership'] == 'comment_reservation'
+    positions.extend([{'ticket':10,'magic':0,'comment':marker,'sl':90,'profit':2,'swap':0},
+                      {'ticket':99,'magic':0,'comment':'manual','sl':90,'profit':-100,'swap':0}])
+    deals.append({**deal(2,10,'in'),'comment':marker,'magic':0,'type':'buy'})
+    inspect_positions(broker,cfg,mock_app.store,execute=True)
+    assert calls == [10]
+
+
+def test_comment_without_journal_reservation_does_not_confer_ownership(mock_app):
+    broker,_,positions,_,calls = fixture_broker()
+    cfg = mock_app.cfg.with_overrides(demo_cash_policy=True,allow_trading=True)
+    positions.append({'ticket':10,'magic':MAGIC,'comment':'tmcp:not-reserved','sl':90,'profit':-100,'swap':0})
+    inspect_positions(broker,cfg,mock_app.store,execute=True)
+    assert not calls

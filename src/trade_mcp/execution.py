@@ -440,7 +440,7 @@ def confirm(
                 sl=float(payload.get("sl") or 0.0),
                 tp=float(payload.get("tp") or 0.0),
                 comment=marker or payload.get("comment") or "trade-mcp",
-                magic=73104219 if marker else 0,
+                magic=73104219 if marker and cfg.backend != 'native' else 0,
                 deviation=dev,
             )
             retcode = int(result.get("retcode") or 0) if isinstance(result, dict) else 0
