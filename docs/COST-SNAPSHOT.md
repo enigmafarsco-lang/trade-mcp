@@ -70,3 +70,21 @@ keep the interval bounded and MaxDeals capped. This is not an incremental ledger
 Removing the monitor from its chart stops its timer. The remaining file is not
 proof that the monitor is running. Host file permissions and a single trusted
 writer remain mandatory. No Python execution adapter consumes these files yet.
+
+## Read-only native cost correlation
+
+`trade_mcp.cost_reconciliation.correlate_deal_costs(native_deals, snapshot)` now
+supports diagnostic exact-ticket correlation. Obtain `snapshot` only by calling
+`read_cost_snapshot` with independent live identity; never deserialize arbitrary
+JSON and treat it as a validated snapshot. Recheck account identity after querying
+native history as well; the correlation function is not an account verifier.
+
+The join requires equal ticket, position ID, direction, entry classification and
+price profit. Existing explicit native costs must agree. Nonfinite values,
+duplicates, missing native matches, stale snapshots and unallocated non-trade
+account charges fail closed. Terminal/server timestamps are not silently treated
+as UTC. Snapshot-only record count is surfaced because interval coverage can
+differ. Neither input is modified. The result still explicitly denies execution
+eligibility and lifecycle completeness. No guardian wiring or entry-gate change
+is included. This module is test-covered Python logic, not a claimed local runtime
+success or a fix for late broker charges.
