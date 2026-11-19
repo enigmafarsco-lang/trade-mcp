@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "generated_at": "2026-11-19T15:54:00.806670+00:00",
+  "commit": "e9ff1e94e2dc1bf9c519d309a255768c3313728d",
+  "checks": {
+    "account_match": "pass",
+    "analysis": "not_run",
+    "broker_engine": "not_run",
+    "compile": "not_run",
+    "financial_fields": "pass",
+    "floating_net_pnl": "not_run",
+    "guard_cost_source": "fail",
+    "guardian": "not_run",
+    "guardian_offline_tests": "pass",
+    "optional_dependency_errors": "not_run",
+    "order": "blocked",
+    "position_lifecycle": "not_run",
+    "proposal": "not_run",
+    "snapshot_fresh": "pass",
+    "strategy_rules": "not_run",
+    "technical_builtin": "not_run",
+    "text_tool_discovery": "not_run",
+    "three_loss_latch": "blocked",
+    "unique_tickets": "pass",
+    "web_engine": "not_run"
+  },
+  "counts": {
+    "balance_operations": 1,
+    "charge_operations": 0,
+    "cloud_requests": 0,
+    "commission_operations": 0,
+    "credit_operations": 0,
+    "deals": 5301,
+    "orders_submitted": 0,
+    "other_account_operations": 0,
+    "positions": 0,
+    "unallocated_records": 1
+  },
+  "execution_authorized_by_report": false
+}
