@@ -93,10 +93,17 @@ def analyze_ohlcv(rows, provider='builtin'):
         result.update({f'ema{p}': indicators.ema(closes, p)[-1] for p in (20, 50, 200)})
     else:
         raise ValueError('Unknown indicator provider')
+    # Shared dependency-free definitions, explicitly sourced separately when the
+    # optional pandas-ta provider supplies the other indicators.
+    upper, middle, lower = indicators.bollinger(closes, period=20, mult=2.0)
+    result.update(atr14=indicators.atr(highs, lows, closes, 14)[-1],
+                  bollinger_upper=upper[-1], bollinger_middle=middle[-1],
+                  bollinger_lower=lower[-1])
     return dict(ok=True, provider=provider, bars=len(rows), last_timestamp=rows[-1][0],
                 close=closes[-1], indicators=result,
                 implementation='direct pandas_ta calls' if provider == 'pandas_ta' else
                 'independent built-in formulas, not pandas-ta parity certified',
+                additional_indicator_implementation='builtin Wilder ATR14 and population-std Bollinger20/2',
                 input_contract='Caller supplies closed bars only; no live freshness claim',
                 ready=all(v is not None for v in result.values()))
 

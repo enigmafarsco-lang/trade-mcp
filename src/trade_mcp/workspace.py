@@ -30,6 +30,7 @@ def workspace_identity(cfg):
     settings = [cfg.research_python, journal_identity(cfg.journal_path), cfg.mcp_url,
                 cfg.llm_base_url, cfg.llm_billing_project, cfg.llm_usage_convention, cfg.llm_fast_advisory,
                 cfg.default_symbol, cfg.timeframes, cfg.training_budget, cfg.demo_cash_policy,
+                cfg.paper_trading, cfg.cost_snapshot_path,
                 cfg.max_lot, cfg.max_risk_percent, cfg.max_open_positions, cfg.max_spread_points,
                 cfg.allowed_symbols, cfg.proposal_ttl, cfg.deviation_points]
     return hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
@@ -54,6 +55,8 @@ def console_environment(cfg):
         'LLM_FAST_ADVISORY': 'true' if cfg.llm_fast_advisory else 'false',
         'DEMO_CASH_POLICY': 'true' if cfg.demo_cash_policy else 'false',
         'ALLOW_TRADING': 'false',
+        'PAPER_TRADING': 'true' if cfg.paper_trading else 'false',
+        'COST_SNAPSHOT_PATH': cfg.cost_snapshot_path,
         'JOURNAL': cfg.journal_path, 'SYMBOL': cfg.default_symbol,
         'TIMEFRAMES': ','.join(cfg.timeframes), 'TRAINING_BUDGET': cfg.training_budget,
         'MAX_LOT': cfg.max_lot, 'MAX_RISK_PERCENT': cfg.max_risk_percent,

@@ -16,6 +16,7 @@ from .app import get_app
 from .bridge.base import BridgeError
 from .config import VALID_TIMEFRAMES, sizing_balance
 from .risk import loss_per_lot, lots_for_risk
+from .risk_manager import HARD_MAX_RISK_PERCENT
 from .workspace import WorkspaceManager
 
 LOG = logging.getLogger(__name__)
@@ -90,6 +91,7 @@ def mt5_status() -> dict[str, Any]:
             "default_symbol": cfg.default_symbol,
             "timeframes": list(cfg.timeframes),
             "allow_trading": cfg.allow_trading,
+            "paper_trading": cfg.paper_trading,
             "max_lot": cfg.max_lot,
             "max_risk_percent": cfg.max_risk_percent,
             "max_open_positions": cfg.max_open_positions,
@@ -132,7 +134,7 @@ def account_info() -> dict[str, Any]:
     positions = app.mt5.positions()
     account["open_positions"] = len(positions)
     account["floating_profit"] = round(sum(float(p.get("profit") or 0) for p in positions), 2)
-    return {"ok": True, "account": account, "trading_enabled": app.cfg.allow_trading}
+    return {"ok": True, "account": account, "trading_enabled": app.cfg.trading_enabled, "paper_trading": app.cfg.paper_trading}
 
 
 @mcp.tool()
@@ -289,7 +291,7 @@ def position_size(
         effective = min(effective, requested_balance)
     if not math.isfinite(float(risk_percent)) or float(risk_percent) <= 0:
         return {"ok": False, "error": "invalid_risk_percent"}
-    pct = min(float(risk_percent), app.cfg.max_risk_percent)
+    pct = min(float(risk_percent), app.cfg.max_risk_percent, HARD_MAX_RISK_PERCENT)
     sizing = lots_for_risk(
         balance=effective, risk_percent=pct, entry=entry, stop=stop, info=info, max_lot=app.cfg.max_lot
     )
@@ -431,6 +433,7 @@ def risk_report() -> dict[str, Any]:
             "max_open_positions": cfg.max_open_positions,
             "max_spread_points": cfg.max_spread_points,
             "allow_trading": cfg.allow_trading,
+            "paper_trading": cfg.paper_trading,
         },
         "warnings": warnings,
     }

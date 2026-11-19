@@ -98,7 +98,8 @@ def test_text_only_main_has_only_string_tools():
     spec.loader.exec_module(module)
     tools = asyncio.run(module.mcp.list_tools())
     assert len(tools) >= 12
-    assert all(t.name.endswith('_text') for t in tools)
+    assert all(t.name.endswith('_text') or t.name in {
+        'get_comprehensive_analysis', 'get_full_technical_summary'} for t in tools)
     assert 'mt5_status_text' in [t.name for t in tools]
 
 

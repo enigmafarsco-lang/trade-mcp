@@ -161,7 +161,7 @@ def inspect_positions(mt5, cfg, store, execute=False):
         row = {'ticket':p['ticket'], 'net_usd':net, 'state':intent['status']}
         rows.append(row)
         if net <= -LOSS_USD or net >= TARGET_USD:
-            if not execute or not cfg.allow_trading:
+            if not execute or not cfg.allow_trading or getattr(cfg, 'paper_trading', False):
                 row['exit_due'] = True
                 continue
             def claim(current, marker=marker):

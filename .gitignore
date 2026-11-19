@@ -30,3 +30,7 @@ logs/
 
 # Optional isolated research environment
 .venv-research/
+
+# Optional root-level paper simulation journal
+/trades_log.json
+/trades_log.json.lock

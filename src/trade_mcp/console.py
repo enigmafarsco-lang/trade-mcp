@@ -301,7 +301,7 @@ class Handler(BaseHTTPRequestHandler):
                     symbol = mt5.resolve_symbol(query.get("symbol") or self.state.cfg.default_symbol)
                     result = {"ok": True, "backend": self.state.cfg.backend, "symbol": symbol, "spec": mt5.symbol_info(symbol, fresh=True),
                               "quote": mt5.tick(symbol), "account": mt5.account_info(fresh=True),
-                              "trading_enabled": self.state.cfg.allow_trading,
+                              "trading_enabled": self.state.cfg.trading_enabled,
                               "terminal": mt5.terminal_info(), "positions": mt5.positions(),
                               "training_budget": self.state.cfg.training_budget,
                               "max_risk_percent": self.state.cfg.max_risk_percent,
@@ -841,7 +841,8 @@ class Handler(BaseHTTPRequestHandler):
                 out["account"] = self.state.app.mt5.account_info(fresh=True)
                 out["positions"] = self.state.app.mt5.positions()
                 out["spec"] = self.state.app.mt5.symbol_info(sym)
-        out["trading_enabled"] = cfg.allow_trading
+        out["trading_enabled"] = cfg.trading_enabled
+        out["paper_trading"] = cfg.paper_trading
         out["proposals"] = self.state.store.list_proposals(limit=10)
         out["notes"] = self.state.store.list_notes(limit=8)
         out["scheduler"] = self.state.scheduler.status()
@@ -872,7 +873,7 @@ class Handler(BaseHTTPRequestHandler):
         from .workspace import journal_identity, workspace_identity
         web_llm = self.state.model_client("status")
         from .web_opencode import ADAPTER_REVISION
-        return {"ok": True, "backend": cfg.backend, "trading_enabled": cfg.allow_trading,
+        return {"ok": True, "backend": cfg.backend, "trading_enabled": cfg.trading_enabled, "paper_trading": cfg.paper_trading,
                 "runtime": {"pid": os.getpid(), "started_at": self.state.started_at,
                             "console_revision": CONSOLE_REVISION,
                             "session_adapter_revision": ADAPTER_REVISION},

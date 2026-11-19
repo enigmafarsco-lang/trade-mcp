@@ -350,6 +350,9 @@ def cancel(*, store: Store, proposal_id: str) -> dict[str, Any]:
 def confirm(
     *, mt5, cfg: Config, store: Store, proposal_id: str, deviation: int | None = None
 ) -> dict[str, Any]:
+    if getattr(cfg, 'paper_trading', False):
+        return {'ok': False, 'paper': True, 'error': 'paper_mode_no_broker_execution',
+                'message': 'Use the paper runner; no broker request or simulated fill was created'}
     prop = store.get_proposal(proposal_id)
     if prop is None:
         return {"ok": False, "error": "unknown_proposal", "message": f"no proposal {proposal_id}"}

@@ -115,3 +115,21 @@ def register_text_tools(mcp):
         from .engines.live import analyze_broker
         app = get_app()
         return analyze_broker(app.mt5, app.cfg, symbol, timeframe, provider)
+
+    @mcp.tool()
+    @clean_tool
+    def get_comprehensive_analysis(symbol: str = '', timeframe: str = 'M15') -> str:
+        """One closed-broker-bar report: RSI, MACD, EMA20/50/200, Supertrend, ATR, Bollinger."""
+        from .app import get_app
+        from .engines.live import analyze_broker
+        app = get_app()
+        return analyze_broker(app.mt5, app.cfg, symbol, timeframe, 'builtin')
+
+    @mcp.tool()
+    @clean_tool
+    def get_full_technical_summary(symbol: str = '', timeframe: str = 'M15') -> str:
+        """Alias for the single-call comprehensive broker technical report."""
+        from .app import get_app
+        from .engines.live import analyze_broker
+        app = get_app()
+        return analyze_broker(app.mt5, app.cfg, symbol, timeframe, 'builtin')

@@ -4,6 +4,7 @@ import math
 from ..config import sizing_balance
 from ..demo_guard import LOSS_USD, account_key
 from ..risk import lots_for_risk
+from ..risk_manager import HARD_MAX_RISK_PERCENT
 
 
 def size_position(mt5, cfg, symbol, entry, stop, risk_percent):
@@ -14,7 +15,7 @@ def size_position(mt5, cfg, symbol, entry, stop, risk_percent):
     equity = sizing_balance(account, cfg)
     if equity <= 0:
         return dict(ok=False, error='sizing_balance_unavailable')
-    pct = min(float(risk_percent), cfg.max_risk_percent)
+    pct = min(float(risk_percent), cfg.max_risk_percent, HARD_MAX_RISK_PERCENT)
     if cfg.demo_cash_policy:
         account_key(account)
         pct = min(pct, LOSS_USD/equity*100)

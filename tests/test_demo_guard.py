@@ -209,3 +209,14 @@ def test_comment_without_journal_reservation_does_not_confer_ownership(mock_app)
     positions.append({'ticket':10,'magic':MAGIC,'comment':'tmcp:not-reserved','sl':90,'profit':-100,'swap':0})
     inspect_positions(broker,cfg,mock_app.store,execute=True)
     assert not calls
+
+
+def test_paper_kill_switch_suppresses_direct_guardian_close(mock_app):
+    broker, account, positions, deals, calls = fixture_broker()
+    cfg = mock_app.cfg.with_overrides(demo_cash_policy=True, allow_trading=True, paper_trading=True)
+    own(mock_app.store, account, 'owned', 10)
+    positions.append({'ticket': 10, 'magic': MAGIC, 'comment': 'owned', 'sl': 90, 'profit': -11, 'swap': 0})
+    deals.append(deal(1, 10, 'in'))
+    result = inspect_positions(broker, cfg, mock_app.store, execute=True)
+    assert result['positions'][0]['exit_due']
+    assert calls == []

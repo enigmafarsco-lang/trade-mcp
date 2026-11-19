@@ -11,7 +11,8 @@ from trade_mcp.text_tools import register_text_tools
 mcp = FastMCP('trade-mcp-text', instructions="""
 All tools return plain JSON strings. Start MT5 sessions with mt5_status_text.
 Use technical_analysis_text/strategy_signal_text for supplied closed OHLCV;
-use mt5_analyze_market_text for broker evidence. Never invent prices or usage.
+use get_comprehensive_analysis for one combined broker indicator report, or
+mt5_analyze_market_text for existing priced broker scenarios. Never invent prices or usage.
 Rule agreement percentages are not probabilities or profit guarantees.
 MT5 orders must use mt5_propose_order_text then mt5_confirm_proposal_text,
 with explicit authorization for that proposal and all existing execution gates.

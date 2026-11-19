@@ -17,7 +17,8 @@ CHECKS = {"compile", "snapshot_fresh", "account_match", "financial_fields",
           "guardian", "analysis", "proposal", "order", "three_loss_latch",
           "text_tool_discovery", "technical_builtin", "strategy_rules",
           "broker_engine", "web_engine", "optional_dependency_errors",
-          "guard_cost_source", "guardian_offline_tests", "historical_lifecycle_audit"}
+          "guard_cost_source", "guardian_offline_tests", "historical_lifecycle_audit",
+          "risk_guardrails", "comprehensive_analysis", "paper_ledger", "paper_runner_offline"}
 COUNTS = {"deals", "positions", "cloud_requests", "orders_submitted",
           "unallocated_records", "balance_operations", "credit_operations",
           "commission_operations", "charge_operations", "other_account_operations",

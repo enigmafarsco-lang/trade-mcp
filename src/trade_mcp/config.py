@@ -116,6 +116,7 @@ class Config:
     timeframes: tuple[str, ...] = DEFAULT_TIMEFRAMES
 
     # trading guard rails
+    paper_trading: bool = False  # legacy broker path: explicit kill switch; runner defaults paper
     allow_trading: bool = False
     max_lot: float = 0.10
     cost_snapshot_path: str = ""
@@ -179,6 +180,7 @@ class Config:
             timeframes=tuple(
                 tf.upper() for tf in _env_list("TIMEFRAMES", DEFAULT_TIMEFRAMES)
             ),
+            paper_trading=_env_bool("PAPER_TRADING", False),
             allow_trading=_env_bool("ALLOW_TRADING", False),
             max_lot=_env_float("MAX_LOT", 0.10),
             training_budget=_env_float("TRAINING_BUDGET", 100.0),
@@ -209,7 +211,7 @@ class Config:
 
     @property
     def trading_enabled(self) -> bool:
-        return bool(self.allow_trading)
+        return bool(self.allow_trading and not self.paper_trading)
 
     def is_symbol_allowed(self, symbol: str) -> bool:
         sym = (symbol or "").strip().upper()
