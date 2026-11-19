@@ -118,6 +118,7 @@ class Config:
     # trading guard rails
     allow_trading: bool = False
     max_lot: float = 0.10
+    cost_snapshot_path: str = ""
     demo_cash_policy: bool = False
     training_budget: float = 100.0  # shared conservative sizing cap; account currency
     max_risk_percent: float = 1.0
@@ -181,6 +182,7 @@ class Config:
             allow_trading=_env_bool("ALLOW_TRADING", False),
             max_lot=_env_float("MAX_LOT", 0.10),
             training_budget=_env_float("TRAINING_BUDGET", 100.0),
+            cost_snapshot_path=(_env("COST_SNAPSHOT_PATH") or "").strip(),
             demo_cash_policy=_env_bool("DEMO_CASH_POLICY", False),
             max_risk_percent=_env_float("MAX_RISK_PERCENT", 1.0),
             max_open_positions=_env_int("MAX_OPEN_POSITIONS", 3),

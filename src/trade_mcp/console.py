@@ -376,6 +376,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "items": fetch_news(self.state.cfg.news_feeds)})
             if path == "/api/workspace-status":
                 return self._json(self._workspace_status())
+            if path == "/api/cost-reconciliation":
+                from .cost_health import cost_health
+                with self.state.lock:
+                    result = cost_health(self.state.app.mt5, self.state.cfg)
+                return self._json(result)
             if path == "/api/research/status":
                 from .research import research_status
                 return self._json(research_status(self.state.cfg))

@@ -88,3 +88,22 @@ differ. Neither input is modified. The result still explicitly denies execution
 eligibility and lifecycle completeness. No guardian wiring or entry-gate change
 is included. This module is test-covered Python logic, not a claimed local runtime
 success or a fix for late broker charges.
+
+## Web diagnostic integration
+
+Set `TRADE_MCP_COST_SNAPSHOT_PATH` in the existing local console environment to
+the absolute path of the monitor's `trade-mcp-costs.tsv`. This is optional and
+has no default auto-discovery. Preserve other settings; do not enable trading.
+The web workspace now has a Persian cost-health panel and an explicit check
+button, backed by `GET /api/cost-reconciliation` (no cloud or order calls).
+
+The check verifies USD demo identity, reads a fresh account-matching snapshot,
+queries at most one day of native history, correlates costs, and rechecks account
+identity. Empty/possibly truncated native history is blocked. A shorter snapshot
+interval may not cover that day and correctly fail. Returned data is restricted
+to status/stage and aggregate counts/age; raw rows and exception bodies are never
+sent to the browser. No automatic periodic history requests are added. The
+existing console lock serializes this check with other console operations.
+
+This wires diagnostics into the web app, **not** cost data into the execution
+guardian. `execution_eligible` and `lifecycle_complete` remain false even on success.

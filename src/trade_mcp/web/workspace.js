@@ -315,5 +315,12 @@ node('workspace-test').onclick=async()=>{
  }catch(e){node('workspace-action').textContent=(e&&e.message)||'آزمایش ناموفق بود؛ هیچ معامله‌ای درخواست نشد.';}
  finally{testing=false;await refresh();}
 };
+node('cost-health-check').onclick=async()=>{
+ const button=node('cost-health-check'),out=node('cost-health-result');
+ button.disabled=true;out.textContent='بررسی فقط‌خواندنی هزینه‌ها…';
+ try{const d=await request('/api/cost-reconciliation');out.textContent=JSON.stringify(d,null,2);}
+ catch(e){out.textContent='بررسی هزینه‌ها ناموفق بود؛ معامله‌ای انجام نشد.';}
+ finally{button.disabled=false;}
+};
 refresh();setInterval(refresh,5000);
 })();
