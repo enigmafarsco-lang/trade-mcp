@@ -40,6 +40,14 @@ def state_for(store, key):
 def reserve_entry(mt5, cfg, store):
     account = mt5.account_info(fresh=True)
     key = account_key(account)
+    if cfg.backend == 'native':
+        capability = mt5.request('cash_policy_capabilities')
+        if capability.get('magic_supported') is not True:
+            raise ValueError('Native magic parameter required')
+        samples = mt5.deals(date_from=int(time.time())-86400,date_to=int(time.time()))
+        samples = [d for d in samples if d.get('type') in {'buy','sell'}][-20:]
+        if not samples or not all(d.get('costs_complete') is True for d in samples):
+            raise ValueError('Native cost completeness must be demonstrated before entry')
     # Reconcile exits before accepting a new entry. No old results are reset.
     inspect_positions(mt5, cfg, store, execute=False)
     if mt5.positions() or mt5.orders():

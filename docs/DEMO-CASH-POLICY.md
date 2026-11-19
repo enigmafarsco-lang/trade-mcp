@@ -97,3 +97,25 @@ accounts, partial closure, durable latch/restart, missing financial data,
 ambiguous close outcomes/no duplicate submission, account-equity sizing with
 cash cap, and nonce-tagged mock confirmation. Real native execution remains
 unverified until a separate explicitly authorized demo acceptance test.
+
+## Native compatibility hardening after read-only deployment checks
+
+Real terminal history was observed to omit most swap/commission/fee fields.
+Those observations do NOT establish that charges are zero. Native normalization
+now preserves absent/invalid financial fields as null (explicit numeric zero is
+known). A `costs_complete` flag requires finite numeric values, not merely key
+presence. Missing floating position P/L is also unknown.
+
+Before reserving an entry on the native backend, the policy requires a documented
+magic/magic_number input on the native order tool and complete monetary fields
+in recent trading-deal samples. No history/sample proof means no policy entry.
+This read-only capability test must precede any controlled execution acceptance.
+It deliberately blocks the currently reported incomplete terminal data.
+
+Native `trade_*` MCP tool calls no longer reconnect-and-resubmit after transport
+failure. Their outcome is unknown and must be reconciled. Read-only tool calls
+retain one reconnect attempt. Magic is no longer silently dropped: a nonzero
+magic is sent only under the tool schema's explicitly documented parameter and
+type; absent support fails before submission. Arbitrary extra arguments are not
+used to guess undocumented broker functionality. This does not prove the server
+honors the field; later live readback must still match nonce/magic/identifier.

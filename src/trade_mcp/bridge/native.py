@@ -73,6 +73,17 @@ def as_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def financial(value):
+    """Missing or malformed money is unknown, never an invented zero."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        value = float(value)
+    except (ValueError, TypeError):
+        return None
+    return value if math.isfinite(value) else None
+
+
 def as_int(value: Any, default: int = 0) -> int:
     try:
         return int(float(value))
@@ -225,16 +236,19 @@ class NativeBridge:
         return self._client
 
     def call(self, tool: str, arguments: dict[str, Any] | None = None) -> Any:
-        """Call one MCP tool, reconnecting once if the session went away."""
+        """Read calls may reconnect once; trade calls are never resubmitted."""
         with self._lock:
             result: dict[str, Any] = {}
-            for attempt in (1, 2):
+            # Read-only calls may reconnect once. A transport failure after a
+            # trade submission has an UNKNOWN outcome and must not resubmit.
+            attempts = (1,) if tool.startswith('trade_') else (1, 2)
+            for attempt in attempts:
                 try:
                     result = self._connect().call_tool(tool, arguments or {})
                     break
                 except McpError as exc:
                     self._client = None
-                    if attempt == 2:
+                    if attempt == attempts[-1]:
                         self._errors += 1
                         self._last_error = str(exc)
                         raise BridgeError(f"MCP call '{tool}' failed: {exc}", code="mcp_error") from None
@@ -562,9 +576,9 @@ class NativeBridge:
             "sl": as_float(find(row, "sl", "stop_loss")),
             "tp": as_float(find(row, "tp", "take_profit")),
             "price_current": as_float(find(row, "price_current", "current_price", "price_last")),
-            "profit": as_float(find(row, "profit", "profit_loss")),
-            "swap": as_float(find(row, "swap", "swaps")),
-            "pnl_complete": find(row, "profit", "profit_loss") is not None and find(row, "swap", "swaps") is not None,
+            "profit": financial(find(row, "profit", "profit_loss")),
+            "swap": financial(find(row, "swap", "swaps")),
+            "pnl_complete": financial(find(row, "profit", "profit_loss")) is not None and financial(find(row, "swap", "swaps")) is not None,
             "magic": as_int(find(row, "magic", "magic_number")),
             "comment": as_text(find(row, "comment")),
             "time": to_epoch(find(row, "time", "open_time", "create_time", "datetime")),
@@ -622,11 +636,11 @@ class NativeBridge:
                                   else "out" if "out" in entry else "in" if entry in {"in","deal_entry_in"} else "unknown")),
                     "volume": as_float(find(row, "volume", "lots")),
                     "price": as_float(find(row, "price")),
-                    "profit": as_float(find(row, "profit")),
-                    "swap": as_float(find(row, "swap", "swaps")),
-                    "commission": as_float(find(row, "commission")),
-                    "fee": as_float(find(row, "fee")),
-                    "costs_complete": all(find(row,k) is not None for k in ('profit','swap','commission','fee')),
+                    "profit": financial(find(row, "profit")),
+                    "swap": financial(find(row, "swap", "swaps")),
+                    "commission": financial(find(row, "commission")),
+                    "fee": financial(find(row, "fee")),
+                    "costs_complete": all(financial(find(row,k)) is not None for k in ('profit','swap','commission','fee')),
                     "magic": as_int(find(row, "magic", "magic_number")),
                     "time": to_epoch(find(row, "time", "datetime")),
                     "comment": as_text(find(row, "comment")),
@@ -680,6 +694,22 @@ class NativeBridge:
             "comment": as_text(find(raw, "comment", "message")),
         }
 
+    def _cash_magic_parameter(self):
+        with self._lock:
+            tools = self._connect().list_tools()
+        tool = next((t for t in tools if t.get('name') == 'trade_send_market_order'), {})
+        properties = (tool.get('inputSchema') or {}).get('properties') or {}
+        for name in ('magic', 'magic_number'):
+            schema = properties.get(name) or {}
+            if schema.get('type') in {'integer','number','string'}:
+                return name, schema['type']
+        raise BridgeError('Native order tool does not document a magic-number parameter',
+                          code='cash_policy_magic_unsupported')
+
+    def _cmd_cash_policy_capabilities(self, **_):
+        name, kind = self._cash_magic_parameter()
+        return {'magic_supported':True, 'magic_parameter':name, 'magic_type':kind}
+
     def _cmd_trade_open(
         self,
         symbol: str = "",
@@ -703,6 +733,9 @@ class NativeBridge:
             args["tp"] = float(tp)
         if comment:
             args["comment"] = str(comment)[:31]
+        if magic:
+            name, kind = self._cash_magic_parameter()
+            args[name] = str(int(magic)) if kind == 'string' else int(magic)
         raw = self.call("trade_send_market_order", args)
         self.last_raw["trade_send_market_order"] = raw
         return self._trade_result(raw)

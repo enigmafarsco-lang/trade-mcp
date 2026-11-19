@@ -589,3 +589,59 @@ def test_symbol_numeric_provenance_distinguishes_reported_and_fallback():
     assert explicit['trade_tick_size'] == .001
     assert explicit['sizing_field_provenance']['trade_tick_size']['source'] == 'reported'
     assert explicit['sizing_metadata_warning'] is None
+
+
+@pytest.mark.parametrize('tool,expected', [('trade_send_market_order',1),('trade_close_position',1),
+                                          ('trade_modify_sl_tp',1),('terminal_get_info',2)])
+def test_native_never_retries_trade_transport_failures(monkeypatch,tool,expected):
+    from trade_mcp.bridge.base import BridgeError
+    from trade_mcp.mcpclient import McpError
+    native = NativeBridge()
+    calls = []
+    class Client:
+        def call_tool(self,*args):
+            calls.append(args)
+            raise McpError('connection lost after submission')
+    monkeypatch.setattr(native,'_connect',lambda:Client())
+    with pytest.raises(BridgeError):
+        native.call(tool, {})
+    assert len(calls) == expected
+
+
+@pytest.mark.parametrize('name,kind', [('magic','integer'),('magic_number','string')])
+def test_magic_is_sent_only_using_documented_parameter(monkeypatch,name,kind):
+    native = NativeBridge()
+    class Client:
+        def list_tools(self):
+            return [{'name':'trade_send_market_order','inputSchema':{'properties':{name:{'type':kind}}}}]
+    monkeypatch.setattr(native,'_connect',lambda:Client())
+    calls = []
+    monkeypatch.setattr(native,'call',lambda tool,args:calls.append((tool,args)) or {})
+    native.request('trade_open',symbol='XAUUSD',magic=73104219)
+    assert calls[0][1][name] == ('73104219' if kind == 'string' else 73104219)
+
+
+def test_undocumented_magic_fails_before_order_submission(monkeypatch):
+    from trade_mcp.bridge.base import BridgeError
+    native = NativeBridge()
+    class Client:
+        def list_tools(self):
+            return [{'name':'trade_send_market_order','inputSchema':{'properties':{}}}]
+    monkeypatch.setattr(native,'_connect',lambda:Client())
+    monkeypatch.setattr(native,'call',lambda *a:pytest.fail('No order may be sent'))
+    with pytest.raises(BridgeError) as exc:
+        native.request('trade_open',symbol='XAUUSD',magic=73104219)
+    assert exc.value.code == 'cash_policy_magic_unsupported'
+
+
+def test_native_missing_costs_remain_unknown_and_zero_is_known(monkeypatch):
+    native = NativeBridge()
+    monkeypatch.setattr(native,'call',lambda *a:{'deals':[
+        {'ticket':1,'profit':0,'entry':'in'},
+        {'ticket':2,'profit':0,'swap':0,'commission':0,'fee':0,'entry':'out'},
+        {'ticket':3,'profit':0,'swap':0,'commission':'invalid','fee':0,'entry':'out'}]})
+    rows = native.request('history_deals')
+    assert rows[0]['commission'] is None and rows[0]['swap'] is None and rows[0]['fee'] is None
+    assert not rows[0]['costs_complete']
+    assert rows[1]['costs_complete'] and rows[1]['fee'] == 0
+    assert not rows[2]['costs_complete'] and rows[2]['commission'] is None

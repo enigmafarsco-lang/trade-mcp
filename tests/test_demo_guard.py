@@ -176,3 +176,13 @@ def test_cash_confirmation_tags_only_new_owned_entry(mock_app):
     state = state_for(mock_app.store,account_key(mock_app.mt5.account_info()))
     assert state['intents'][p['comment']]['status'] == 'awaiting_position'
     assert p['sl'] > 0 and p['tp'] > 0
+
+
+def test_native_entry_blocked_before_reservation_if_costs_unverified(mock_app):
+    broker,account,_,deals,_ = fixture_broker()
+    broker.request = lambda *a:{'magic_supported':True}
+    deals.append({**deal(1,10,'in'),'type':'buy','costs_complete':False})
+    cfg = mock_app.cfg.with_overrides(demo_cash_policy=True,backend='native')
+    with pytest.raises(ValueError):
+        reserve_entry(broker,cfg,mock_app.store)
+    assert state_for(mock_app.store,account_key(account))['intents'] == {}
