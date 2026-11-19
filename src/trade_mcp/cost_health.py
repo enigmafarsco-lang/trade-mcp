@@ -2,7 +2,7 @@
 import time
 from pathlib import Path
 
-from .cost_reconciliation import correlate_deal_costs
+from .cost_reconciliation import CostCorrelationError, correlate_deal_costs
 from .cost_snapshot import read_cost_snapshot
 from .demo_guard import account_key
 
@@ -37,6 +37,8 @@ def cost_health(mt5, cfg):
                 'snapshot_only_deals': joined['snapshot_only_deals'],
                 'snapshot_age_seconds': round(time.time()-snapshot['generated_at'], 2),
                 'note': 'diagnostic_only_no_order_authorization'}
+    except CostCorrelationError as exc:
+        return {**base, 'error': 'cost_check_failed', 'stage': stage, 'reason': exc.code}
     except Exception:
         # Do not leak paths, identifiers, transport/provider bodies or raw rows.
         return {**base, 'error': 'cost_check_failed', 'stage': stage}

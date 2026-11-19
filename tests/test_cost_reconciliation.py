@@ -53,3 +53,26 @@ def test_extra_rows_are_reported():
     native, snapshot = fixture()
     snapshot['deals'].append(dict(snapshot['deals'][0], ticket='11'))
     assert correlate_deal_costs(native, snapshot, now=1001)['snapshot_only_deals'] == 1
+
+
+@pytest.mark.parametrize('mutation,reason', [
+    ('missing', 'native_ticket_outside_snapshot'),
+    ('duplicate', 'native_ticket_duplicate'),
+    ('profit', 'financial_source_mismatch'),
+    ('charge', 'unallocated_account_charge'),
+])
+def test_specific_safe_reasons(mutation, reason):
+    from trade_mcp.cost_reconciliation import CostCorrelationError
+
+    native, snapshot = fixture()
+    if mutation == 'missing':
+        native[0]['ticket'] = 99
+    elif mutation == 'duplicate':
+        native.append(dict(native[0]))
+    elif mutation == 'profit':
+        native[0]['profit'] = 99
+    else:
+        snapshot['deals'][0]['type'] = 2
+    with pytest.raises(CostCorrelationError) as caught:
+        correlate_deal_costs(native, snapshot, now=1001)
+    assert caught.value.code == reason

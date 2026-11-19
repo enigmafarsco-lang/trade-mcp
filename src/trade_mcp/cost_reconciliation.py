@@ -12,16 +12,25 @@ import time
 
 from .cost_snapshot import CostSnapshotError
 
+
+class CostCorrelationError(CostSnapshotError):
+    """Fixed diagnostic reason, never raw broker data."""
+
+    def __init__(self, code):
+        self.code = code
+        super().__init__(code)
+
+
 FIELDS = ('profit', 'swap', 'commission', 'fee')
 ENTRIES = {0: 'in', 1: 'out', 2: 'inout', 3: 'out_by'}
 
 
 def _number(value):
     if isinstance(value, bool) or value is None:
-        raise CostSnapshotError('Missing financial value')
+        raise CostCorrelationError('financial_value_missing')
     result = float(value)
     if not math.isfinite(result):
-        raise CostSnapshotError('Nonfinite financial value')
+        raise CostCorrelationError('financial_value_nonfinite')
     return result
 
 
@@ -35,18 +44,18 @@ def correlate_deal_costs(native_deals, snapshot, *, now=None):
     """
     now = time.time() if now is None else now
     if snapshot.get('source') != 'mql5_cost_snapshot_v1':
-        raise CostSnapshotError('Unsupported cost source')
+        raise CostCorrelationError('unsupported_cost_source')
     if not 0 <= _number(now) - _number(snapshot.get('generated_at')) <= 30:
-        raise CostSnapshotError('Stale cost source')
+        raise CostCorrelationError('snapshot_stale')
     indexed = {}
     for row in snapshot['deals']:
         ticket = str(row['ticket'])
         if ticket in indexed or int(ticket) <= 0:
-            raise CostSnapshotError('Duplicate or invalid cost ticket')
+            raise CostCorrelationError('snapshot_ticket_invalid_or_duplicate')
         if row['type'] not in (0, 1) or int(row['position_id']) <= 0:
-            raise CostSnapshotError('Unallocated account charges require review')
+            raise CostCorrelationError('unallocated_account_charge')
         if row.get('costs_complete') is not True:
-            raise CostSnapshotError('Incomplete cost record')
+            raise CostCorrelationError('snapshot_costs_incomplete')
         for key in FIELDS:
             _number(row[key])
         indexed[ticket] = row
@@ -54,21 +63,23 @@ def correlate_deal_costs(native_deals, snapshot, *, now=None):
     seen = set()
     for native in native_deals:
         ticket = str(native['ticket'])
-        if ticket in seen or ticket not in indexed:
-            raise CostSnapshotError('Missing or duplicate native ticket')
+        if ticket in seen:
+            raise CostCorrelationError('native_ticket_duplicate')
+        if ticket not in indexed:
+            raise CostCorrelationError('native_ticket_outside_snapshot')
         seen.add(ticket)
         cost = indexed[ticket]
         if (int(native['position_id']) != int(cost['position_id']) or
                 native['type'] != ('buy' if cost['type'] == 0 else 'sell') or
                 native['entry'] != ENTRIES.get(cost['entry'])):
-            raise CostSnapshotError('Deal identity mismatch')
+            raise CostCorrelationError('deal_identity_mismatch')
         # Do not compare naive terminal-time epochs to UTC without a validated
         # conversion. Exact globally unique deal IDs are mandatory for this join.
         for key in FIELDS:
             supplied = native.get(key)
             if (key == 'profit' or supplied is not None) and not math.isclose(
                     _number(supplied), _number(cost[key]), abs_tol=1e-7, rel_tol=0):
-                raise CostSnapshotError('Financial source mismatch')
+                raise CostCorrelationError('financial_source_mismatch')
         item = copy.deepcopy(native)
         item.update({key: cost[key] for key in FIELDS})
         item.update(costs_complete=True, cost_source='mql5_cost_snapshot_v1')

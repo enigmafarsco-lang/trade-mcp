@@ -29,3 +29,19 @@ def test_account_switch_blocks_success():
         result = cost_health(mt5, SimpleNamespace(cost_snapshot_path='file', backend='native'))
     assert result['error'] == 'account_changed'
     assert result['execution_eligible'] is False
+
+
+def test_correlation_reason_is_sanitized_and_specific():
+    from trade_mcp.cost_reconciliation import CostCorrelationError
+
+    mt5 = Mock()
+    mt5.account_info.return_value = dict(login=1, server='Demo', currency='USD', trade_mode='demo')
+    mt5.deals.return_value = [{'ticket': 1}]
+    with patch('trade_mcp.cost_health.read_cost_snapshot', return_value={}), patch(
+            'trade_mcp.cost_health.correlate_deal_costs',
+            side_effect=CostCorrelationError('unallocated_account_charge')):
+        result = cost_health(mt5, SimpleNamespace(cost_snapshot_path='file', backend='native'))
+    assert result['reason'] == 'unallocated_account_charge'
+    assert result['stage'] == 'correlation'
+    assert result['execution_eligible'] is False
+    assert 'login' not in result

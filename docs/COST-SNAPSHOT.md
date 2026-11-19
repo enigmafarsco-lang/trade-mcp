@@ -107,3 +107,24 @@ existing console lock serializes this check with other console operations.
 
 This wires diagnostics into the web app, **not** cost data into the execution
 guardian. `execution_eligible` and `lifecycle_complete` remain false even on success.
+
+### Diagnosing a failed correlation without exporting private records
+
+The endpoint now includes a fixed `reason` code for recognized correlation
+failures. It does not include ticket IDs, money values, account data or exceptions.
+Examples:
+
+- `unallocated_account_charge`: a non-buy/sell or zero-position record exists;
+  allocation needs review. Do not narrow the interval solely to hide the charge.
+- `native_ticket_outside_snapshot`: native history includes a ticket absent from
+  the bounded snapshot. This is coverage mismatch, not evidence of zero fees.
+- `native_ticket_duplicate`: native history repeats a ticket.
+- `deal_identity_mismatch`: position/direction/entry differs between sources.
+- `financial_source_mismatch`: explicit financial values disagree.
+- `snapshot_stale`: history retrieval took long enough to invalidate freshness.
+
+Only the first failure is returned; its presence does not prove other checks pass.
+Unexpected failures remain generic. A fixed reason is diagnostic evidence, not
+execution authorization. To test locally after deployment, call the same GET
+endpoint once and return its sanitized JSON. No new monitor compile is needed for
+this Python-only diagnostic revision. No cloud request or order is involved.
