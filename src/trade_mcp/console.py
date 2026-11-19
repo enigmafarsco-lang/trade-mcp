@@ -65,6 +65,8 @@ class ConsoleState:
         self.chart_cache: dict[tuple, tuple] = {}
         from .cycle import PageCycle
         self.page_cycle = PageCycle(self)
+        from .demo_guard import DemoGuardian
+        self.demo_guardian = DemoGuardian(app)
         self.model_test = {"state": "not_tested", "message": "پاسخ مدل در این اجرای وب هنوز آزمایش نشده است."}
 
     @property
@@ -846,6 +848,7 @@ class Handler(BaseHTTPRequestHandler):
                             "session_adapter_revision": ADAPTER_REVISION},
                 "journal_identity": journal_identity(cfg.journal_path),
                 "workspace_identity": workspace_identity(cfg),
+                "demo_cash_guard": self.state.demo_guardian.last,
                 "model_backend": "opencode-session" if cfg.web_model_backend == "opencode-session" else "openai-compatible", "model_source": "web",
                 "model_configured": web_llm.configured,
                 "model_configuration_issue": (None if web_llm.configured else
@@ -968,14 +971,17 @@ class ConsoleServer:
         return f"http://{host}:{self.port}"
 
     def serve_forever(self) -> None:
+        self.state.demo_guardian.start()
         if self.open_browser:
             threading.Timer(0.6, lambda: webbrowser.open(self.url)).start()  # noqa: S310
         try:
             self.httpd.serve_forever()
         finally:
+            self.state.demo_guardian.close()
             self.httpd.server_close()
 
     def stop(self) -> None:
+        self.state.demo_guardian.close()
         self.state.page_cycle.close()
         self.state.scheduler.stop()
         self.httpd.shutdown()

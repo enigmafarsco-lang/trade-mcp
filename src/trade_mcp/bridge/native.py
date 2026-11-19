@@ -554,6 +554,7 @@ class NativeBridge:
         symbol = as_text(find(row, "symbol", "name"))
         return {
             "ticket": as_int(find(row, "ticket", "position_ticket", "position_id", "id")),
+            "identifier": as_int(find(row, "identifier", "position_id", "ticket", "position_ticket", "id")),
             "symbol": symbol,
             "type": _side(find(row, "type", "side", "direction", "action")),
             "volume": as_float(find(row, "volume", "lots")),
@@ -563,6 +564,7 @@ class NativeBridge:
             "price_current": as_float(find(row, "price_current", "current_price", "price_last")),
             "profit": as_float(find(row, "profit", "profit_loss")),
             "swap": as_float(find(row, "swap", "swaps")),
+            "pnl_complete": find(row, "profit", "profit_loss") is not None and find(row, "swap", "swaps") is not None,
             "magic": as_int(find(row, "magic", "magic_number")),
             "comment": as_text(find(row, "comment")),
             "time": to_epoch(find(row, "time", "open_time", "create_time", "datetime")),
@@ -615,12 +617,16 @@ class NativeBridge:
                     "order_id": as_int(find(row, "order_id", "order")),
                     "symbol": as_text(find(row, "symbol", "name")),
                     "type": _side(find(row, "type", "deal_type", "side")),
-                    "entry": "in" if "in" in entry else ("out" if "out" in entry else "inout"),
+                    "entry": ({"0":"in", "1":"out", "2":"inout", "3":"out_by"}.get(entry)
+                              or ("out_by" if "out_by" in entry else "inout" if "inout" in entry
+                                  else "out" if "out" in entry else "in" if entry in {"in","deal_entry_in"} else "unknown")),
                     "volume": as_float(find(row, "volume", "lots")),
                     "price": as_float(find(row, "price")),
                     "profit": as_float(find(row, "profit")),
                     "swap": as_float(find(row, "swap", "swaps")),
-                    "commission": as_float(find(row, "commission", "fee")),
+                    "commission": as_float(find(row, "commission")),
+                    "fee": as_float(find(row, "fee")),
+                    "costs_complete": all(find(row,k) is not None for k in ('profit','swap','commission','fee')),
                     "magic": as_int(find(row, "magic", "magic_number")),
                     "time": to_epoch(find(row, "time", "datetime")),
                     "comment": as_text(find(row, "comment")),

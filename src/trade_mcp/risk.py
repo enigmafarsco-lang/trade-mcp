@@ -134,10 +134,19 @@ def validate_order(
 ) -> list[dict[str, str]]:
     """Return a list of problems. Empty list == the trade passes all guards."""
     issues: list[dict[str, str]] = []
+    open_positions = list(open_positions)
 
     def add(severity: str, code: str, message: str) -> None:
         issues.append({"severity": severity, "code": code, "message": message})
 
+    if cfg.demo_cash_policy:
+        if account.get('trade_mode') != 'demo' or account.get('currency') != 'USD':
+            add('blocker','usd_demo_required','Cash policy requires a USD demo account')
+        cash_loss = loss_per_lot(info,abs(entry-stop))*volume
+        if not stop or not math.isfinite(cash_loss) or cash_loss > 10.0+1e-9:
+            add('blocker','cash_loss_limit','Planned stop loss must not exceed 10 USD')
+        if list(open_positions):
+            add('blocker','cash_single_position','Cash policy permits only one open position')
     if not cfg.allow_trading:
         add("blocker", "trading_disabled", "TRADE_MCP_ALLOW_TRADING is false - orders cannot be sent")
     if not cfg.is_symbol_allowed(symbol):

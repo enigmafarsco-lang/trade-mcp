@@ -118,6 +118,7 @@ class Config:
     # trading guard rails
     allow_trading: bool = False
     max_lot: float = 0.10
+    demo_cash_policy: bool = False
     training_budget: float = 100.0  # shared conservative sizing cap; account currency
     max_risk_percent: float = 1.0
     max_open_positions: int = 3
@@ -180,6 +181,7 @@ class Config:
             allow_trading=_env_bool("ALLOW_TRADING", False),
             max_lot=_env_float("MAX_LOT", 0.10),
             training_budget=_env_float("TRAINING_BUDGET", 100.0),
+            demo_cash_policy=_env_bool("DEMO_CASH_POLICY", False),
             max_risk_percent=_env_float("MAX_RISK_PERCENT", 1.0),
             max_open_positions=_env_int("MAX_OPEN_POSITIONS", 3),
             max_spread_points=_env_float("MAX_SPREAD_POINTS", 60.0),
@@ -236,6 +238,11 @@ def sizing_balance(account: dict, cfg) -> float:
     """Never size against more than the account or the explicit practice cap."""
     import math
 
+    if getattr(cfg, 'demo_cash_policy', False):
+        if account.get('trade_mode') != 'demo' or account.get('currency') != 'USD':
+            return 0.0
+        value = float(account.get('equity') or 0)
+        return value if math.isfinite(value) and value > 0 else 0.0
     equity = float(account.get("equity") or account.get("balance") or 0)
     budget = float(getattr(cfg, "training_budget", 100))
     if not math.isfinite(budget) or budget <= 0:

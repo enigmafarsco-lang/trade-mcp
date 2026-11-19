@@ -473,6 +473,15 @@ class AgentEngine:
     def _run_symbol(
         self, agent: dict[str, Any], symbol: str, report: dict[str, Any]
     ) -> dict[str, Any]:
+        if self.cfg.demo_cash_policy:
+            from .demo_guard import account_key, inspect_positions, state_for
+            inspect_positions(self.mt5, self.cfg, self.store, execute=False)
+            guard = state_for(self.store, account_key(self.mt5.account_info(fresh=True)))
+            if guard['latched'] or any(i['status'] != 'closed' for i in guard['intents'].values()):
+                entry = {'symbol':symbol,'action':'wait','source':'cash_guard','status':'blocked',
+                         'llm_status':'not_requested','reason':'Cash guard latched or owned position unresolved; review required.'}
+                report['decisions'].append(entry)
+                return entry
         snapshot_started = time.monotonic()
         analysis = analyze_symbol(
             mt5=self.mt5,
@@ -699,7 +708,7 @@ class AgentEngine:
     def _auto_confirm_blockers(
         self, agent: dict[str, Any], analysis: dict[str, Any], mode: str
     ) -> list[str]:
-        if getattr(self.llm, "mode", "auto") == "web":
+        if getattr(self.llm, "mode", "auto") == "web" and not self.cfg.demo_cash_policy:
             return ["dedicated web model: explicit human confirmation required"]
         if self.cfg.opencode_url:
             return ["OpenCode: explicit human confirmation required"]

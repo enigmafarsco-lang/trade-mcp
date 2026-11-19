@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS demo_cash_guard (account TEXT PRIMARY KEY, state TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS proposals (
     id          TEXT PRIMARY KEY,
     created_at  REAL NOT NULL,
@@ -126,6 +127,22 @@ class Store:
         )
         self._conn.commit()
         self._write_lock = threading.RLock()
+
+    def cash_guard_update(self, account, change):
+        """Atomic durable guard mutation; callers never hold network calls here."""
+        with self._write_lock:
+            self._conn.execute('BEGIN IMMEDIATE')
+            try:
+                row = self._conn.execute('SELECT state FROM demo_cash_guard WHERE account=?', (account,)).fetchone()
+                state = json.loads(row['state']) if row else {'latched':False, 'streak':0, 'intents':{}}
+                result = change(state)
+                self._conn.execute('INSERT OR REPLACE INTO demo_cash_guard VALUES (?,?)',
+                                   (account,json.dumps(state, allow_nan=False)))
+                self._conn.commit()
+                return result
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def close(self) -> None:
         with contextlib.suppress(sqlite3.Error):  # pragma: no cover

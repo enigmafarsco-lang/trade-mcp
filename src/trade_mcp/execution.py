@@ -77,6 +77,21 @@ def propose_open(
             "message": "provide stop_loss (and optionally risk_percent) so the volume can be sized",
         }
 
+    cash_policy = cfg.demo_cash_policy and comment.startswith('agent:')
+    if cash_policy:
+        from .demo_guard import LOSS_USD, account_key
+        try:
+            account_key(account)
+        except ValueError:
+            return {'ok':False,'error':'usd_demo_required'}
+        if positions or mt5.orders():
+            return {'ok':False,'error':'cash_policy_single_position_required'}
+        if not stop_loss or sizing_balance(account,cfg) <= 0:
+            return {'ok':False,'error':'cash_policy_protective_stop_required'}
+        risk_percent = min(LOSS_USD/sizing_balance(account,cfg)*100,
+                           float(risk_percent if risk_percent is not None else cfg.max_risk_percent),
+                           cfg.max_risk_percent)
+
     sizing: dict[str, Any] | None = None
     if volume is None:
         sizing = lots_for_risk(
@@ -94,6 +109,13 @@ def propose_open(
                     "effective_sizing_balance": sizing_balance(account, cfg)}
         volume = float(sizing["volume"])
     volume, vol_warnings = normalise_volume(float(volume), info)
+
+    if cash_policy:
+        from .demo_guard import TARGET_USD
+        per_price = loss_per_lot(info, 1.0)*volume
+        if per_price <= 0:
+            return {'ok':False,'error':'cash_policy_tick_value_required'}
+        take_profit = round(entry + (TARGET_USD/per_price if side == 'buy' else -TARGET_USD/per_price), digits)
 
     if take_profit is None and stop_loss:
         risk = abs(entry - float(stop_loss))
@@ -123,6 +145,8 @@ def propose_open(
 
     payload = {
         "kind": "open",
+        "demo_cash_policy": cash_policy,
+        "cash_account_key": account_key(account) if cash_policy else None,
         "symbol": symbol,
         "side": side,
         "volume": volume,
@@ -356,6 +380,8 @@ def confirm(
 
     try:
         if kind == "open":
+            if cfg.demo_cash_policy and not payload.get('demo_cash_policy'):
+                return {'ok':False,'error':'fresh_cash_policy_proposal_required','executed':False}
             symbol = payload["symbol"]
             side = payload["side"]
             current = _market_price(mt5, symbol, side)
@@ -374,6 +400,13 @@ def confirm(
                     "reference_price": reference,
                 }
             account = mt5.account_info(fresh=True)
+            if payload.get('demo_cash_policy'):
+                from .demo_guard import account_key
+                try:
+                    if account_key(account) != payload.get('cash_account_key'):
+                        return {'ok':False,'error':'cash_policy_account_changed','executed':False}
+                except ValueError:
+                    return {'ok':False,'error':'usd_demo_required','executed':False}
             if cfg.opencode_url and account.get('trade_mode') != 'demo':
                 return {"ok": False, "error": "demo_account_required", "executed": False}
             info = mt5.symbol_info(symbol, fresh=True)
@@ -385,7 +418,19 @@ def confirm(
             if has_blockers(issues):
                 return {"ok": False, "error": "revalidation_failed", "executed": False,
                         "blockers": _blockers(issues), "message": "Current conditions no longer pass validation; request a fresh preview."}
+            cash_key = marker = None
+            if payload.get('demo_cash_policy'):
+                if not cfg.demo_cash_policy:
+                    return {'ok':False,'error':'cash_policy_disabled'}
+                from .demo_guard import reserve_entry
+                try:
+                    cash_key, marker = reserve_entry(mt5, cfg, store)
+                except (ValueError, KeyError, TypeError, BridgeError):
+                    return {'ok':False,'error':'cash_policy_entry_blocked','executed':False}
             if not store.claim_proposal(proposal_id):
+                if marker:
+                    from .demo_guard import entry_result
+                    entry_result(store, cash_key, marker, False)
                 return {"ok": False, "error": "not_pending", "executed": False,
                         "message": "Proposal already claimed or expired; do not retry automatically."}
             result = mt5.open_order(
@@ -394,10 +439,14 @@ def confirm(
                 volume=float(payload["volume"]),
                 sl=float(payload.get("sl") or 0.0),
                 tp=float(payload.get("tp") or 0.0),
-                comment=payload.get("comment") or "trade-mcp",
+                comment=marker or payload.get("comment") or "trade-mcp",
+                magic=73104219 if marker else 0,
                 deviation=dev,
             )
             retcode = int(result.get("retcode") or 0) if isinstance(result, dict) else 0
+            if marker:
+                from .demo_guard import entry_result
+                entry_result(store, cash_key, marker, retcode in (0, 10008, 10009))
             if retcode not in (0, 10008, 10009):
                 store.mark_proposal(proposal_id, "failed", result)
                 return {
