@@ -176,10 +176,12 @@ def inspect_positions(mt5, cfg, store, execute=False):
                 if snapshot is not None:
                     # Freshness/account recheck immediately before the side effect.
                     # No blind retry: a failed check leaves the durable close claim.
-                    if time.time()-snapshot['generated_at'] > 10:
-                        raise ValueError('Cost source aged before close')
+                    from .guard_costs import verify_close_target
+                    verify_close_target(mt5, p)
                     if account_key(mt5.account_info(fresh=True)) != key:
                         raise ValueError('Account changed before close')
+                    if not 0 <= time.time()-snapshot['generated_at'] <= 10:
+                        raise ValueError('Cost source aged before close')
                 result = mt5.close_position(int(p['ticket']), deviation=cfg.deviation_points)
                 row['close_retcode'] = result.get('retcode')
     def reconcile(current):

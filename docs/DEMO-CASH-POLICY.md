@@ -208,3 +208,30 @@ distinction. Diagnostic correlation can succeed with a qualified positive balanc
 without thereby authorizing execution. Existing fresh-account, v2, 10-second age,
 owned-history, protective SL, durable close, and three-loss checks remain intact.
 This supersedes the earlier blanket statement that every non-trade record blocks.
+
+## Final native target recheck before cash close
+
+The v2 cash-exit path now reads the native position list again after its durable
+close claim and before any close submission. Exactly one matching persistent
+identifier must still have the expected ticket, comment, direction and volume,
+plus a finite positive protective SL. A changed/disappeared/ambiguous position
+blocks the close. Then live USD-demo account identity is checked again, and source
+age is checked **after** these potentially slow reads (0 to 10 seconds inclusive).
+No extra broker operation is performed by the recheck itself.
+
+Failure after the claim leaves close_requested unresolved, even when no close was
+submitted; this is intentionally conservative and requires reconciliation rather
+than an automatic retry. It prevents another thread or restart from treating an
+uncertain exit as a new closing opportunity. This does not eliminate a broker race
+between the final read and submission, or make P/L real-time; all earlier latency,
+late-cost and cash-threshold limitations remain. No unrelated manual position is
+selected just because it has the same symbol.
+
+Local deployment of this Python-only revision requires no monitor compile or input
+changes. Preserve the existing environment and restart only the console. Run
+`tests/test_guard_costs.py` and `tests/test_demo_guard.py` for offline integration
+and final-target-change tests. Do not repeat historical audits merely to mark an
+order/guardian check pass. The already collected historical audit is evidence of
+bounded volume consistency only. No policy/trading activation, cloud window or
+new order is part of this deployment verification. Actual order submission and
+live floating-P/L acceptance remain separately unverified with zero open positions.

@@ -192,3 +192,46 @@ def test_qualified_positive_balance_preserved_but_not_added_to_owned_pnl():
     net = sum(enriched[0][k] for k in ('profit', 'swap', 'commission', 'fee'))
     net += floating[0]['profit']+floating[0]['swap']
     assert net == pytest.approx(-10.1)
+
+
+@pytest.mark.parametrize('change', [
+    {'volume': .2}, {'volume': float('nan')}, {'comment': 'manual'},
+    {'ticket': 99}, {'type': 'sell'}, {'sl': 0}, {'sl': float('nan')},
+])
+def test_final_target_recheck_blocks_changed_position(change):
+    from trade_mcp.guard_costs import verify_close_target
+    _, positions, _, _ = evidence()
+    mt5 = Mock()
+    mt5.positions.return_value = [dict(positions[0], **change)]
+    with pytest.raises(CostSnapshotError):
+        verify_close_target(mt5, positions[0])
+    mt5.close_position.assert_not_called()
+
+
+@pytest.mark.parametrize('count', [0, 2])
+def test_final_target_missing_or_duplicate_is_not_retried(count):
+    from trade_mcp.guard_costs import verify_close_target
+    _, positions, _, _ = evidence()
+    mt5 = Mock()
+    mt5.positions.return_value = positions * count
+    with pytest.raises(CostSnapshotError):
+        verify_close_target(mt5, positions[0])
+
+
+def test_native_target_changes_after_reconcile_no_close_or_replay(mock_app):
+    from trade_mcp.demo_guard import state_for
+    deals, positions, snapshot, intents = evidence()
+    account = dict(login=1, server='Demo', currency='USD', trade_mode='demo')
+    mt5 = Mock()
+    mt5.account_info.return_value = account
+    mt5.positions.side_effect = [positions, [dict(positions[0], volume=.2)]]
+    mt5.deals.return_value = deals
+    mock_app.store.cash_guard_update(account_key(account), lambda state: state['intents'].update(intents))
+    cfg = mock_app.cfg.with_overrides(backend='native', cost_snapshot_path='snapshot',
+                                      demo_cash_policy=True, allow_trading=True)
+    with patch('trade_mcp.guard_costs.read_cost_snapshot', return_value=snapshot), pytest.raises(
+            CostSnapshotError):
+        inspect_positions(mt5, cfg, mock_app.store, execute=True)
+    mt5.close_position.assert_not_called()
+    state = state_for(mock_app.store, account_key(account))
+    assert state['intents']['tmcp:owned']['status'] == 'close_requested'

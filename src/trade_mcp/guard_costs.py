@@ -100,3 +100,24 @@ def enrich_owned_history(deals, positions, snapshot, intents):
             raise CostSnapshotError('Owned remaining volume differs')
         position.update(profit=source['profit'], swap=source['swap'], pnl_complete=True)
     return out_deals, out_positions
+
+
+def verify_close_target(mt5, expected):
+    """Re-read native target metadata immediately before an owned cash exit.
+
+    This narrows the validation/submission race; it cannot make broker state
+    transactional. Never closes, resubmits or changes SL itself.
+    """
+    pid = int(expected.get('identifier') or expected['ticket'])
+    matches = [p for p in mt5.positions()
+               if int(p.get('identifier') or p.get('ticket') or 0) == pid]
+    if len(matches) != 1:
+        raise CostSnapshotError('Owned close target is absent or ambiguous')
+    current = matches[0]
+    volume, stop = float(current.get('volume', 0)), float(current.get('sl', 0))
+    if (int(current['ticket']) != int(expected['ticket']) or
+            current.get('comment') != expected.get('comment') or
+            current.get('type') != expected.get('type') or
+            not math.isfinite(volume) or not math.isfinite(stop) or stop <= 0 or
+            not math.isclose(volume, float(expected['volume']), abs_tol=1e-8, rel_tol=0)):
+        raise CostSnapshotError('Owned close target changed after reconciliation')
