@@ -417,6 +417,21 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": False, "error": "cross_origin_write_denied"}, 403)
         payload = self._body()
         try:
+            if path == "/api/engines/broker":
+                from .engines.live import analyze_broker
+                try:
+                    with self.state.lock:
+                        result = analyze_broker(
+                            self.state.app.mt5, self.state.cfg,
+                            str(payload.get('symbol') or ''),
+                            str(payload.get('timeframe') or 'M15'),
+                            str(payload.get('provider') or 'builtin'))
+                except ImportError:
+                    result = {'ok': False, 'error': 'optional_dependency_unavailable'}
+                except Exception:
+                    result = {'ok': False, 'error': 'broker_engine_failed',
+                              'execution_authorized': False}
+                return self._json(result)
             if path == "/api/engines/analyze":
                 from .engines.strategy import strategy_signal
                 provider = str(payload.get('provider') or 'builtin')

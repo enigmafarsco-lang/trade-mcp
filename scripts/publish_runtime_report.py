@@ -14,7 +14,9 @@ from pathlib import Path
 STATES = {"pass", "fail", "blocked", "not_run"}
 CHECKS = {"compile", "snapshot_fresh", "account_match", "financial_fields",
           "unique_tickets", "position_lifecycle", "floating_net_pnl",
-          "guardian", "analysis", "proposal", "order", "three_loss_latch"}
+          "guardian", "analysis", "proposal", "order", "three_loss_latch",
+          "text_tool_discovery", "technical_builtin", "strategy_rules",
+          "broker_engine", "web_engine", "optional_dependency_errors"}
 COUNTS = {"deals", "positions", "cloud_requests", "orders_submitted"}
 
 

@@ -315,6 +315,15 @@ node('workspace-test').onclick=async()=>{
  }catch(e){node('workspace-action').textContent=(e&&e.message)||'آزمایش ناموفق بود؛ هیچ معامله‌ای درخواست نشد.';}
  finally{testing=false;await refresh();}
 };
+node('engine-broker').onclick=async()=>{
+ const button=node('engine-broker'),out=node('engine-result');button.disabled=true;
+ out.textContent='دریافت کندل‌های بسته و محاسبهٔ محلی؛ بدون درخواست مدل یا سفارش…';
+ try{const d=await request('/api/engines/broker',{
+ symbol:node('engine-symbol').value,timeframe:node('engine-timeframe').value,
+ provider:node('engine-provider').value});out.textContent=JSON.stringify(d,null,2);
+ }catch(e){out.textContent='دریافت یا تحلیل دادهٔ بروکر ناموفق بود؛ سفارشی ارسال نشد.';}
+ finally{button.disabled=false;}
+};
 node('engine-analyze').onclick=async()=>{
  const button=node('engine-analyze'),out=node('engine-result');button.disabled=true;
  try{const ohlcv=JSON.parse(node('engine-ohlcv').value);

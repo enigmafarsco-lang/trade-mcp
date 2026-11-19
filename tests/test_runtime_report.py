@@ -24,3 +24,11 @@ def test_report_unknown_is_not_success():
 def test_private_or_invalid_data_rejected(extra):
     with pytest.raises(ValueError):
         module.sanitize({'commit': 'a' * 40, **extra})
+
+
+def test_engine_evidence_is_separate_from_cloud_analysis():
+    result = module.sanitize({'commit': 'a' * 40, 'checks': {'technical_builtin': 'pass',
+                              'broker_engine': 'blocked', 'web_engine': 'pass'}})
+    assert result['checks']['analysis'] == 'not_run'
+    assert result['checks']['technical_builtin'] == 'pass'
+    assert result['execution_authorized_by_report'] is False

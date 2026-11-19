@@ -106,3 +106,31 @@ The native ticket mapping is now verified by user-local overlap evidence, but
 1846 native-only deals were still unmatched in the latest report. No missing
 costs are filled, no input window is changed to force success, and guardian
 execution remains blocked independently of these additive research modules.
+
+## Broker-candle analysis (additive)
+
+`technical_broker_text` and `POST /api/engines/broker` now retrieve up to 401
+broker bars through the existing MT5 connection and compute the same deterministic
+engine on at most 400 closed candidates. The Persian panel includes broker symbol,
+timeframe and a separate broker-analysis button; manual OHLCV analysis remains.
+The last returned candle is always excluded, and candidates whose timestamp plus
+fixed timeframe duration is later than local UTC are excluded as well. This is
+conservative but does not prove terminal timezone correctness. Duplicate/unsorted
+bar timestamps are rejected, not silently reordered. Calendar-month bars are
+unsupported here, rather than approximated as a fixed number of seconds.
+
+Outputs include backend/source, actual resolved symbol, timeframe, last used bar
+time and age. Mock data is labeled synthetic. Empty data is an error, insufficient
+warmup is HOLD with unknown confidence. These results do not claim execution
+freshness. No broker order, cloud/model call, local weights, news, or fallback is
+involved. Network errors return a generic safe error at the web boundary.
+
+Local verification: fast-forward the branch, restart only the console preserving
+its environment, and call the broker endpoint with the existing symbol/M15 and
+builtin provider. Check source, closed-bar exclusion, readiness and output flags.
+The text facade now has 13 tools; discover dynamically rather than hard-coding 12.
+Do not install optional dependencies or activate trading/cloud budget. The sanitized
+report generator now supports independent checks `text_tool_discovery`,
+`technical_builtin`, `strategy_rules`, `broker_engine`, `web_engine`, and
+`optional_dependency_errors`; this prevents conflating offline deterministic
+verification with real cloud analysis. Keep `analysis` for the latter.

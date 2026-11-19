@@ -105,3 +105,13 @@ def register_text_tools(mcp):
         """Read existing broker multi-timeframe evidence; never invokes a cloud model."""
         from .server import analyze_market
         return analyze_market(symbol=symbol, timeframes=timeframes, bars=min(2000, max(120, bars)))
+
+    @mcp.tool()
+    @clean_tool
+    def technical_broker_text(symbol: str = '', timeframe: str = 'M15',
+                              provider: str = 'builtin') -> str:
+        """Analyze up to 400 closed broker bars; no model request or order execution."""
+        from .app import get_app
+        from .engines.live import analyze_broker
+        app = get_app()
+        return analyze_broker(app.mt5, app.cfg, symbol, timeframe, provider)
