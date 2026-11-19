@@ -43,7 +43,7 @@ def correlate_deal_costs(native_deals, snapshot, *, now=None):
     Native rows outside the bounded snapshot cause failure rather than zero costs.
     """
     now = time.time() if now is None else now
-    if snapshot.get('source') != 'mql5_cost_snapshot_v1':
+    if snapshot.get('source') not in {'mql5_cost_snapshot_v1', 'mql5_cost_snapshot_v2'}:
         raise CostCorrelationError('unsupported_cost_source')
     if not 0 <= _number(now) - _number(snapshot.get('generated_at')) <= 30:
         raise CostCorrelationError('snapshot_stale')
@@ -82,7 +82,7 @@ def correlate_deal_costs(native_deals, snapshot, *, now=None):
                 raise CostCorrelationError('financial_source_mismatch')
         item = copy.deepcopy(native)
         item.update({key: cost[key] for key in FIELDS})
-        item.update(costs_complete=True, cost_source='mql5_cost_snapshot_v1')
+        item.update(costs_complete=True, cost_source=snapshot['source'])
         result.append(item)
     return {'deals': result, 'matched': len(result),
             'snapshot_only_deals': len(indexed.keys() - seen),

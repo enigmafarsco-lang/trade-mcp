@@ -91,3 +91,11 @@ def test_coverage_counts_expose_no_raw_values():
     assert '99999999999' not in str(report)
     assert '88888888888' not in str(report)
     assert all(type(v) is int for v in report.values())
+
+
+def test_v2_join_preserves_source_label():
+    native, snapshot = fixture()
+    snapshot['source'] = 'mql5_cost_snapshot_v2'
+    result = correlate_deal_costs(native, snapshot, now=1001)
+    assert result['deals'][0]['cost_source'] == 'mql5_cost_snapshot_v2'
+    assert result['execution_eligible'] is False

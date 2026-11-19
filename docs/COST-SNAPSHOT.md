@@ -167,3 +167,51 @@ identifiers now block earlier instead of silently producing 0 for every record.
 Support for these aliases is adapter compatibility, not a claim about this
 terminal's actual output until local verification. Deploy Python only, restart
 the console with its unchanged environment and repeat the read-only check once.
+
+## Version 2: explicit volumes and floating-position evidence
+
+The shared MQL5 exporter now writes v2. **This revision requires recompiling the
+monitor with the updated header.** Prior runtime compilation/validation covers
+v1 only. The Python reader still accepts v1; deployment can update Python before
+the monitor without inventing absent volume/position fields.
+
+V2 retains the identity and four monetary fields, adding:
+- Header: exact declared position count after deal count.
+- Deal rows: explicit `DEAL_VOLUME` and UTF-8 hex encoded `DEAL_COMMENT`.
+- Position rows: ticket, persistent identifier, direction, opening server time,
+  current volume, `POSITION_PROFIT`, `POSITION_SWAP`, SL, TP, encoded comment.
+
+The official getter boolean result is checked; missing values abort publication.
+Comments are encoded to prevent tabs/newlines/quotes corrupting the TSV format;
+hex is encoding, **not privacy protection**. Keep all snapshots local and private.
+All declared rows must be present, positions come after deals, duplicate position
+identifiers/tickets are rejected, and financial values must be finite. Trading
+volumes must be positive. Unknown floating costs are not filled from native data.
+`pnl_complete` means the two explicit floating fields were read, **not** that net
+lifecycle P/L or all future closing charges are known. Historical deal swaps and
+remaining-position swaps require lifecycle reconciliation before combined use.
+
+Exporter checks total positions before/after the sample as well as history count,
+account and connection. This still is not an atomic terminal transaction: changes
+that preserve counts, same-account close/reopen, and later broker charges remain
+possible. No live guardian execution adapter is enabled by this schema extension.
+Both v1 and v2 correlation keep execution_eligible=false; v1 cannot supply the new
+evidence and never gets synthesized volume or position P/L.
+
+Local OpenCode handoff:
+
+```text
+Deploy current branch preserving all data and console environment.
+Update TradeMCPCostExport.mqh beside TradeMCPCostMonitor.mq5 in active Experts.
+Back up old source/header/binary locally. Stop only the read-only monitor while
+replacing/compiling it; do not disturb any unrelated EA or Wine/MT5 session.
+Compile in existing MetaEditor (request exact GUI F7 action only if unavoidable).
+Reattach only after successful compilation, preserving bounded From/MaxDeals/5s,
+single writer, and Allow Algo Trading disabled. Never use a live order to test.
+Verify two fresh v2 snapshots with independent live identity and default max_age.
+Report only version, completeness/counts, unique IDs and advancing generation.
+If positions=0, floating live data is NOT verified; do not open a test position.
+Do not publish comments, tickets, account identity, raw amounts or file contents.
+Save and push only a sanitized measured-status report to the current branch.
+No cloud/model requests, dependency installs or order activation.
+```
