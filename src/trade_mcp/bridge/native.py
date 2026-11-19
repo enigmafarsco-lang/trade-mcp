@@ -91,6 +91,28 @@ def as_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def deal_ticket(row: dict[str, Any]) -> int:
+    """Read explicit deal identifiers, never nested order IDs or float-rounded IDs."""
+    aliases = {'ticket', 'dealticket', 'dealid', 'deal', 'id'}
+    values = []
+    for key, value in row.items():
+        if _key(key) not in aliases:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (str, int)):
+            raise BridgeError('Native deal identifier is invalid', code='native_deal_ticket_invalid')
+        text = str(value).strip()
+        if not re.fullmatch(r'[0-9]+', text) or int(text) <= 0:
+            raise BridgeError('Native deal identifier is invalid', code='native_deal_ticket_invalid')
+        values.append(int(text))
+    if not values:
+        raise BridgeError('Native history has no explicit deal identifier',
+                          code='native_deal_ticket_missing')
+    if len(set(values)) != 1:
+        raise BridgeError('Native deal identifier fields disagree',
+                          code='native_deal_ticket_ambiguous')
+    return values[0]
+
+
 def as_text(value: Any, default: str = "") -> str:
     if value is None or isinstance(value, (dict, list)):
         return default
@@ -622,11 +644,17 @@ class NativeBridge:
         )
         self.last_raw["get_trading_history_orders"] = raw
         out = []
+        seen_tickets = set()
         for row in records(raw, "deals"):
+            ticket = deal_ticket(row)
+            if ticket in seen_tickets:
+                raise BridgeError("Native history repeats a deal identifier",
+                                  code="native_deal_ticket_duplicate")
+            seen_tickets.add(ticket)
             entry = as_text(find(row, "entry", "deal_entry"), "").lower()
             out.append(
                 {
-                    "ticket": as_int(find(row, "ticket", "deal_ticket", "id")),
+                    "ticket": ticket,
                     "position_id": as_int(find(row, "position_id", "position")),
                     "order_id": as_int(find(row, "order_id", "order")),
                     "symbol": as_text(find(row, "symbol", "name")),

@@ -659,3 +659,40 @@ def test_native_comment_ownership_capabilities_are_explicit(monkeypatch,comment,
     result = native.request('cash_policy_capabilities')
     assert result['ownership_supported'] is supported
     assert result['magic_supported'] is False
+
+
+@pytest.mark.parametrize('name', ['ticket', 'deal_ticket', 'deal_id', 'deal', 'id'])
+def test_explicit_deal_ticket_aliases_preserve_large_integers(monkeypatch, name):
+    native = NativeBridge()
+    ticket = 9007199254740993
+    monkeypatch.setattr(native, 'call', lambda *a: {'deals': [
+        {name: str(ticket), 'order': {'id': 123}, 'entry': 'in'}]})
+    assert native.request('history_deals')[0]['ticket'] == ticket
+
+
+@pytest.mark.parametrize('row,code', [
+    ({'order': {'ticket': 42}}, 'native_deal_ticket_missing'),
+    ({'ticket': 0}, 'native_deal_ticket_invalid'),
+    ({'ticket': True}, 'native_deal_ticket_invalid'),
+    ({'ticket': 42.0}, 'native_deal_ticket_invalid'),
+    ({'ticket': '1.5'}, 'native_deal_ticket_invalid'),
+    ({'ticket': 42, 'deal_id': 43}, 'native_deal_ticket_ambiguous'),
+])
+def test_native_bad_deal_identifiers_fail_closed(monkeypatch, row, code):
+    from trade_mcp.bridge.base import BridgeError
+
+    native = NativeBridge()
+    monkeypatch.setattr(native, 'call', lambda *a: {'deals': [row]})
+    with pytest.raises(BridgeError) as caught:
+        native.request('history_deals')
+    assert caught.value.code == code
+
+
+def test_repeated_native_deal_ids_are_rejected(monkeypatch):
+    from trade_mcp.bridge.base import BridgeError
+
+    native = NativeBridge()
+    monkeypatch.setattr(native, 'call', lambda *a: {'deals': [{'deal': '42'}] * 3})
+    with pytest.raises(BridgeError) as caught:
+        native.request('history_deals')
+    assert caught.value.code == 'native_deal_ticket_duplicate'

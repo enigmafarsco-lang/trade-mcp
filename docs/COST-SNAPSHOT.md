@@ -149,3 +149,21 @@ Local OpenCode verification: deploy the current Python revision, restart only th
 console with its existing environment, and call GET /api/cost-reconciliation once.
 Return `reason` and `coverage` only (the endpoint already sanitizes these fields).
 No monitor recompile, input change, cloud request or order is needed.
+
+### Native identifier normalization correction
+
+Coverage showing thousands of rows but only one unique native ticket can result
+from missing identifiers being normalized to zero. It is not proof of a window
+mismatch. The native adapter now accepts explicit top-level `ticket`,
+`deal_ticket`, `deal_id`, `deal`, or `id` fields only. It rejects missing, zero,
+boolean, floating-point, fractional, conflicting or duplicate identifiers with
+fixed safe reason codes. It never borrows a nested order/position identifier.
+Integer strings are parsed directly without float rounding (including 64-bit
+identifiers). No records are deduplicated or assigned invented tickets.
+
+The health endpoint surfaces the corresponding `native_deal_ticket_*` reason at
+the history stage. If this terminal build uses an unrecognized shape, missing
+identifiers now block earlier instead of silently producing 0 for every record.
+Support for these aliases is adapter compatibility, not a claim about this
+terminal's actual output until local verification. Deploy Python only, restart
+the console with its unchanged environment and repeat the read-only check once.

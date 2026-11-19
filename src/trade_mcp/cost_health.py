@@ -2,6 +2,7 @@
 import time
 from pathlib import Path
 
+from .bridge.base import BridgeError
 from .cost_reconciliation import CostCorrelationError, correlate_deal_costs, coverage_summary
 from .cost_snapshot import read_cost_snapshot
 from .demo_guard import account_key
@@ -50,6 +51,11 @@ def cost_health(mt5, cfg):
                 'note': 'diagnostic_only_no_order_authorization'}
     except CostCorrelationError as exc:
         return {**base, 'error': 'cost_check_failed', 'stage': stage, 'reason': exc.code}
+    except BridgeError as exc:
+        safe_codes = {'native_deal_ticket_missing', 'native_deal_ticket_invalid',
+                      'native_deal_ticket_ambiguous', 'native_deal_ticket_duplicate'}
+        return {**base, 'error': 'cost_check_failed', 'stage': stage,
+                'reason': exc.code if exc.code in safe_codes else 'native_history_unavailable'}
     except Exception:
         # Do not leak paths, identifiers, transport/provider bodies or raw rows.
         return {**base, 'error': 'cost_check_failed', 'stage': stage}
