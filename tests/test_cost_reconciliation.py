@@ -76,3 +76,18 @@ def test_specific_safe_reasons(mutation, reason):
     with pytest.raises(CostCorrelationError) as caught:
         correlate_deal_costs(native, snapshot, now=1001)
     assert caught.value.code == reason
+
+
+def test_coverage_counts_expose_no_raw_values():
+    from trade_mcp.cost_reconciliation import coverage_summary
+
+    native, snapshot = fixture()
+    native.append(dict(native[0], ticket=99999999999))
+    snapshot['deals'].append(dict(snapshot['deals'][0], ticket='88888888888'))
+    report = coverage_summary(native, snapshot)
+    assert report['ticket_overlap'] == 1
+    assert report['native_only_deals'] == 1
+    assert report['snapshot_only_deals'] == 1
+    assert '99999999999' not in str(report)
+    assert '88888888888' not in str(report)
+    assert all(type(v) is int for v in report.values())

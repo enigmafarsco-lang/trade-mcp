@@ -87,3 +87,22 @@ def correlate_deal_costs(native_deals, snapshot, *, now=None):
     return {'deals': result, 'matched': len(result),
             'snapshot_only_deals': len(indexed.keys() - seen),
             'execution_eligible': False, 'lifecycle_complete': False}
+
+
+def coverage_summary(native_deals, snapshot):
+    """Return counts only, with no assumption that the two time windows agree."""
+    native_ids = [str(row['ticket']) for row in native_deals]
+    snapshot_ids = [str(row['ticket']) for row in snapshot['deals']]
+    native_set, snapshot_set = set(native_ids), set(snapshot_ids)
+    return {
+        'native_deals': len(native_ids),
+        'snapshot_deals': len(snapshot_ids),
+        'ticket_overlap': len(native_set & snapshot_set),
+        'native_only_deals': len(native_set - snapshot_set),
+        'snapshot_only_deals': len(snapshot_set - native_set),
+        'native_duplicate_tickets': len(native_ids) - len(native_set),
+        'snapshot_duplicate_tickets': len(snapshot_ids) - len(snapshot_set),
+        'unallocated_snapshot_deals': sum(
+            row['type'] not in (0, 1) or int(row['position_id']) <= 0
+            for row in snapshot['deals']),
+    }

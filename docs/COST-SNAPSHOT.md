@@ -128,3 +128,24 @@ Unexpected failures remain generic. A fixed reason is diagnostic evidence, not
 execution authorization. To test locally after deployment, call the same GET
 endpoint once and return its sanitized JSON. No new monitor compile is needed for
 this Python-only diagnostic revision. No cloud request or order is involved.
+
+### Ticket coverage evidence and read ordering
+
+The web check now queries native history **before** reading the latest published
+snapshot, reducing the avoidable race in which new deals appeared after the file
+was read. This does not guarantee a monitor refresh has happened, and never
+suppresses unmatched tickets. No automatic retry or wait was added.
+
+Correlation responses now include `coverage` counts: native/snapshot records,
+ticket overlap, native-only and snapshot-only records, duplicate counts, and
+unallocated snapshot records. Counts are computed locally and expose no IDs or
+financial amounts. Identity is checked again before returning correlation failure
+counts. These counts distinguish no overlap from partial coverage, but do not
+prove why a ticket is missing or whether a broker has booked all charges. The
+endpoint does not recommend dropping records or narrowing the period to force
+success. Timezone assumptions and lifecycle checks remain unresolved separately.
+
+Local OpenCode verification: deploy the current Python revision, restart only the
+console with its existing environment, and call GET /api/cost-reconciliation once.
+Return `reason` and `coverage` only (the endpoint already sanitizes these fields).
+No monitor recompile, input change, cloud request or order is needed.

@@ -24,7 +24,7 @@ def test_account_switch_blocks_success():
     account = dict(login=1, server='Demo', currency='USD', trade_mode='demo')
     mt5.account_info.side_effect = [account, dict(account, login=2)]
     mt5.deals.return_value = [{'ticket': 1}]
-    with patch('trade_mcp.cost_health.read_cost_snapshot', return_value={}), patch(
+    with patch('trade_mcp.cost_health.read_cost_snapshot', return_value={'deals': []}), patch(
             'trade_mcp.cost_health.correlate_deal_costs', return_value={}):
         result = cost_health(mt5, SimpleNamespace(cost_snapshot_path='file', backend='native'))
     assert result['error'] == 'account_changed'
@@ -37,7 +37,7 @@ def test_correlation_reason_is_sanitized_and_specific():
     mt5 = Mock()
     mt5.account_info.return_value = dict(login=1, server='Demo', currency='USD', trade_mode='demo')
     mt5.deals.return_value = [{'ticket': 1}]
-    with patch('trade_mcp.cost_health.read_cost_snapshot', return_value={}), patch(
+    with patch('trade_mcp.cost_health.read_cost_snapshot', return_value={'deals': []}), patch(
             'trade_mcp.cost_health.correlate_deal_costs',
             side_effect=CostCorrelationError('unallocated_account_charge')):
         result = cost_health(mt5, SimpleNamespace(cost_snapshot_path='file', backend='native'))
@@ -45,3 +45,16 @@ def test_correlation_reason_is_sanitized_and_specific():
     assert result['stage'] == 'correlation'
     assert result['execution_eligible'] is False
     assert 'login' not in result
+
+
+def test_history_is_read_before_snapshot():
+    events = []
+    mt5 = Mock()
+    mt5.account_info.return_value = dict(login=1, server='Demo', currency='USD', trade_mode='demo')
+    mt5.deals.side_effect = lambda **kwargs: events.append('history') or [{'ticket': 1}]
+    with patch('trade_mcp.cost_health.read_cost_snapshot',
+               side_effect=lambda *a, **kw: events.append('snapshot') or {'deals': []}), patch(
+            'trade_mcp.cost_health.correlate_deal_costs',
+            return_value={'matched': 0, 'snapshot_only_deals': 0}):
+        cost_health(mt5, SimpleNamespace(cost_snapshot_path='file', backend='native'))
+    assert events == ['history', 'snapshot']
