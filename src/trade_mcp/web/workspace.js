@@ -315,6 +315,14 @@ node('workspace-test').onclick=async()=>{
  }catch(e){node('workspace-action').textContent=(e&&e.message)||'آزمایش ناموفق بود؛ هیچ معامله‌ای درخواست نشد.';}
  finally{testing=false;await refresh();}
 };
+node('engine-analyze').onclick=async()=>{
+ const button=node('engine-analyze'),out=node('engine-result');button.disabled=true;
+ try{const ohlcv=JSON.parse(node('engine-ohlcv').value);
+ const d=await request('/api/engines/analyze',{ohlcv,provider:node('engine-provider').value});
+ out.textContent=JSON.stringify(d,null,2);
+ }catch(e){out.textContent='ورودی یا محاسبه نامعتبر است؛ سفارشی ارسال نشد.';}
+ finally{button.disabled=false;}
+};
 node('cost-health-check').onclick=async()=>{
  const button=node('cost-health-check'),out=node('cost-health-result');
  button.disabled=true;out.textContent='بررسی فقط‌خواندنی هزینه‌ها…';

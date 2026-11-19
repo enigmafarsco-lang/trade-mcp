@@ -417,6 +417,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": False, "error": "cross_origin_write_denied"}, 403)
         payload = self._body()
         try:
+            if path == "/api/engines/analyze":
+                from .engines.strategy import strategy_signal
+                provider = str(payload.get('provider') or 'builtin')
+                try:
+                    result = strategy_signal(payload.get('ohlcv'), provider)
+                except ImportError:
+                    result = {'ok': False, 'error': 'optional_dependency_unavailable'}
+                except (TypeError, ValueError):
+                    result = {'ok': False, 'error': 'invalid_ohlcv_or_provider'}
+                return self._json(result)
             if path == "/api/marketwatch/select":
                 name = str(payload.get("symbol") or "").strip()
                 if not name or len(name) > 64:

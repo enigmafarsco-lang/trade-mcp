@@ -17,6 +17,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.4", "ruff>=0.5"]
+exchange = ["ccxt>=4,<5"]
+candles = ["TA-Lib>=0.6,<0.7"]
 
 [project.scripts]
 trade-mcp = "trade_mcp.__main__:main"

@@ -672,3 +672,9 @@ def trade_review(days: str = "30") -> str:
 - سه اقدام مشخص برای بهبود انضباط ریسک در هفته آینده
 اگر داده کافی نیست، صریح بگو و حدس نزن.
 """
+
+
+# Additive clean-string facade: existing clients retain their structured tools.
+from .text_tools import register_text_tools  # noqa: E402
+
+register_text_tools(mcp)
