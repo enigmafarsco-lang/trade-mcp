@@ -135,3 +135,40 @@ def test_unqualified_balance_still_blocks_correlation(change):
     snapshot['deals'].append(dict(balance, **change))
     with pytest.raises(CostSnapshotError):
         correlate_deal_costs(native, snapshot, now=1001)
+
+
+@pytest.mark.parametrize('field,value,reason', [
+    ('position_id', 21, 'deal_position_id_mismatch'),
+    ('type', 'sell', 'deal_side_mismatch'),
+    ('entry', 'out', 'deal_entry_mismatch'),
+])
+def test_identity_reasons_are_field_specific(field, value, reason):
+    from trade_mcp.cost_reconciliation import CostCorrelationError
+    native, snapshot = fixture()
+    native[0][field] = value
+    with pytest.raises(CostCorrelationError) as caught:
+        correlate_deal_costs(native, snapshot, now=1001)
+    assert caught.value.code == reason
+
+
+def test_aggregate_identity_mismatch_preserves_privacy():
+    from trade_mcp.cost_reconciliation import identity_summary
+    native, snapshot = fixture()
+    native[0].update(position_id=0, type='private raw enum', entry='private entry')
+    result = identity_summary(native, snapshot)
+    assert result['counts']['position_id_mismatches'] == 1
+    assert result['counts']['side_mismatches'] == 1
+    assert result['counts']['entry_mismatches'] == 1
+    assert result['native_side_counts']['other'] == 1
+    assert result['native_entry_counts']['other'] == 1
+    assert 'private' not in str(result)
+
+
+def test_aggregate_identity_success_has_no_false_mismatches():
+    from trade_mcp.cost_reconciliation import identity_summary
+    native, snapshot = fixture()
+    result = identity_summary(native, snapshot)
+    assert result['counts']['compared_trade_records'] == 1
+    assert result['counts']['position_id_mismatches'] == 0
+    assert result['counts']['side_mismatches'] == 0
+    assert result['counts']['entry_mismatches'] == 0

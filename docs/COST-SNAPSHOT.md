@@ -275,3 +275,25 @@ coverage and reason/result. Call load_guard_snapshot once to check the stricter
 acceptance. No MQL5 compile, policy activation, cloud request or order is needed.
 If volume/entry do not satisfy the strict rule, report blocked; do not edit the
 file or relax the predicate to force a pass.
+
+### Field-specific native identity comparison
+
+After positive balance separation, local evidence reached a trade identity
+mismatch. This does not prove a volume mismatch: ordinary trade correlation checks
+position ID, side and entry separately, while volume is additionally checked by
+the owned guardian adapter. The web response now contains `identity_comparison`:
+counts of shared trade records, position/side/entry mismatches, missing position
+IDs, unknown side/entry counts and fixed normalized enum distributions. It never
+returns actual IDs, raw enums, comments, amounts or dates. All shared trades are
+counted, rather than stopping diagnosis at the first mismatch. The actual join
+still fails at the first violation and returns field-specific fixed reasons
+`deal_position_id_mismatch`, `deal_side_mismatch`, or `deal_entry_mismatch`.
+The qualified-balance identity check retains the generic reason for compatibility.
+
+Python-only local handoff: update the branch, restart only the console preserving
+its existing environment and call GET /api/cost-reconciliation once. Return the
+sanitized reason and identity_comparison plus existing coverage/account_operations.
+No raw inspection, monitor input change, MQL5 compile, policy activation, cloud
+request or order is necessary. Do not assume a normalization fix until the actual
+mismatched field is established. The report generator accepts corresponding
+identity_compared_trades and identity_{position,side,entry}_mismatches counts.

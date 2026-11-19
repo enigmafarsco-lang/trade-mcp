@@ -89,10 +89,12 @@ def correlate_deal_costs(native_deals, snapshot, *, now=None):
         if ticket not in indexed:
             raise CostCorrelationError('native_ticket_outside_snapshot')
         cost = indexed[ticket]
-        if (int(native['position_id']) != int(cost['position_id']) or
-                native['type'] != ('buy' if cost['type'] == 0 else 'sell') or
-                native['entry'] != ENTRIES.get(cost['entry'])):
-            raise CostCorrelationError('deal_identity_mismatch')
+        if int(native['position_id']) != int(cost['position_id']):
+            raise CostCorrelationError('deal_position_id_mismatch')
+        if native['type'] != ('buy' if cost['type'] == 0 else 'sell'):
+            raise CostCorrelationError('deal_side_mismatch')
+        if native['entry'] != ENTRIES.get(cost['entry']):
+            raise CostCorrelationError('deal_entry_mismatch')
         # Do not compare naive terminal-time epochs to UTC without a validated
         # conversion. Exact globally unique deal IDs are mandatory for this join.
         for key in FIELDS:
@@ -128,3 +130,35 @@ def coverage_summary(native_deals, snapshot):
             row['type'] not in (0, 1) or int(row['position_id']) <= 0
             for row in snapshot['deals']),
     }
+
+
+def identity_summary(native_deals, snapshot):
+    """Aggregate field-specific identity mismatches for shared trading tickets.
+
+    No IDs, raw enum strings, comments, dates or amounts leave this function.
+    This is diagnosis, not a relaxed join; missing fields count as mismatches.
+    """
+    indexed = {str(row['ticket']): row for row in snapshot['deals']
+               if row['type'] in (0, 1) and int(row['position_id']) > 0}
+    counts = dict.fromkeys(('compared_trade_records', 'position_id_mismatches',
+                           'side_mismatches', 'entry_mismatches',
+                           'native_position_id_missing', 'native_side_unknown',
+                           'native_entry_unknown'), 0)
+    sides = dict.fromkeys(('buy', 'sell', 'other'), 0)
+    entries = dict.fromkeys(('in', 'out', 'out_by', 'inout', 'other'), 0)
+    for native in native_deals:
+        source = indexed.get(str(native['ticket']))
+        if source is None:
+            continue
+        counts['compared_trade_records'] += 1
+        position = int(native.get('position_id') or 0)
+        side, entry = native.get('type'), native.get('entry')
+        counts['native_position_id_missing'] += int(position <= 0)
+        counts['native_side_unknown'] += int(side not in ('buy', 'sell'))
+        counts['native_entry_unknown'] += int(entry not in ENTRIES.values())
+        counts['position_id_mismatches'] += int(position != int(source['position_id']))
+        counts['side_mismatches'] += int(side != ('buy' if source['type'] == 0 else 'sell'))
+        counts['entry_mismatches'] += int(entry != ENTRIES.get(source['entry']))
+        sides[side if side in ('buy', 'sell') else 'other'] += 1
+        entries[entry if entry in ('in', 'out', 'out_by', 'inout') else 'other'] += 1
+    return dict(counts=counts, native_side_counts=sides, native_entry_counts=entries)

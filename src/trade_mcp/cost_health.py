@@ -4,7 +4,12 @@ from pathlib import Path
 
 from .account_operations import account_operation_summary
 from .bridge.base import BridgeError
-from .cost_reconciliation import CostCorrelationError, correlate_deal_costs, coverage_summary
+from .cost_reconciliation import (
+    CostCorrelationError,
+    correlate_deal_costs,
+    coverage_summary,
+    identity_summary,
+)
 from .cost_snapshot import read_cost_snapshot
 from .demo_guard import account_key
 
@@ -31,6 +36,7 @@ def cost_health(mt5, cfg):
         snapshot = read_cost_snapshot(Path(path).expanduser(), login=str(before['login']),
                                       server=before['server'], currency=before['currency'])
         coverage = coverage_summary(deals, snapshot)
+        identities = identity_summary(deals, snapshot)
         # Recheck even if correlation fails; do not attribute mixed-account
         # coverage counts to the original account.
         stage = 'account_recheck'
@@ -42,12 +48,14 @@ def cost_health(mt5, cfg):
             joined = correlate_deal_costs(deals, snapshot)
         except CostCorrelationError as exc:
             return {**base, 'error': 'cost_check_failed', 'stage': stage,
-                    'reason': exc.code, 'coverage': coverage, 'account_operations': operations}
+                    'reason': exc.code, 'coverage': coverage, 'account_operations': operations,
+                    'identity_comparison': identities}
 
         stage = 'account_recheck'
         if account_key(mt5.account_info(fresh=True)) != identity:
             return {**base, 'error': 'account_changed'}
-        return {**base, 'ok': True, 'coverage': coverage, 'account_operations': operations, 'matched_deals': joined['matched'],
+        return {**base, 'ok': True, 'coverage': coverage, 'account_operations': operations,
+                'identity_comparison': identities, 'matched_deals': joined['matched'],
                 'snapshot_only_deals': joined['snapshot_only_deals'],
                 'snapshot_age_seconds': round(time.time()-snapshot['generated_at'], 2),
                 'note': 'diagnostic_only_no_order_authorization'}

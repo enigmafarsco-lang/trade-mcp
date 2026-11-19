@@ -21,7 +21,9 @@ CHECKS = {"compile", "snapshot_fresh", "account_match", "financial_fields",
 COUNTS = {"deals", "positions", "cloud_requests", "orders_submitted",
           "unallocated_records", "balance_operations", "credit_operations",
           "commission_operations", "charge_operations", "other_account_operations",
-          "excluded_positive_balance_records", "blocking_unallocated_records"}
+          "excluded_positive_balance_records", "blocking_unallocated_records",
+          "identity_compared_trades", "identity_position_mismatches",
+          "identity_side_mismatches", "identity_entry_mismatches"}
 
 
 def sanitize(value: object) -> dict:
