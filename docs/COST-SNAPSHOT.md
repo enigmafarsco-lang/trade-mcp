@@ -322,3 +322,32 @@ identity_comparison and reason/coverage/account_operations. No recompile, change
 monitor inputs, orders, cloud windows, or policy activation. If output remains
 unknown or mismatched, record that; alias support is not evidence that the local
 terminal actually uses those fields until observed.
+
+### Historical observed-volume lifecycle audit
+
+Following successful native cost/identity correlation, the health endpoint now
+also returns `lifecycle_audit` from a read-only audit of the full bounded v2
+snapshot. This uses existing records only, not new test orders, and does not read
+or change the ownership journal. It never adopts a historical/manual position.
+
+For each position ID it checks chronological opening/exit volume, over-closes,
+side consistency, reversal records, unexpected ID reuse after complete closure,
+and equality of remaining volume with an active position's explicit volume.
+Active positions must also agree with the opening deal's direction/server time.
+The output is count-only; no P/L amounts, position IDs, comments or raw records.
+
+`observed_volume_consistent` means only that covered rows balance in the observed
+interval; it never asserts complete lifetime history, final broker charges,
+ownership or execution eligibility. Boundary-crossing positions can correctly
+appear incomplete. Reversals and inconsistencies are counted separately, not
+silently discarded. No groups is not a passing audit. V1 returns unavailable.
+With zero live positions, the historical closed-volume audit does not verify
+live floating P/L, actual guardian exits, or broker execution.
+
+Local handoff: deploy Python, restart only the console preserving its existing
+environment, call GET /api/cost-reconciliation once, and return its sanitized
+`lifecycle_audit` along with cost/identity result. No monitor changes, MQL5 compile,
+cloud requests, order tests or policy activation. Record `historical_lifecycle_audit`
+separately from guardian/order acceptance; prefix the returned counts with
+`lifecycle_` for the report generator. If the bounded interval is incomplete,
+report the real result without adjusting inputs to force success.

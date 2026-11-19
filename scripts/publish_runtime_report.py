@@ -17,13 +17,18 @@ CHECKS = {"compile", "snapshot_fresh", "account_match", "financial_fields",
           "guardian", "analysis", "proposal", "order", "three_loss_latch",
           "text_tool_discovery", "technical_builtin", "strategy_rules",
           "broker_engine", "web_engine", "optional_dependency_errors",
-          "guard_cost_source", "guardian_offline_tests"}
+          "guard_cost_source", "guardian_offline_tests", "historical_lifecycle_audit"}
 COUNTS = {"deals", "positions", "cloud_requests", "orders_submitted",
           "unallocated_records", "balance_operations", "credit_operations",
           "commission_operations", "charge_operations", "other_account_operations",
           "excluded_positive_balance_records", "blocking_unallocated_records",
           "identity_compared_trades", "identity_position_mismatches",
-          "identity_side_mismatches", "identity_entry_mismatches"}
+          "identity_side_mismatches", "identity_entry_mismatches",
+          "lifecycle_positions_evaluated", "lifecycle_closed_volume_consistent",
+          "lifecycle_open_volume_consistent", "lifecycle_incomplete_positions",
+          "lifecycle_reversal_positions", "lifecycle_direction_mismatch_positions",
+          "lifecycle_volume_mismatch_positions", "lifecycle_active_without_history",
+          "lifecycle_opening_time_mismatch_positions"}
 
 
 def sanitize(value: object) -> dict:

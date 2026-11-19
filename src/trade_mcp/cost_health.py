@@ -12,6 +12,7 @@ from .cost_reconciliation import (
 )
 from .cost_snapshot import read_cost_snapshot
 from .demo_guard import account_key
+from .lifecycle_audit import audit_lifecycles
 
 
 def cost_health(mt5, cfg):
@@ -51,10 +52,12 @@ def cost_health(mt5, cfg):
                     'reason': exc.code, 'coverage': coverage, 'account_operations': operations,
                     'identity_comparison': identities}
 
+        stage = 'lifecycle_audit'
+        lifecycle = audit_lifecycles(snapshot)
         stage = 'account_recheck'
         if account_key(mt5.account_info(fresh=True)) != identity:
             return {**base, 'error': 'account_changed'}
-        return {**base, 'ok': True, 'coverage': coverage, 'account_operations': operations,
+        return {**base, 'ok': True, 'lifecycle_audit': lifecycle, 'coverage': coverage, 'account_operations': operations,
                 'identity_comparison': identities, 'matched_deals': joined['matched'],
                 'snapshot_only_deals': joined['snapshot_only_deals'],
                 'snapshot_age_seconds': round(time.time()-snapshot['generated_at'], 2),
