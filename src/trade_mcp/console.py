@@ -976,8 +976,19 @@ class Handler(BaseHTTPRequestHandler):
             return {"ok": False, "error": "unknown_agent"}
         if action == 'run_advisory':
             agent = {**agent, 'mode': 'advisory'}
+        if action == 'run_rules_guarded':
+            # Explicit opt-in, never a fallback from a failed cloud invocation.
+            # One symbol / invocation; all AgentEngine execution gates remain.
+            if len(agent.get("symbols") or []) != 1:
+                return {"ok": False, "error": "rules_requires_one_symbol"}
+            agent = {**agent, "mode": "guarded"}
         with self.state.lock:
-            report = self.state.agent_engine("agent_run").run(agent)
+            if action == 'run_rules_guarded':
+                engine = AgentEngine(cfg=self.state.cfg, mt5=self.state.app.mt5,
+                                     store=store, llm=LLMClient(mode="auto"))
+            else:
+                engine = self.state.agent_engine("agent_run")
+            report = engine.run(agent)
         return {"ok": True, "report": report}
 
     def _scheduler(self, payload: dict[str, Any]) -> dict[str, Any]:

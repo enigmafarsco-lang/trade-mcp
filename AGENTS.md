@@ -63,3 +63,16 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 - بک‌تست روی کندل‌های تاریخی (`analysis` تقریباً آماده است؛ فقط حلقه‌ی شبیه‌سازی لازم است).
 - چند ترمینال/چند حساب همزمان (نیازمند کلید `account` در پروتکل).
 - هشدار ریسک روزانه (سقف ضرر روز) در `execution.py`.
+
+## Standing local handoff workflow (current session)
+
+For requested local deployments, fetch and fast-forward the current Arena branch
+before verification; never reset, rebase, switch branches or overwrite local data.
+Preserve nested repositories, secrets, environment, journals and logs.
+Always archive original evidence locally with owner-only permissions and commit
+ONLY explicitly staged sanitized runtime reports under `reports/runtime/`.
+Attempt `git push origin arena/f81b6b27-trade-mcp` after the report commit.
+If authentication fails, retain the commit and report its hash for Desktop push;
+never ask for credentials in chat. Do not require the user to repeat pull/report/
+push instructions. These workflow instructions do NOT authorize extra trading,
+cloud windows, model changes or unrelated runtime/service changes.
