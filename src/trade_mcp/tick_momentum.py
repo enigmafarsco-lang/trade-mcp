@@ -27,7 +27,8 @@ class TickMomentum:
         # Millisecond timestamp preferred. Seconds-only sources count at most once/second.
         stamp = number(tick.get('time_msc') or number(tick['time'])*1000)
         bid, ask = number(tick['bid']), number(tick['ask'])
-        opened, start = number(candle['open']), number(candle['time'])
+        opened = number(candle['open'])
+        start = number(candle.get('time_utc', candle['time']))
         if min(bid, ask, opened) <= 0 or ask < bid or not -2 <= now-stamp/1000 <= 2:
             self.previous, self.count, self.direction = None, 0, 0
             return {'action': 'wait', 'reason': 'invalid_or_stale_quote'}
@@ -49,7 +50,9 @@ class TickMomentum:
             return {'action': 'wait', 'reason': 'insufficient_aligned_ticks'}
         self.count = 0  # consume signal, never replay after a failed order
         return {'action': 'buy' if direction == 1 else 'sell',
-                'source': 'user_M1_tick_momentum', 'consecutive_changes': self.required}
+                'source': 'user_M1_tick_momentum', 'consecutive_changes': self.required,
+                'evidence_kind': 'received_quote_samples' if tick.get('time_source') == 'received'
+                                 else 'timestamped_quotes'}
 
 
 def tick_step(app, agent, strategy):

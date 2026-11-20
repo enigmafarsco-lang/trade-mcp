@@ -548,6 +548,7 @@ def test_forward_limited_history_covers_latest_bars(monkeypatch):
     end = int(datetime.fromisoformat(args['datetime_to']).replace(tzinfo=timezone.utc).timestamp())
     assert len(data['rates']) == 3
     assert data['rates'][-1]['time'] >= end-900
+    assert data['rates'][-1]['time_utc'] == data['rates'][-1]['time']-7200
     assert abs(end-datetime.now(timezone.utc).timestamp()-(7200+900)) < 3
     native._cmd_rates(symbol='XAUUSD', timeframe='M15', count=3)
     assert len([c for c in calls if c[0] == 'get_time_information']) == 1

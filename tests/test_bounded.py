@@ -81,3 +81,10 @@ def test_refusal_counts_explain_zero_orders():
         'blockers': ['mode=guarded: confidence 50 < 62']}]}, t, duration=2, clock=t.clock)
     assert result['refusal_counts'] == {'confidence_below_threshold': 2}
     assert result['executed_entries'] == 0
+
+
+def test_tick_refusals_are_not_lost_in_other_guard():
+    t = Timer()
+    result = run_window(lambda: {'symbols': [{'status': 'refused',
+        'blockers': ['forming_M1_required']}]}, t, duration=2, clock=t.clock)
+    assert result['refusal_counts'] == {'forming_M1_required': 2}

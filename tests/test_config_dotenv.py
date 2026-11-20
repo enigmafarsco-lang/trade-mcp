@@ -1,5 +1,6 @@
 """load_dotenv must not pollute test environments with a local .env file."""
 import os
+
 from trade_mcp.config import load_dotenv
 
 

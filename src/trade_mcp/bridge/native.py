@@ -616,6 +616,18 @@ class NativeBridge:
                     "spread": as_int(find(row, "spread"), 0),
                 }
             )
+        # Keep legacy broker chart timestamps, but give UTC-sensitive consumers an
+        # explicit normalized value. Never subtract the offset from timezone-aware data.
+        explicit_utc = {}
+        for row in rows:
+            raw_time = find(row, "time", "datetime", "date", "timestamp")
+            stamp = to_epoch(raw_time)
+            text = str(raw_time).strip()
+            aware = bool(re.search(r"(?:Z|[+-]\d{2}:?\d{2})$", text))
+            explicit_utc[stamp] = stamp if aware else stamp-self._history_clock[1]
+        for bar in out:
+            bar["time_utc"] = explicit_utc[bar["time"]]
+            bar["time_source"] = "broker_history_clock_normalized"
         out = sorted({bar["time"]: bar for bar in out if bar["time"] > 0}.values(),
                      key=lambda bar: bar["time"])[-bars:]
         if not out:

@@ -21,7 +21,12 @@ def run_window(step, stop, *, duration=300, clock=time.monotonic):
             for entry in entries:
                 for blocker in entry.get('blockers') or []:
                     # Keep only bounded known reason categories, never raw records.
-                    reason = ('confidence_below_threshold' if 'confidence' in str(blocker)
+                    tick_reasons = {'invalid_or_stale_quote', 'forming_M1_required',
+                        'duplicate_or_out_of_order_tick', 'warming_up',
+                        'insufficient_aligned_ticks', 'forming_M1_missing',
+                        'existing_exposure', 'volume_below_minimum',
+                        'rounded_SL_exceeds_budget', 'tick_proposal_refused'}
+                    reason = (str(blocker) if blocker in tick_reasons else 'confidence_below_threshold' if 'confidence' in str(blocker)
                               else 'guarded_risk_warning' if any(s in str(blocker).lower()
                                    for s in ('spiking', 'disagree')) else 'other_guard')
                     refusals[reason] = refusals.get(reason, 0)+1

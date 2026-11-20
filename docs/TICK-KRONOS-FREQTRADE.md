@@ -116,3 +116,35 @@ or Freqtrade model executions. No packages or weights were installed. Real cloud
 checkpoint inference and upstream strategy execution remain unverified without
 provisioned dependencies. Keep those statuses separate from tick strategy tests,
 chart rendering, actual broker fills and actual guardian exits.
+
+## Native clock / refusal diagnostics correction
+
+The native history contract historically preserves broker wall-clock timestamps,
+while quote observations use UTC receipt time. Comparing those directly can
+reject every forming M1 candle. Native bars now additionally provide `time_utc`,
+using the existing broker/UTC clock offset (timezone-aware timestamps are not
+adjusted twice). Legacy `time` is unchanged. Tick momentum uses `time_utc` when
+provided. This is a source-level mismatch; it is NOT proof that every refusal in
+the archived 290-iteration run had this cause. The previous `other_guard` aggregate
+lost that evidence. Individual bounded, whitelisted tick refusal codes are now
+retained instead of collapsed, allowing the actual runtime blocker to be measured.
+
+The current native quote endpoint has `time_source=received`, NOT a verified
+broker tick ID/time. Signals based on these observations are labeled
+`received_quote_samples`; do not call them proof of 3 consecutive broker ticks.
+A true all-tick strategy requires a verified broker tick feed. Polling can miss
+intermediate reversals and is not equivalent to that feed. No time or price is
+invented to satisfy the entry conditions.
+
+Local continuation: deploy after safe preflight; preserve old evidence. Verify
+actual native M1 `time_utc` encloses current quote receipt time. If not, diagnose
+clock source/format before trading; do not disable the candle check. One bounded
+authorized tick window can then report specific refusal counts, actual broker
+fills and per-intent loss policy. If quotes/candles stay stale or conditions fail,
+report the measured code, not a generic claim that the strategy was tested live.
+Do not automatically repeat windows, lower thresholds or manufacture trades.
+
+Kronos/Freqtrade still require an already provisioned isolated cloud environment;
+searching the local filesystem does not provision one. Worker adapters and chart
+support are implemented, not actual upstream inference. No paid cloud compute,
+remote account setup or local weight installation is implied by these docs.

@@ -71,3 +71,22 @@ def test_tick_step_uses_guarded_execution_route(mock_app, monkeypatch):
     assert calls[0]['cfg'].demo_cash_loss_usd == 2
     assert calls[1]['cfg'].demo_cash_loss_usd == 2
     assert calls[0]['volume'] == .02
+
+
+def test_broker_clock_offset_does_not_reject_current_candle():
+    strategy = TickMomentum(2)
+    candle = {'time': 7260, 'time_utc': 60, 'open': 100}
+    for i in range(2):
+        strategy.observe(tick(61000+i*100, 101+i), candle, now=61+i*.1)
+    result = strategy.observe(tick(61200, 103), candle, now=61.2)
+    assert result['action'] == 'buy'
+
+
+def test_received_quotes_are_not_claimed_as_broker_ticks():
+    strategy = TickMomentum(2)
+    candle = {'time': 60, 'open': 100}
+    for i in range(3):
+        quote = {**tick(61000+i*100, 101+i), 'time_source': 'received'}
+        result = strategy.observe(quote, candle, now=61+i*.1)
+    assert result['action'] == 'buy'
+    assert result['evidence_kind'] == 'received_quote_samples'
