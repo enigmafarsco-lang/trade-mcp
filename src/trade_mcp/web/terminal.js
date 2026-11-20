@@ -82,8 +82,10 @@ class Chart {
   const w=rect.width,h=rect.height,dpr=window.devicePixelRatio||1;this.cv.width=Math.round(w*dpr);this.cv.height=Math.round(h*dpr);
   const c=this.cv.getContext('2d');c.scale(dpr,dpr);c.direction='ltr';c.textAlign='left';c.fillStyle='#090e15';c.fillRect(0,0,w,h);c.font='10px monospace';
   const end=this.data.bars.length-this.offset,start=Math.max(0,end-this.count),bars=this.data.bars.slice(start,end);if(!bars.length)return;
+  const kf=this.data.kronos_forecast;
+  const kronosOk=kf?.available&&this.tf==='M1'&&this.offset===0&&this.data.symbol===this.symbol&&Date.now()/1000-kf.forecast_origin>=0&&Date.now()/1000-kf.forecast_origin<=120;
   const f=this.data.trend_forecast;
-  const futurePrices=this.offset===0&&f?.available?f.points.map(p=>p.price).filter(Number.isFinite):[];
+  const futurePrices=kronosOk?kf.candles.flatMap(r=>[r[2],r[3]]):this.offset===0&&f?.available?f.points.map(p=>p.price).filter(Number.isFinite):[];
   const lo=Math.min(...bars.map(b=>b.low),...futurePrices),hi=Math.max(...bars.map(b=>b.high),...futurePrices),pad=(hi-lo||1)*.08;
   const lowerKeys=['rsi','macd','atr','adx','stochastic'].filter(k=>this.selected.has(k)&&this.data.series[k]);
   const plotH=lowerKeys.length?Math.max(140,h-32-lowerKeys.length*45):h-35;
@@ -110,7 +112,7 @@ class Chart {
     :'پیش‌بینی قابل نمایش موجود نیست؛ داده یا ارزیابی کافی نیست';
    c.fillText(reason,8,42);
   }
-  if(forecastFresh){
+  if(forecastFresh&&!kronosOk){
    const left=bars.length*dx,right=w-90,span=right-left;
    if(span>30){
     c.save();c.beginPath();c.rect(left,18,span,plotH-18);c.clip();
@@ -124,6 +126,16 @@ class Chart {
     }
     c.restore();c.fillStyle='#cbd5e1';c.fillText('پیش‌بینی آماری آزمایشی — نه سیگنال سفارش',Math.max(8,left-180),40);
    }
+  }
+  if(kronosOk){
+   const left=bars.length*dx,stepX=(w-90-left)/60;
+   c.save();c.globalAlpha=.65;c.setLineDash([2,2]);
+   kf.candles.forEach((r,i)=>{const x=left+(i+.5)*stepX;
+    c.strokeStyle=c.fillStyle=r[4]>=r[1]?'#22d3ee':'#fb7185';
+    c.beginPath();c.moveTo(x,y(r[2]));c.lineTo(x,y(r[3]));c.stroke();
+    c.strokeRect(x-stepX*.3,Math.min(y(r[1]),y(r[4])),Math.max(1,stepX*.6),Math.max(1,Math.abs(y(r[1])-y(r[4]))));
+    if([14,29,59].includes(i)){c.fillStyle={14:'#22d3ee',29:'#fbbf24',59:'#fb7185'}[i];c.fillText((i+1)+'m',x-10,plotH-3);}
+   });c.restore();c.fillStyle='#fbbf24';c.fillText('Kronos: کندل آیندهٔ تخمینی — نه دادهٔ واقعی',8,55);
   }
   // Real broker positions, not hypothetical orders; never drag-to-trade.
   for(const p of this.data.positions.filter(p=>p.symbol===this.symbol))for(const [field,label,color] of [['price_open','POS '+p.ticket,'#e9b769'],['sl','SL','#ed6678'],['tp','TP','#41c69b']]){const v=p[field];if(!v||v<lo-pad||v>hi+pad)continue;c.strokeStyle=color;c.setLineDash([4,4]);c.beginPath();c.moveTo(0,y(v));c.lineTo(w-85,y(v));c.stroke();c.setLineDash([]);c.fillStyle=color;c.fillText(label+' '+fmt(v),8,y(v)-4);}

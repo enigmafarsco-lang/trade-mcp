@@ -96,13 +96,17 @@ def reserve_entry(mt5, cfg, store):
     inspect_positions(mt5, cfg, store, execute=False)
     if mt5.positions() or mt5.orders():
         raise DemoGuardBlocked('open_position_or_order_blocks_entry')
+    loss_limit = min(LOSS_USD, amount(getattr(cfg, 'demo_cash_loss_usd', LOSS_USD)))
+    if loss_limit <= 0:
+        raise DemoGuardBlocked('invalid_intent_loss_limit')
     marker = 'tmcp:' + uuid.uuid4().hex[:20]
     def change(state):
         if state['latched']:
             raise DemoGuardBlocked('loss_latch_blocks_entry')
         if any(i['status'] != 'closed' for i in state['intents'].values()):
             raise DemoGuardBlocked('unresolved_intent_blocks_entry')
-        state['intents'][marker] = {'status': 'reserved', 'started_at': time.time(), 'position_id': None, 'ownership': ownership}
+        state['intents'][marker] = {'status': 'reserved', 'started_at': time.time(), 'position_id': None, 'ownership': ownership,
+                                   'loss_usd': loss_limit}
     store.cash_guard_update(key, change)
     return key, marker
 
@@ -222,7 +226,10 @@ def inspect_positions(mt5, cfg, store, execute=False, reconcile_existing=False):
         net += amount(p['profit']) + amount(p['swap'])
         row = {'net_usd': net, 'state': intent['status']}
         rows.append(row)
-        if net <= -LOSS_USD or net >= TARGET_USD:
+        cash_loss = amount(intent.get('loss_usd', LOSS_USD))
+        if not 0 < cash_loss <= LOSS_USD:
+            raise DemoGuardBlocked('invalid_intent_loss_limit')
+        if net <= -cash_loss or net >= TARGET_USD:
             if (not execute or not cfg.allow_trading or getattr(cfg, 'paper_trading', False)
                     or not enabled):
                 row['exit_due'] = True
