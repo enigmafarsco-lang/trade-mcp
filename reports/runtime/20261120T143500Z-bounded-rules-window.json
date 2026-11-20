@@ -1,0 +1,66 @@
+{
+  "schema": "trade-mcp/runtime-report",
+  "report_id": "20261120T143500Z-bounded-rules-window",
+  "generated_at": "2026-11-20T15:03:00Z",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "loaded_commit_executed": "d4f687d2c26868a62a1568c6153a03c9566d98fa",
+  "workflow": "fetch/ff-only -> read docs/BOUNDED-RULES-WINDOW.md -> fresh preflight -> start console (trading/policy on, paper off, guardian healthy) -> single run_rules_window (300s, no retry) -> verify stopped/flat -> restore safe (trading/policy off) -> record sanitized report",
+  "execution_authorized_by_report": false,
+  "explicit_user_authorization_session": true,
+  "preflight": {
+    "commit_base_before_ff": "6b8d0afc663e3a33e132ad50cdf0f42f5fa1dd2f",
+    "broker": "DEMO/USD MetaQuotes-Demo, positions=0, orders=0",
+    "durable_guard": "intents_total=1, unresolved=0, latched=false, streak=0",
+    "cost_snapshot_reconciliation": "fresh snapshot present and cost_reconciliation ok (matched_deals>0, snapshot_age_seconds small at check)",
+    "cloud_budget_paid_apis_cycles": "model budget revoked, paid APIs inactive for web backend, scheduler/page cycle stopped",
+    "console_started_for_window": "process-only: ALLOW_TRADING=true, DEMO_CASH_POLICY=true, PAPER_TRADING=false (cost snapshot path set), independent guardian healthy with fresh poll, trading_enabled=true"
+  },
+  "invocation": {
+    "endpoint": "POST /api/agents/{id}",
+    "agent_id": "a76d1cff5b",
+    "agent": "single-symbol XAUUSD, guarded, enabled, max_lot=0.02, max_risk=0.5",
+    "action": "run_rules_window",
+    "duration_seconds": 300,
+    "invoked_once": true,
+    "retry_on_http_timeout": false,
+    "other_entry_calls": false
+  },
+  "window_result": {
+    "http_status": 200,
+    "ok": true,
+    "evaluations": 244,
+    "stopped": false,
+    "duration_limit_seconds": 300,
+    "orders_guaranteed": false,
+    "elapsed_s": 300.0
+  },
+  "outcome": {
+    "agent_runs_in_window": 244,
+    "proposals_created_in_window": 244,
+    "proposal_statuses": {"pending": 244},
+    "proposal_kinds": {"open": 244},
+    "broker_trades_executed": 0,
+    "broker_entries": 0,
+    "errors": 0,
+    "used_llm": false,
+    "refusals_ownership": "No broker order sent; evaluations produced guarded rules decisions that created pending proposals requiring explicit human confirmation (no auto-confirm). No ownership conflict/unresolved intent created. All existing signal/risk/lot/SL/ownership gates preserved; no forced trades.",
+    "decision_sample": "sell (rules, confidence 51) -> proposal pending, note: OpenCode: explicit human confirmation required"
+  },
+  "postflight": {
+    "window_stopped_verified": true,
+    "broker": "DEMO/USD positions=0, orders=0",
+    "durable_guard": "unresolved=0, latched=false, streak=0",
+    "exit_protection_state": "no open position/order; guardian+SL preservation not applicable",
+    "safe_state_restored": "console restarted with ALLOW_TRADING=false, DEMO_CASH_POLICY=false, PAPER_TRADING=false (flat, no orders, no unresolved intents)"
+  },
+  "safety": {
+    "paper_trading": false,
+    "cloud_budget_revoked": true,
+    "paid_apis_inactive": true,
+    "scheduler_page_cycle_stopped": true,
+    "no_second_window": true,
+    "no_retry_on_timeout": true,
+    "no_forced_trades": true,
+    "secrets_not_committed": true
+  }
+}
