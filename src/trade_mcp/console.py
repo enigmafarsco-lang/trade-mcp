@@ -903,7 +903,7 @@ class Handler(BaseHTTPRequestHandler):
                 "model_backend": "opencode-session" if cfg.web_model_backend == "opencode-session" else "openai-compatible", "model_source": "web",
                 "model_configured": web_llm.configured,
                 "model_configuration_issue": (None if web_llm.configured else
-                    "OpenCode session requires OPENCODE_URL and an allowlisted OPENCODE_MODEL; LLM_* does not configure this backend."
+                    "OpenCode session requires a discoverable verified desktop server and an allowlisted OPENCODE_MODEL; LLM_* does not configure this backend."
                     if cfg.web_model_backend == "opencode-session" else
                     "Direct backend requires LLM_BASE_URL and LLM_MODEL; use explicit OpenCode connection for session mode."),
                 "model": web_llm.model,

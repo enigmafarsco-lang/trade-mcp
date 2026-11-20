@@ -13,12 +13,24 @@ ADAPTER_REVISION = "session-default-alias-v3"
 class WebOpenCodeClient(LLMClient):
     @classmethod
     def from_web_config(cls, cfg, store, request_kind):
-        client = cls(base_url=cfg.opencode_url, model=cfg.opencode_model,
+        url = cfg.opencode_url
+        password = cfg.opencode_password
+        model = cfg.opencode_model
+        # Supported local persistence: keep backend/model configured without
+        # hard-coding the desktop's ephemeral loopback port. Rediscover the
+        # private verified desktop registration when URL is not set.
+        if not url and model in FREE_MODELS:
+            from .opencode import discover_desktop
+            try:
+                url, password = discover_desktop()
+                cfg.opencode_url, cfg.opencode_password = url, password
+            except RuntimeError:
+                url, password = '', ''
+        client = cls(base_url=url, model=model,
                      mode='web', store=store, request_kind=request_kind,
                      usage_convention='unknown')
         client.web_variant = cfg.opencode_variant
-        client.oc = OpenCodeClient(cfg.opencode_url, cfg.opencode_model,
-                                  cfg.opencode_password, timeout=60, variant=cfg.opencode_variant)
+        client.oc = OpenCodeClient(url, model, password, timeout=60, variant=cfg.opencode_variant)
         return client
 
     @property

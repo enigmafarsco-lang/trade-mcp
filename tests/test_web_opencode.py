@@ -218,6 +218,46 @@ def test_failed_probe_also_identifies_loaded_adapter(mock_app, monkeypatch):
     assert result['adapter_revision'] == 'session-default-alias-v3'
 
 
+def test_opencode_session_rediscovery_when_url_missing(mock_app, monkeypatch):
+    import trade_mcp.opencode as opencode_mod
+    calls = {'discover': 0}
+    def discover():
+        calls['discover'] += 1
+        return 'http://127.0.0.1:49999', 'secret'
+    monkeypatch.setattr(opencode_mod, 'discover_desktop', discover)
+    cfg = mock_app.cfg.with_overrides(
+        web_model_backend='opencode-session',
+        opencode_url='',
+        opencode_model='opencode/iceman-free',
+        opencode_password='',
+    )
+    c = LLMClient.from_config(cfg, mode='web', store=mock_app.store)
+    assert calls['discover'] == 1
+    assert c.configured
+    assert c.base_url == 'http://127.0.0.1:49999'
+    assert cfg.opencode_url == 'http://127.0.0.1:49999'
+    assert c.oc.password == 'secret'
+    assert c.oc.model == 'opencode/iceman-free'
+    assert c.provider == 'opencode-session'
+
+
+def test_opencode_session_rediscovery_failure_is_fail_closed(mock_app, monkeypatch):
+    import trade_mcp.opencode as opencode_mod
+    def discover():
+        raise RuntimeError('no desktop')
+    monkeypatch.setattr(opencode_mod, 'discover_desktop', discover)
+    cfg = mock_app.cfg.with_overrides(
+        web_model_backend='opencode-session',
+        opencode_url='',
+        opencode_model='opencode/iceman-free',
+        opencode_password='',
+    )
+    c = LLMClient.from_config(cfg, mode='web', store=mock_app.store)
+    assert not c.configured
+    assert c.base_url == ''
+    assert c.provider == 'opencode-session'
+
+
 @pytest.mark.parametrize('configured,returned,accepted', [
     ('', 'default', True), ('', '', True), ('', None, True),
     ('default', '', True), ('default', 'default', True),
