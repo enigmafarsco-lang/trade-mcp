@@ -192,6 +192,8 @@ el('desk-compare').onclick=async()=>{
  if(!active)return;const chart=active,box=el('desk-candles');box.textContent='در حال بازخوانی مستقیم…';
  try{const d=await get('/api/chart?'+new URLSearchParams({symbol:chart.symbol,tf:chart.tf,selected:[...chart.selected].join(',')||'ema',full:'1'}));if(chart.symbol!==d.symbol||chart.tf!==d.timeframe)return;
  chart.data={...chart.data,...d};chart.draw();box.replaceChildren();box.append(make('p',d.symbol+' / '+d.timeframe+' • آخرین ردیف ممکن است کندل در حال تشکیل باشد.'));
+ const scenario=d.hourly_scenarios;
+ if(scenario?.available){box.append(make('p',scenario.warning));const st=make('table');const sh=make('tr');for(const label of ['دقیقهٔ آینده','سناریوی پایین','مرکز بدون روند','سناریوی بالا'])sh.append(make('th',label));st.append(sh);for(const p of scenario.points){const row=make('tr');for(const v of [p.minutes_ahead,p.lower,p.center,p.upper])row.append(make('td',fmt(v)));st.append(row);}box.append(st);}else{box.append(make('p','سناریوی یک‌ساعته در دسترس نیست؛ دادهٔ بستهٔ تازه در M1 تا H1 لازم است.'));}
  const t=make('table'),head=make('tr');for(const title of ['زمان فید','Open','High','Low','Close','Tick volume'])head.append(make('th',title));t.append(head);
  for(const b of d.bars.slice(-5)){const tr=make('tr');for(const v of [new Date(b.time*1000).toISOString().slice(0,19).replace('T',' '),b.open,b.high,b.low,b.close,b.tick_volume])tr.append(make('td',fmt(v)));t.append(tr);}box.append(t);
  }catch(e){box.textContent=e.message;}
