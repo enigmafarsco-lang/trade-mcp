@@ -40,3 +40,30 @@ def test_normal_run_remains_web():
     h = handler(['XAUUSD'])
     Handler._agent_action(h, 'test', {'action': 'run'})
     h.state.agent_engine.assert_called_once_with('agent_run')
+
+
+def test_window_refuses_disabled_execution():
+    h = handler(['XAUUSD'])
+    h.state.rules_window_lock = threading.Lock()
+    h.state.rules_window_stop = threading.Event()
+    h.state.cfg = SimpleNamespace(trading_enabled=False, demo_cash_policy=False)
+    with patch('trade_mcp.bounded.run_window', side_effect=lambda step, *a, **kw: step()):
+        import pytest
+        with pytest.raises(ValueError, match='demo_execution_not_enabled'):
+            Handler._agent_action(h, 'test', {'action': 'run_rules_window'})
+    assert not h.state.rules_window_lock.locked()
+
+
+def test_window_rejects_parallel_window():
+    h = handler(['XAUUSD'])
+    h.state.rules_window_lock = threading.Lock()
+    h.state.rules_window_lock.acquire()
+    result = Handler._agent_action(h, 'test', {'action': 'run_rules_window'})
+    assert result['error'] == 'rules_window_already_running'
+
+
+def test_stop_window_leaves_guardian_untouched():
+    h = handler(['XAUUSD'])
+    h.state.rules_window_stop = threading.Event()
+    assert Handler._agent_action(h, 'test', {'action': 'stop_rules_window'})['ok']
+    assert h.state.rules_window_stop.is_set()

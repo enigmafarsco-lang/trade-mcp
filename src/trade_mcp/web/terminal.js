@@ -100,7 +100,7 @@ class Chart {
   // Future scenario overlay (15/30/45/60m): dashed, illustrative only. No fabricated candles/probabilities/signals.
   const scenario=this.data.hourly_scenarios;
   const tfStep={M1:60,M5:300,M15:900,M30:1800,H1:3600,H4:14400,D1:86400,W1:604800}[this.tf]||900;
-  const scenarioOk=scenario&&scenario.available===true&&Array.isArray(scenario.points)&&scenario.points.length===4
+  const scenarioOk=localStorage.getItem('trade-mcp-show-volatility-scenarios')==='true'&&scenario&&scenario.available===true&&Array.isArray(scenario.points)&&scenario.points.length===4
     &&this.data.symbol===this.symbol&&this.data.timeframe===this.tf
     &&this.offset===0&&typeof scenario.last_closed_bar_time==='number'&&Math.abs((bars.at(-1).time||0)-scenario.last_closed_bar_time)<=tfStep*2;
   if(scenarioOk){

@@ -62,6 +62,8 @@ class ConsoleState:
         self.app = app
         self.lock = threading.Lock()
         self.scheduler = _Scheduler(self, self.lock)
+        self.rules_window_lock = threading.Lock()
+        self.rules_window_stop = threading.Event()
         self.quotes = QuoteFeed(app.mt5, self.lock)
         self.chart_cache: dict[tuple, tuple] = {}
         from .cycle import PageCycle
@@ -978,6 +980,43 @@ class Handler(BaseHTTPRequestHandler):
     def _agent_action(self, agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         action = str(payload.get("action") or "run").lower()
         store = self.state.store
+        if action == "stop_rules_window":
+            self.state.rules_window_stop.set()
+            return {"ok": True, "message": "Entry evaluations stopping; guardian unchanged"}
+        if action == "run_rules_window":
+            from .bounded import run_window
+            duration = payload.get("duration_seconds", 300)
+            if type(duration) is not int or not 1 <= duration <= 300:
+                return {"ok": False, "error": "invalid_duration"}
+            if not self.state.rules_window_lock.acquire(blocking=False):
+                return {"ok": False, "error": "rules_window_already_running"}
+            try:
+                self.state.rules_window_stop.clear()
+                def step():
+                    with self.state.lock:
+                        cfg = self.state.cfg
+                        if not cfg.trading_enabled or not cfg.demo_cash_policy:
+                            raise ValueError("demo_execution_not_enabled")
+                        if self.state.scheduler.running or self.state.page_cycle.status().get("active"):
+                            raise ValueError("stop_other_entry_cycles")
+                        health = self.state.demo_guardian.health()
+                        if not health.get("running") or not health.get("ok"):
+                            raise ValueError("guardian_not_healthy")
+                        checked = health.get("last_successful_reconciliation_at")
+                        if checked is None or not 0 <= time.time()-checked <= 10:
+                            raise ValueError("guardian_poll_stale")
+                        from .demo_guard import account_key
+                        account_key(self.state.app.mt5.account_info(fresh=True))
+                        selected = store.get_agent(agent_id)
+                        if not selected or not selected.get("enabled") or len(selected.get("symbols") or []) != 1:
+                            raise ValueError("enabled_single_symbol_agent_required")
+                        if self.state.app.mt5.positions() or self.state.app.mt5.orders():
+                            return  # Existing exposure: no new entry, guardian remains independent.
+                        AgentEngine(cfg=cfg, mt5=self.state.app.mt5, store=store,
+                                    llm=LLMClient(mode="auto")).run({**selected, "mode": "guarded"})
+                return run_window(step, self.state.rules_window_stop, duration=duration)
+            finally:
+                self.state.rules_window_lock.release()
         if action == "delete":
             store.delete_agent(agent_id)
             return {"ok": True}
