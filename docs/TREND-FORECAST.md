@@ -41,3 +41,17 @@ confidence 50 below guarded threshold 62. That is not an execution-confirmation
 bug. The bounded endpoint now includes categorized refusal_counts; it does not
 lower thresholds or manufacture signals. Calling it more frequently cannot make
 unchanged closed-bar evidence into an independent new opportunity.
+
+## Failed-skill suppression
+
+The deployed incident showed MAE worse than no-change at all horizons and
+strict directional hit rates below 0.5. It must NOT be called a useful forecast.
+The API now withholds drawable points unless every horizon beats the no-change
+MAE and exceeds 0.5 directional hit rate on its small historical diagnostic.
+Failure returns `failed_historical_baseline_check` and diagnostics only. Passing
+this screen is not out-of-sample validation: selecting which forecasts to show
+using historical errors introduces selection bias. Profitability is unproven.
+The chart shows an explicit Persian unavailable/failure notice instead of lines.
+The old volatility table is removed from the comparison UI (API compatibility
+is retained). This does not implement an accurate nonlinear hourly price path.
+No intermediate future candles are invented to make the display look realistic.

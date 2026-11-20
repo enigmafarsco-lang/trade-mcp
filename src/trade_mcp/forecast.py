@@ -93,6 +93,12 @@ def trend_forecast(bars, timeframe='M15', *, now=None):
                            'direction_accuracy': sum(hits)/20})
     except (ValueError, OverflowError):
         return {**base, 'reason': 'unstable_extrapolation'}
+    # A failed historical baseline comparison must not look like a usable forecast.
+    # Passing this small diagnostic is still NOT trading validation.
+    if any(p['mae'] >= p['no_change_mae'] or p['direction_accuracy'] <= .5 for p in points):
+        return {**base, 'reason': 'failed_historical_baseline_check',
+                'diagnostics': [{k: p[k] for k in ('minutes_ahead', 'evaluation_samples',
+                    'mae', 'no_change_mae', 'direction_accuracy')} for p in points]}
     return {**base, 'available': True, 'as_of': rows[-1][0]+step,
             'last_closed_bar_time': rows[-1][0], 'anchor_price': closes[-1],
             'points': points, 'warning': 'پیش‌بینی آماری آزمایشی؛ خطا دارد و سیگنال سفارش نیست'}

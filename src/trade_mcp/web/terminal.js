@@ -103,6 +103,13 @@ class Chart {
   const forecast=this.data.trend_forecast;
   const forecastFresh=forecast?.available&&this.offset===0&&this.data.symbol===this.symbol&&this.data.timeframe===this.tf
    &&Math.abs(Date.now()/1000-forecast.as_of)<({M1:180,M5:900,M15:2700}[this.tf]||0);
+  if(!forecastFresh){
+   c.fillStyle='#fbbf24';
+   const reason=forecast?.reason==='failed_historical_baseline_check'
+    ?'پیش‌بینی پنهان شد: خطای تاریخی/جهت بهتر از مبنا نیست'
+    :'پیش‌بینی قابل نمایش موجود نیست؛ داده یا ارزیابی کافی نیست';
+   c.fillText(reason,8,42);
+  }
   if(forecastFresh){
    const left=bars.length*dx,right=w-90,span=right-left;
    if(span>30){
@@ -215,9 +222,6 @@ el('desk-compare').onclick=async()=>{
  chart.data={...chart.data,...d};chart.draw();box.replaceChildren();box.append(make('p',d.symbol+' / '+d.timeframe+' • آخرین ردیف ممکن است کندل در حال تشکیل باشد.'));
  const forecast=d.trend_forecast;
  if(forecast?.available){box.append(make('p',forecast.warning+' | روش: OLS روی ۳۲ کندل بسته، بدون مدل زبانی'));for(const p of forecast.points)box.append(make('p',p.minutes_ahead+' دقیقه: '+fmt(p.price)+' | MAE: '+fmt(p.mae)+' | MAE بدون تغییر: '+fmt(p.no_change_mae)+' | آزمون گذشته: '+p.evaluation_samples));}else{box.append(make('p','پیش‌بینی در دسترس نیست: '+(forecast?.reason||'unknown')));}
- const scenario=d.hourly_scenarios;
- const scenarioLabel='سناریوی نوسان یک‌ساعته (غیرکالیبره) — نه پیش‌بینی قابل‌اتکا و نه سیگنال خرید/فروش';
- if(scenario?.available){box.append(make('p',scenarioLabel));box.append(make('p',scenario.warning||''));const st=make('table');const sh=make('tr');for(const label of ['دقیقهٔ آینده','سناریوی پایین','مرکز بدون روند','سناریوی بالا'])sh.append(make('th',label));st.append(sh);for(const p of scenario.points){const row=make('tr');for(const v of [p.minutes_ahead,p.lower,p.center,p.upper])row.append(make('td',fmt(v)));st.append(row);}box.append(st);}else{box.append(make('p','سناریوی نوسان یک‌ساعته (غیرکالیبره) در دسترس نیست؛ دادهٔ بستهٔ تازه در M1 تا H1 لازم است.'));}
  const t=make('table'),head=make('tr');for(const title of ['زمان فید','Open','High','Low','Close','Tick volume'])head.append(make('th',title));t.append(head);
  for(const b of d.bars.slice(-5)){const tr=make('tr');for(const v of [new Date(b.time*1000).toISOString().slice(0,19).replace('T',' '),b.open,b.high,b.low,b.close,b.tick_volume])tr.append(make('td',fmt(v)));t.append(tr);}box.append(t);
  }catch(e){box.textContent=e.message;}

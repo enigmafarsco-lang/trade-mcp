@@ -65,3 +65,15 @@ def test_trend_missing_stale_gap():
     assert trend_forecast(rows, now=100000)['reason'] == 'stale_closed_bars'
     rows.pop(-5)
     assert trend_forecast(rows, now=90000)['reason'] == 'non_contiguous_history'
+
+
+def test_no_skill_forecast_not_drawable():
+    from trade_mcp.forecast import trend_forecast
+    rows = [dict(time=i*900, open=100, high=101, low=99, close=100)
+            for i in range(100)]
+    result = trend_forecast(rows, now=90000)
+    assert not result['available']
+    assert result['reason'] == 'failed_historical_baseline_check'
+    assert 'points' not in result
+    assert len(result['diagnostics']) == 3
+    assert not result['execution_eligible']
