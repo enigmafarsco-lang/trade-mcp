@@ -152,3 +152,16 @@ Staged content for this commit was reviewed line by line: only the JSON report, 
 report and the manifest are staged. `logs/` (including this session's archive directory) is
 git-ignored; no ignored file was force-added. No credentials, tokens, environment values,
 account identifiers or raw provider payloads appear in any staged file.
+
+## Post-review correction (no new runtime observation)
+
+The companion JSON originally marked `guardian` and `position_lifecycle` as
+`pass`. These have been corrected to `not_run`: a running guardian thread is
+not evidence of a successful owned-position exit, and no position lifecycle
+was exercised in this session. The historical lifecycle counters are retained
+as reported diagnostics, not live execution acceptance.
+
+This correction changes report interpretation only. It does not alter the
+original measurement timestamp, loaded commit, counts, local evidence or runtime
+settings. The archived session and its process-only trading flags must not be
+interpreted as current observations or continuing entry authorization.
