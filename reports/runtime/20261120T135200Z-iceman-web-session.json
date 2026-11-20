@@ -1,0 +1,74 @@
+{
+  "schema": "trade-mcp/runtime-report",
+  "report_id": "20261120T135200Z-iceman-web-session",
+  "generated_at": "2026-11-20T13:52:00Z",
+  "commit_base": "c900999065c74220da4220a1864c1953ec8d5671",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "workflow": "use current coding conversation model (Iceman) for trade-mcp web analysis if installed API supports: read actual session model, verify availability/pricing, configure opencode-session backend, non-generation session-health validation; keep trading/budget/cycles safe",
+  "execution_authorized_by_report": false,
+  "git": {
+    "fetched": false,
+    "head_before_commit": "c900999065c74220da4220a1864c1953ec8d5671",
+    "preserved_commits": ["6053277d1ca04b94c718c3a7aa86677c788c98d6", "734b8d8c5c32f9a1c4b5ba833546174b594ade4e", "c900999065c74220da4220a1864c1953ec8d5671"]
+  },
+  "current_coding_session_model": {
+    "providerID": "opencode",
+    "modelID": "iceman-free",
+    "exact_id": "opencode/iceman-free",
+    "source": "actual OpenCode coding session model (session metadata) and harness model context; not guessed and coding conversation not switched"
+  },
+  "installed_opencode_verification": {
+    "server_healthy": true,
+    "api": "v2",
+    "available_via_installed_api": true,
+    "provider_identity": {"id": "opencode", "name": "Personal / OpenCode"},
+    "installed_model_id": "iceman-free",
+    "cost": [{"input": 0, "output": 0, "cache": {"read": 0, "write": 0}}],
+    "separate_reasoning_price_field_listed": false,
+    "explicit_zero_cost_input_output": true,
+    "pricing_missing": false,
+    "in_existing_free_models_allowlist": true
+  },
+  "adapter_changes": {
+    "source_tests_docs_changed": false,
+    "reason": "opencode/iceman-free already supported by existing adapter/allowlist and validated as explicitly zero-cost; no narrow compatibility fix required"
+  },
+  "pre_configuration_checks": {
+    "broker_demo_usd_flat": true,
+    "positions": 0,
+    "orders": 0,
+    "unresolved_intents": 0,
+    "latched": false
+  },
+  "configuration": {
+    "method": "POST /api/model-connect-opencode (consent_connect, in-memory discovery/config; not persisted)",
+    "backend": "opencode-session",
+    "effective_model": "opencode/iceman-free",
+    "model_configured": true,
+    "direct_starimg_active": false,
+    "trading_enabled": false,
+    "paper_trading": false,
+    "demo_cash_policy": false,
+    "budget_state": "revoked",
+    "budget_allowed": false,
+    "entry_cycles_stopped": true,
+    "console_process": "existing console pid 133776 (no process restart required)"
+  },
+  "session_health_validation": {
+    "non_generation": true,
+    "endpoint": "POST /api/model-session-check",
+    "ok": true,
+    "adapter_revision": "session-default-alias-v3",
+    "transport": {
+      "stage": "session_validation",
+      "generation_submitted": false,
+      "permissions_acknowledged": true,
+      "model_acknowledged": true
+    },
+    "generation_requested": false,
+    "inference_performed": false,
+    "paid_request": false,
+    "budget_activation": false,
+    "orders_created": 0
+  }
+}
