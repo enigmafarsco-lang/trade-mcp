@@ -8,6 +8,7 @@ trigger.
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any
 
@@ -180,6 +181,7 @@ def propose_open(
     payload = {
         "kind": "open",
         "demo_cash_policy": cash_policy,
+        "cash_loss_usd": min(10.0, float(cfg.demo_cash_loss_usd)) if cash_policy else None,
         "cash_account_key": account_key(account) if cash_policy else None,
         "symbol": symbol,
         "side": side,
@@ -457,11 +459,16 @@ def confirm(
                         "blockers": _blockers(issues), "message": "Current conditions no longer pass validation; request a fresh preview."}
             cash_key = marker = None
             if payload.get('demo_cash_policy'):
+                cash_limit = min(10.0, float(cfg.demo_cash_loss_usd),
+                                 float(payload.get('cash_loss_usd', 10.0)))
+                planned_loss = loss_per_lot(info, abs(current-float(payload.get('sl') or 0)))*float(payload['volume'])
+                if not math.isfinite(cash_limit) or cash_limit <= 0 or not math.isfinite(planned_loss) or planned_loss > cash_limit+1e-8:
+                    return {'ok': False, 'error': 'cash_loss_limit_exceeded', 'executed': False}
                 if not cfg.demo_cash_policy:
                     return {'ok':False,'error':'cash_policy_disabled'}
                 from .demo_guard import reserve_entry
                 try:
-                    cash_key, marker = reserve_entry(mt5, cfg, store)
+                    cash_key, marker = reserve_entry(mt5, cfg.with_overrides(demo_cash_loss_usd=cash_limit), store)
                 except (ValueError, KeyError, TypeError, BridgeError):
                     return {'ok':False,'error':'cash_policy_entry_blocked','executed':False}
             if not store.claim_proposal(proposal_id):

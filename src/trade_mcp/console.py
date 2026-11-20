@@ -36,6 +36,7 @@ from .bridge.base import BridgeError
 from .config import Config
 from .execution import confirm, propose_manage, propose_open
 from .forecast import hourly_scenarios, trend_forecast
+from .kronos_artifact import load_forecast
 from .live import QuoteFeed
 from .manual import automatic_stop
 from .model_usage import (
@@ -299,6 +300,7 @@ class Handler(BaseHTTPRequestHandler):
                                    "bars": bars, "series": indicators,
                                    "hourly_scenarios": hourly_scenarios(bars, tf),
                                    "trend_forecast": trend_forecast(bars, tf),
+                                   "kronos_forecast": load_forecast(self.state.cfg.kronos_forecast_path, symbol, tf, now=time.time()),
                                    "received_at_ms": int(time.time()*1000)})
             if path == "/api/order-ticket":
                 with self.state.lock:
@@ -339,6 +341,7 @@ class Handler(BaseHTTPRequestHandler):
                               "bars": bars, "series": indicators,
                                    "hourly_scenarios": hourly_scenarios(bars, tf),
                                    "trend_forecast": trend_forecast(bars, tf),
+                                   "kronos_forecast": load_forecast(self.state.cfg.kronos_forecast_path, symbol, tf, now=time.time()),
                               "quote": mt5.tick(symbol), "spec": mt5.symbol_info(symbol),
                               "account": mt5.account_info(fresh=True),
                               "positions": mt5.positions(), "orders": mt5.orders(),
@@ -985,7 +988,7 @@ class Handler(BaseHTTPRequestHandler):
         if action == "stop_rules_window":
             self.state.rules_window_stop.set()
             return {"ok": True, "message": "Entry evaluations stopping; guardian unchanged"}
-        if action == "run_rules_window":
+        if action in {"run_rules_window", "run_tick_window"}:
             from .bounded import run_window
             duration = payload.get("duration_seconds", 300)
             if type(duration) is not int or not 1 <= duration <= 300:
@@ -994,6 +997,8 @@ class Handler(BaseHTTPRequestHandler):
                 return {"ok": False, "error": "rules_window_already_running"}
             try:
                 self.state.rules_window_stop.clear()
+                from .tick_momentum import TickMomentum, tick_step
+                tick_strategy = TickMomentum(payload.get("consecutive_ticks", 3)) if action == "run_tick_window" else None
                 def step():
                     with self.state.lock:
                         cfg = self.state.cfg
@@ -1014,6 +1019,8 @@ class Handler(BaseHTTPRequestHandler):
                             raise ValueError("enabled_single_symbol_agent_required")
                         if self.state.app.mt5.positions() or self.state.app.mt5.orders():
                             return  # Existing exposure: no new entry, guardian remains independent.
+                        if tick_strategy is not None:
+                            return tick_step(self.state.app, selected, tick_strategy)
                         return AgentEngine(cfg=cfg, mt5=self.state.app.mt5, store=store,
                                            llm=LLMClient(mode="rules")).run({**selected, "mode": "guarded"})
                 return run_window(step, self.state.rules_window_stop, duration=duration)

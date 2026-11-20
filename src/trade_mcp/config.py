@@ -96,12 +96,14 @@ class Config:
     # local console app + built-in agent
     console_host: str = "127.0.0.1"
     console_port: int = 8790
+    demo_cash_loss_usd: float = 10.0  # per-entry override; persisted in ownership intent
     opencode_url: str = ""
     opencode_model: str = ""
     opencode_variant: str = ""
     opencode_free_fallback: bool = False
     opencode_password: str = field(default="", repr=False)
     research_python: str = ""
+    kronos_forecast_path: str = ""
     web_model_backend: str = "direct"
     llm_base_url: str = ""
     llm_api_key: str = field(default="", repr=False)
@@ -162,6 +164,7 @@ class Config:
             console_port=_env_int("CONSOLE_PORT", 8790),
             opencode_url=(_env("OPENCODE_URL") or "").strip(),
             opencode_model=(_env("OPENCODE_MODEL") or "").strip(),
+            kronos_forecast_path=(_env("KRONOS_FORECAST_PATH") or "").strip(),
             opencode_variant=(_env("OPENCODE_VARIANT") or "").strip(),
             opencode_free_fallback=_env_bool("OPENCODE_FREE_FALLBACK", False),
             opencode_password=(_env("OPENCODE_PASSWORD") or os.environ.get("OPENCODE_PASSWORD") or os.environ.get("OPENCODE_SERVER_PASSWORD", "")),

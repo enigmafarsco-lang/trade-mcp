@@ -220,3 +220,18 @@ def test_paper_kill_switch_suppresses_direct_guardian_close(mock_app):
     result = inspect_positions(broker, cfg, mock_app.store, execute=True)
     assert result['positions'][0]['exit_due']
     assert calls == []
+
+
+def test_tick_loss_limit_persists_in_intent_and_survives_default_guardian(mock_app):
+    broker, account, positions, deals, calls = fixture_broker()
+    cfg = mock_app.cfg.with_overrides(demo_cash_policy=True, allow_trading=True,
+                                      demo_cash_loss_usd=2)
+    key, marker = reserve_entry(broker, cfg, mock_app.store)
+    assert state_for(mock_app.store, key)['intents'][marker]['loss_usd'] == 2
+    own(mock_app.store, account, marker, 10)
+    mock_app.store.cash_guard_update(key, lambda state: state['intents'][marker].update(loss_usd=2))
+    positions.append({'ticket': 10, 'magic': MAGIC, 'comment': marker,
+                      'sl': 90, 'profit': -2.1, 'swap': 0})
+    deals.append({**deal(1, 10, 'in'), 'magic': MAGIC, 'comment': marker})
+    inspect_positions(broker, cfg.with_overrides(demo_cash_loss_usd=10), mock_app.store, execute=True)
+    assert calls == [10]
