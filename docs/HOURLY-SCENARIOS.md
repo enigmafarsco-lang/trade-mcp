@@ -31,3 +31,10 @@ if there are no positions/orders/unresolved intents; otherwise do not interrupt
 the guardian. Keep cloud budget revoked and entry cycles stopped. Validate
 `hourly_scenarios` with one read-only chart request and inspect the terminal's
 comparison panel. Do not claim an actual order/exit test from this check.
+
+## Horizon colors
+
+Future horizon markers/ranges are cyan (15m), amber (30m), violet (45m) and
+rose (60m). The separate future area maps elapsed scenario minutes across the
+available space (not historical candle spacing); each marker is labeled.
+These are volatility scenarios, not calibrated price predictions.

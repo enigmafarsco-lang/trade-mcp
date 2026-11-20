@@ -108,8 +108,8 @@ class Chart {
    const lastX=(bars.length-0.5)*dx;
    const futureEnd=Math.max(0,w-85-lastX);
    if(futureEnd>8){
-    const pxPerSec=dx/tfStep;
-    const mapTime=t=>lastX+Math.max(0,(t-lastBar.time)*pxPerSec);
+    // Dedicated horizon area: all four horizons fit; labels show elapsed minutes.
+    const mapTime=t=>lastX+Math.max(0,Math.min(1,(t-scenario.as_of)/3600))*(futureEnd-8);
     const pts=scenario.points.map(p=>({m:p.minutes_ahead,x:mapTime(p.time),lo:p.lower,mid:p.center,hi:p.upper}))
       .filter(p=>Number.isFinite(p.x)&&Number.isFinite(p.lo)&&Number.isFinite(p.hi));
     const yClip=v=>Math.max(18,Math.min(plotH-2,y(v)));
@@ -122,8 +122,11 @@ class Chart {
     c.strokeStyle='rgba(147,197,253,.75)';c.setLineDash([4,4]);
     c.beginPath();c.moveTo(lastX,yClip(lastClose));for(const p of pts)c.lineTo(Math.min(w-86,p.x),yClip(p.mid));c.stroke();
     // markers + labels
-    c.fillStyle='rgba(147,197,253,.9)';c.font='9px sans-serif';
+    const horizonColors={15:'#22d3ee',30:'#fbbf24',45:'#a78bfa',60:'#fb7185'};
+    c.font='9px sans-serif';
     for(const p of pts){const x=Math.min(w-86,p.x);if(x<=lastX+2)continue;
+     c.fillStyle=horizonColors[p.m]||'#94a3b8';c.strokeStyle=c.fillStyle;
+     c.setLineDash([3,3]);c.beginPath();c.moveTo(x,yClip(p.lo));c.lineTo(x,yClip(p.hi));c.stroke();
      for(const val of [p.lo,p.mid,p.hi]){const yy=yClip(val);c.beginPath();c.arc(x,yy,2,0,Math.PI*2);c.fill();}
      c.fillText(p.m+"'",x-6,18+10);
     }
