@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -63,6 +64,12 @@ def _env_list(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
 
 def load_dotenv(path: str | os.PathLike[str] = ".env") -> None:
     """Minimal .env loader (no dependency). Existing env vars win."""
+    # Keep the test suite hermetic when a local .env is present; runtime/CLI
+    # environments can still opt out of .env loading explicitly if needed.
+    if os.environ.get("TRADE_MCP_SKIP_DOTENV") or (
+        "pytest" in sys.modules or os.environ.get("PYTEST_CURRENT_TEST")
+    ):
+        return
     p = Path(path).expanduser()
     if not p.is_file():
         return
