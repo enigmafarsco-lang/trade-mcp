@@ -1,0 +1,83 @@
+{
+  "schema": "trade-mcp/runtime-report",
+  "report_id": "20261120T154500Z-tick-window-kronos-freqtrade",
+  "generated_at": "2026-11-20T16:56:30Z",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "loaded_commit_executed": "1b2fa59b3967853e472001e19c8db60d55306655",
+  "workflow": "fetch/ff through 9635e19 -> read docs/TICK-KRONOS-FREQTRADE.md -> tests -> fresh complete DEMO/USD preflight+guardian checks -> inspect cloud deps (Kronos/Freqtrade) -> enable demo execution after preflight -> one run_tick_window -> postflight/safe restore -> sanitized report",
+  "execution_authorized_by_report": false,
+  "explicit_user_authorization_session": true,
+  "tests": {
+    "pytest_q": "pass (full suite, skips as applicable)"
+  },
+  "preflight": {
+    "broker": "DEMO/USD MetaQuotes-Demo, positions=0, orders=0",
+    "durable_guard": "intents_total=1, unresolved=0, latched=false, streak=0",
+    "cost_snapshot_reconciliation": "fresh v2 source present, cost_reconciliation ok",
+    "guardian": "independent guardian healthy with fresh poll (ok/enabled/running, no blocker, unresolved=0)",
+    "cloud_budget_cycles": "model budget revoked, page cycle/scheduler stopped, other entry cycles stopped",
+    "console_for_window": "process-only demo execution enabled after preflight (ALLOW_TRADING=true, DEMO_CASH_POLICY=true, PAPER_TRADING=false)"
+  },
+  "kronos_freqtrade_cloud_dependencies": {
+    "already_available_cloud_dependencies_inspected": true,
+    "provisioned_cloud_worker_available": false,
+    "kronos_forecast_path_configured": false,
+    "kronos_repo_or_checkpoint_dirs_found_locally": 0,
+    "exact_dependency": "No provisioned isolated cloud worker with pinned Kronos checkout + tokenizer/checkpoint directories and/or verified Strategy001 cloud research environment available locally; no TRADE_MCP_KRONOS_FORECAST_PATH artifact/output.",
+    "notes": "No local weight download/package install performed; no fabricated results. Adapter tests are not actual upstream Kronos/Freqtrade inference/execution. Tick-strategy work continued independently."
+  },
+  "tick_window_invocation": {
+    "endpoint": "POST /api/agents/a76d1cff5b",
+    "agent_id": "a76d1cff5b",
+    "agent": "verified enabled single-symbol XAUUSD (اسکالپ طلا), max_lot=0.02, max_risk=0.5",
+    "action": "run_tick_window",
+    "duration_seconds": 300,
+    "consecutive_ticks": 3,
+    "invoked_once": true,
+    "retry_or_second_window": false,
+    "used_run_rules_window": false,
+    "other_entry_calls": false
+  },
+  "window_result": {
+    "http_status": 200,
+    "ok": true,
+    "evaluations": 290,
+    "stopped": false,
+    "duration_limit_seconds": 300,
+    "orders_guaranteed": false,
+    "executed_entries": 0,
+    "pending_entries": 0,
+    "halt_reason": null,
+    "refusal_counts": {"other_guard": 290},
+    "elapsed_s": 300.0
+  },
+  "outcome": {
+    "actual_broker_fills": 0,
+    "broker_trades_executed_in_window": 0,
+    "proposals_created_in_window": 0,
+    "positions_after": 0,
+    "orders_after": 0,
+    "ownership": "No new owned position/intent created; existing durable intent unchanged (closed, prior ownership record). No ownership conflict/unresolved intent.",
+    "persisted_usd2_loss_policy": "No new intent created by this run; USD2 loss-cap policy not newly persisted (no executed entry). Existing intent remains legacy/closed as previously recorded.",
+    "exits": "None in window (no open position/entry).",
+    "refusals_note": "290 evaluations refused (categorized other_guard); tick-momentum gate conditions (fresh consecutive two-sided quote changes aligned with forming M1, no stale/duplicate/gap/reset/exposure/proposal refusal) not satisfied for entry during window. No forced signal/threshold change."
+  },
+  "postflight": {
+    "broker": "DEMO/USD positions=0, orders=0",
+    "durable_guard": "unresolved=0, latched=false, streak=0",
+    "guardian_sl_preservation": "No open position; guardian+broker SL preservation not applicable",
+    "safe_state_restored": "console restarted with ALLOW_TRADING=false, DEMO_CASH_POLICY=false, PAPER_TRADING=false (safely flat)"
+  },
+  "claims": {
+    "adapter_tests_are_actual_upstream_inference": false,
+    "hourly_prediction_or_automatic_trading_acceptance_complete": false
+  },
+  "safety": {
+    "paper_trading": false,
+    "cloud_budget_revoked": true,
+    "no_second_window": true,
+    "no_retry": true,
+    "risk_ownership_gates_preserved": true,
+    "secrets_not_committed": true
+  }
+}
