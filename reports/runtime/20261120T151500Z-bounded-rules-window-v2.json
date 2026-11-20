@@ -1,0 +1,78 @@
+{
+  "schema": "trade-mcp/runtime-report",
+  "report_id": "20261120T151500Z-bounded-rules-window-v2",
+  "generated_at": "2026-11-20T15:31:00Z",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "loaded_commit_executed": "0631ca7f6f3c39d4bdc44e38f6dd16bdc5446ee3",
+  "workflow": "fetch/ff-only through 0631ca7 -> read pending-proposal flood correction in docs/BOUNDED-RULES-WINDOW.md -> deploy fix -> fresh complete preflight -> single 300s DEMO window -> verify halt_reason/broker evidence -> restore safe when flat -> record sanitized report",
+  "execution_authorized_by_report": false,
+  "explicit_user_authorization_session": true,
+  "fix_deployed": "Separate explicit rules execution from web approval and stop pending proposal floods (LLMClient mode=rules for explicit rules endpoints; window halts on pending_confirmation/evaluation_error; returns halt_reason/executed_entries/pending_entries).",
+  "preflight": {
+    "broker": "DEMO/USD MetaQuotes-Demo, positions=0, orders=0",
+    "durable_guard": "intents_total=1, unresolved=0, latched=false, streak=0",
+    "cost_snapshot_reconciliation": "fresh and ok (matched_deals>0)",
+    "cloud_budget_paid_apis_cycles": "model budget revoked, paid APIs inactive for web backend, scheduler/page cycle stopped",
+    "console_for_window": "process-only: ALLOW_TRADING=true, DEMO_CASH_POLICY=true, PAPER_TRADING=false; independent guardian healthy with fresh poll",
+    "existing_pending_proposals_preserved": 250
+  },
+  "rules_client_mode_verification": {
+    "loaded_mode": "rules",
+    "evidence": "run_rules_window constructs LLMClient(mode=\"rules\") under explicit demo cash policy (src/trade_mcp/console.py); window agent runs show used_llm=false, source=rules, decisions_count=1 with guarded pre-proposal refusals (no provider/auto path, no pending proposal creation)"
+  },
+  "invocation": {
+    "endpoint": "POST /api/agents/a76d1cff5b",
+    "agent_id": "a76d1cff5b",
+    "agent": "single-symbol XAUUSD, guarded, enabled, max_lot=0.02, max_risk=0.5",
+    "action": "run_rules_window",
+    "duration_seconds": 300,
+    "invoked_once": true,
+    "retry_or_second_window": false,
+    "other_entry_cycles_stopped": true,
+    "forced_signal_or_threshold_change": false
+  },
+  "window_result": {
+    "http_status": 200,
+    "ok": true,
+    "evaluations": 257,
+    "stopped": false,
+    "duration_limit_seconds": 300,
+    "orders_guaranteed": false,
+    "executed_entries": 0,
+    "pending_entries": 0,
+    "halt_reason": null,
+    "elapsed_s": 300.0
+  },
+  "outcome": {
+    "agent_runs_in_window": 257,
+    "proposals_created_in_window": 0,
+    "pending_proposals_total_after": 250,
+    "broker_trades_executed": 0,
+    "broker_entries": 0,
+    "broker_positions_after": 0,
+    "broker_orders_after": 0,
+    "errors": 0,
+    "used_llm": false,
+    "refusals_ownership": "Guarded pre-proposal blockers refused each evaluation (confidence below threshold, e.g. 50 < 62): no proposal created, no pending-confirmation, no broker order. No ownership conflict/unresolved intent created. Pending-proposal flood did not occur.",
+    "application_executed_entries_note": "executed_entries is an application-reported status, not independently reconciled broker fill evidence; no broker entries/fills observed"
+  },
+  "postflight": {
+    "window_stopped_verified": true,
+    "broker": "DEMO/USD positions=0, orders=0",
+    "durable_guard": "unresolved=0, latched=false, streak=0",
+    "exit_protection_state": "no open position/order; guardian+SL preservation not applicable",
+    "safe_state_restored": "console restarted with ALLOW_TRADING=false, DEMO_CASH_POLICY=false, PAPER_TRADING=false (flat, no orders, no unresolved intents)"
+  },
+  "claims": {
+    "hourly_price_prediction_implemented": false,
+    "application_executed_entries_proves_broker_fill": false
+  },
+  "safety": {
+    "paper_trading": false,
+    "cloud_use_off": true,
+    "no_second_window": true,
+    "no_retry": true,
+    "existing_journal_proposals_preserved": true,
+    "secrets_not_committed": true
+  }
+}
