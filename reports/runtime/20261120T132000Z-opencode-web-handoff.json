@@ -1,0 +1,83 @@
+{
+  "schema": "trade-mcp/runtime-report",
+  "report_id": "20261120T132000Z-opencode-web-handoff",
+  "generated_at": "2026-11-20T13:20:00Z",
+  "commit_base": "9efd2742500babff6bedd63c852766a2642862dd",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "workflow": "fetch/ff, read LOCAL-OPENCODE-WEB-HANDOFF, configure web opencode-session to user's currently selected supported FREE OpenCode model (blocked), verify non-generation session health/effective model (blocked), verify scenario ranges, safe deployment (no restart/trade burst)",
+  "execution_authorized_by_report": false,
+  "git": {
+    "fetched": true,
+    "fast_forwarded_to": "9efd2742500babff6bedd63c852766a2642862dd",
+    "handoff_doc_read": "docs/LOCAL-OPENCODE-WEB-HANDOFF.md"
+  },
+  "pre_restart_inspection": {
+    "fresh": true,
+    "broker_demo_usd_flat": true,
+    "positions": 0,
+    "orders": 0,
+    "unresolved_intents": 0,
+    "latched": false,
+    "console_restart_performed": false,
+    "reason_no_restart": "no open position/protection to preserve; no compliant model config change applied due to blocker; trading/policy already off"
+  },
+  "web_model_configuration": {
+    "requested": "opencode-session using user's currently selected supported FREE OpenCode model (not direct Starimg/DeepSeek)",
+    "effective_before": {
+      "backend": "openai-compatible (direct)",
+      "provider": "ai.starimg.ru",
+      "model_configured": true,
+      "trading_enabled": false,
+      "paper_trading": false,
+      "budget_state": "revoked",
+      "budget_allowed": false
+    },
+    "opencode_server_discovered": {
+      "loopback": true,
+      "api": "v2",
+      "healthy": true,
+      "non_generation_identity_check": "server health/identity observed (no text generation performed)"
+    },
+    "user_currently_selected_model_observed_in_opencode_config": {
+      "providerID": "starimg",
+      "model_id_class": "deepseek (direct Starimg, vendor-advertised alias)"
+    },
+    "supported_free_model_selected": false,
+    "in_FREE_MODELS_allowlist": false,
+    "configuration_applied": false,
+    "effective_after": "unchanged (direct Starimg/openai-compatible; trading off, budget revoked)",
+    "blocker": {
+      "code": "unsupported_current_model_selection",
+      "detail": "User's currently selected OpenCode model is starimg/deepseek (direct provider), not in supported FREE_MODELS opencode-session allowlist. Cannot configure opencode-session without silently selecting another model or bypassing allowlist; per instructions no fallback/substitution/endpoint guessing performed.",
+      "silent_model_selection": false
+    }
+  },
+  "session_health_verification": {
+    "non_generation_session_health_for_required_config": "not possible (required supported FREE model not selected/configurable)",
+    "effective_provider_model_verified": "effective remains direct ai.starimg.ru/openai-compatible (unchanged); opencode-session not configured",
+    "inference_performed": false,
+    "paid_provider_requests": 0
+  },
+  "scenario_ranges_verification": {
+    "endpoint": "GET /api/terminal?symbol=XAUUSD&tf=M15",
+    "fresh_broker_data": true,
+    "hourly_scenarios_available": true,
+    "execution_eligible": false,
+    "calibrated": false,
+    "points_minutes_ahead": [15, 30, 45, 60],
+    "each_point_has_range": true,
+    "last_closed_bar_time_present": true,
+    "chart_implementation": "terminal.js renders dashed future scenario overlay with horizon colors cyan(15m), amber(30m), violet(45m), rose(60m), labeled markers/ranges, non-predictive/non-signal labeling and scenarioOk gating (current HEAD/served assets)",
+    "visual_browser_screenshot": "not available in headless harness; verified via actual API data and current chart rendering logic"
+  },
+  "safety": {
+    "mcp_settings_secrets_journals_preserved": true,
+    "risk_ownership_guards_preserved": true,
+    "trading_policy_off": true,
+    "budget_revoked": true,
+    "no_300_order_burst": true,
+    "no_previous_acceptance_trade_repeated": true,
+    "no_open_position_protection_interrupted": true
+  },
+  "commits_preserved": ["ba20689cd2217ae7be4872e40beefc1998ac8475", "9efd2742500babff6bedd63c852766a2642862dd"]
+}
