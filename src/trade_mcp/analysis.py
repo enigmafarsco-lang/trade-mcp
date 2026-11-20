@@ -550,10 +550,13 @@ def analyze_symbol(
     market = _market_open_estimate(now)
     if not market["open_estimate"]:
         warnings.append(f"market looks closed: {market['reason']}")
+    guarded_risk_reasons: list[str] = []
     if bias.get("conflict"):
         warnings.append("timeframes disagree - reduce size or wait for alignment")
+        guarded_risk_reasons.append(warnings[-1])
     if (usable.get("M15") or {}).get("volatility_regime", {}).get("regime") == "spiking":
         warnings.append("volatility is spiking - widen stops or stay out")
+        guarded_risk_reasons.append(warnings[-1])
     if not cfg.allow_trading:
         warnings.append(
             "TRADE_MCP_ALLOW_TRADING=false: analysis only, confirm_order will refuse to execute"
@@ -582,6 +585,9 @@ def analyze_symbol(
         "levels": key_levels(usable, price, digits),
         "scenario": scenario,
         "warnings": warnings,
+        # Structured copy of the two guarded-mode risk warnings so executors do
+        # not have to pattern-match English prose.
+        "guarded_risk_warnings": guarded_risk_reasons,
         "assumptions": [
             "prices come from the broker feed via the MQL5 EA, not from this server",
             "sizing uses the stop distance and the symbol's tick value",

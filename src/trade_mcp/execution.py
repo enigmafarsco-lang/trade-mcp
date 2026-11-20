@@ -36,6 +36,25 @@ def _blockers(issues: list[dict[str, str]]) -> list[str]:
     return [f"{i['code']}: {i['message']}" for i in issues if i.get("severity") == "blocker"]
 
 
+def _effective_lot_cap(cfg: Config, max_lot: float | None) -> float | None:
+    """Stricter of the config ceiling and an optional caller (agent) ceiling.
+
+    A caller can only lower the cap. Invalid or non-positive call caps are
+    ignored rather than silently widening the config limit.
+    """
+    cap = float(cfg.max_lot) if cfg.max_lot else None
+    if max_lot is None:
+        return cap
+    try:
+        call_cap = float(max_lot)
+    except (TypeError, ValueError):
+        return cap
+    if call_cap <= 0:
+        return cap
+    return call_cap if cap is None else min(cap, call_cap)
+
+
+
 def propose_open(
     *,
     mt5,
@@ -49,7 +68,14 @@ def propose_open(
     take_profit: float | None = None,
     comment: str = "trade-mcp",
     entry_guard=None,
+    max_lot: float | None = None,
 ) -> dict[str, Any]:
+    """Price, size and journal an opening proposal.
+
+    ``max_lot`` is an optional stricter ceiling for this call (an agent's own
+    limit). It is applied during sizing and can only lower the volume - it never
+    raises ``cfg.max_lot`` and never rounds up to the broker minimum.
+    """
     side = str(side).lower()
     if side not in {"buy", "sell"}:
         return {"ok": False, "error": "bad_side", "message": "side must be 'buy' or 'sell'"}
@@ -100,14 +126,22 @@ def propose_open(
             entry=entry,
             stop=float(stop_loss),
             info=info,
-            max_lot=cfg.max_lot,
+            max_lot=_effective_lot_cap(cfg, max_lot),
         )
         if not sizing.get("ok"):
             return {"ok": False, "error": "sizing_failed", "message": sizing.get("error"),
                     "sizing": sizing, "checked_entry": entry,
                     "stop_loss": stop_loss, "take_profit": take_profit,
-                    "effective_sizing_balance": sizing_balance(account, cfg)}
+                    "effective_sizing_balance": sizing_balance(account, cfg),
+                    "max_lot": _effective_lot_cap(cfg, max_lot)}
         volume = float(sizing["volume"])
+    elif max_lot is not None:
+        cap = _effective_lot_cap(cfg, max_lot)
+        if float(volume) > cap + 1e-9:
+            return {"ok": False, "error": "volume_above_call_lot_cap",
+                    "message": f"requested {volume} lot exceeds the {cap} lot cap; no proposal created",
+                    "checked_entry": entry, "stop_loss": stop_loss,
+                    "take_profit": take_profit, "max_lot": cap}
     volume, vol_warnings = normalise_volume(float(volume), info)
 
     if cash_policy:

@@ -1,9 +1,15 @@
 # One-hour scenario view
 
 `GET /api/chart?symbol=XAUUSD&tf=M15&full=1` includes `hourly_scenarios`.
-The terminal's direct candle comparison panel displays its 15/30/45/60-minute
-scenario table. This is a first scenario view, not a future-candle chart or
-an independently validated predictive trading strategy.
+The terminal displays the 15/30/45/60-minute values in two read-only forms:
+the comparison panel's scenario table and a clearly separated **dashed future
+scenario overlay** on the chart (drawn only from available closed-bar data for
+the current symbol/timeframe).
+
+This is an illustrative, uncalibrated volatility scenario view — **not** a
+reliable prediction, not a calibrated probability, not a buy/sell signal, and
+not future candles. `execution_eligible=false` always and the overlay is never
+connected to order execution. The Persian UI label states this explicitly.
 
 The independent baseline uses the latest 30 closed-candle log returns to
 estimate sample volatility, holds the last closed price as a zero-drift center,

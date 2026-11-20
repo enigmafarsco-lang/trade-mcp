@@ -114,7 +114,9 @@ def test_sizing_refusal_has_structured_status_and_no_proposal(mock_app, monkeypa
     assert not report['errors'], report
     result = report['decisions'][0]
     assert result['post_response_check']['ok']
-    assert result['action'] == 'sell' and result['source'] == 'web'
+    # The refused decision stays visible, but the execution action is WAIT.
+    assert result['decision_action'] == 'sell' and result['source'] == 'web'
+    assert result['action'] == 'wait' and result['no_trade'] is True
     assert result['status'] == 'rejected' and result['blocked'] is True
     error = result['proposal_error']
     assert error['error'] == 'sizing_failed'

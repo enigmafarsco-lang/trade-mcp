@@ -528,6 +528,19 @@ class AgentEngine:
             entry["note"] = "بدون معامله"
             return entry
 
+        agent_mode = str(agent.get("mode") or "advisory").lower()
+        early_blockers = self.pre_proposal_blockers(agent, analysis, agent_mode, self.cfg, self.llm)
+        if early_blockers:
+            entry["status"] = "refused"
+            entry["action"] = "wait"
+            entry["blocked"] = True
+            entry["blockers"] = early_blockers
+            entry["proposal_created"] = False
+            entry["note"] = (
+                "no proposal created: " + "; ".join(early_blockers)
+            )
+            return entry
+
         def entry_guard(tick, info):
             from .agent_safety import post_response_check
             check = post_response_check(quote=analysis.get('quote') or {}, tick=tick, info=info,
@@ -536,6 +549,7 @@ class AgentEngine:
             entry['post_response_check'] = check
             return check
 
+        agent_lot_cap = float(agent.get("max_lot") or 0.01)
         proposal = propose_open(
             mt5=self.mt5,
             cfg=self.cfg,
@@ -551,21 +565,35 @@ class AgentEngine:
             take_profit=decision.get("take_profit"),
             comment=f"agent:{agent.get('id')}",
             entry_guard=entry_guard,
+            # The agent's own lot ceiling is stricter than the global one and is
+            # applied while sizing, so an oversized proposal is never created.
+            max_lot=agent_lot_cap,
         )
         if not proposal.get("ok"):
             entry['status'] = 'rejected'
             entry['blocked'] = True
+            entry['decision_action'] = action
+            entry['action'] = 'wait'
             entry['blockers'] = [proposal.get('error') or 'proposal_refused']
             entry['proposal_error'] = {k:proposal[k] for k in (
                 'error', 'message', 'sizing', 'checked_entry', 'stop_loss', 'take_profit',
-                'effective_sizing_balance'
+                'effective_sizing_balance', 'max_lot'
             ) if k in proposal}
-            if proposal.get('error') == 'post_response_check_failed':
+            if proposal.get('error') in {'sizing_failed', 'volume_above_call_lot_cap'}:
+                # Keep the decided side visible; the execution action is WAIT.
+                entry['no_trade'] = True
+                entry['no_trade_reason'] = 'no valid volume fits the risk budget and the lot caps'
+                entry["note"] = (
+                    f"NO TRADE: no valid volume fits the agent cap {agent_lot_cap} lot and the "
+                    f"risk budget ({proposal.get('message')})"
+                )
+            elif proposal.get('error') == 'post_response_check_failed':
                 entry['model_action'] = action
-                entry['action'] = 'wait'
                 entry['status'] = 'blocked'
                 entry['wait_reasons'] = proposal['post_response_check']['reasons']
-            entry["note"] = f"proposal refused: {proposal.get('error')} - {proposal.get('message')}"
+                entry["note"] = f"proposal refused: {proposal.get('error')} - {proposal.get('message')}"
+            else:
+                entry["note"] = f"proposal refused: {proposal.get('error')} - {proposal.get('message')}"
             return entry
 
         pid = proposal.get("proposal_id") or proposal.get("id")
@@ -574,12 +602,16 @@ class AgentEngine:
         entry["blocked"] = bool(proposal.get("blocked"))
         entry["blockers"] = proposal.get("blockers", [])
 
-        # The agent's own lot ceiling is stricter than the global one.
+        # Sizing already honours the agent ceiling; a proposal above it means a
+        # gate regressed, so cancel and refuse instead of executing.
         volume = float(payload.get("volume") or 0.0)
-        if volume > float(agent.get("max_lot") or 0.01) + 1e-9 and pid:
+        if volume > agent_lot_cap + 1e-9 and pid:
             cancel(store=self.store, proposal_id=str(pid))
+            entry["status"] = "rejected"
+            entry["action"] = "wait"
+            entry["no_trade"] = True
             entry["note"] = (
-                f"cancelled: sized {volume} lot, above the agent's {agent.get('max_lot')} cap"
+                f"NO TRADE: proposal volume {volume} exceeded the agent's {agent_lot_cap} lot cap"
             )
             return entry
 
@@ -720,22 +752,64 @@ class AgentEngine:
             confidence = int((analysis.get("scenario") or {}).get("confidence") or 0)
             if confidence < GUARDED_MIN_CONFIDENCE:
                 return [f"mode=guarded: confidence {confidence} < {GUARDED_MIN_CONFIDENCE}"]
-
-            risky_early = [
-                w for w in analysis.get("warnings") or [] if "disagree" in w or "spiking" in w
-            ]
-            if risky_early:
-                return ["mode=guarded: " + "; ".join(risky_early)]
-            risky = [w for w in analysis.get("warnings") or [] if "disagree" in w or "spiking" in w]
+            risky = self._guarded_risk_warnings(analysis)
             if risky:
                 return ["mode=guarded: " + "; ".join(risky)]
         return []
+
+    @staticmethod
+    def _guarded_risk_warnings(analysis: dict[str, Any]) -> list[str]:
+        """Volatility-spiking / timeframe-disagreement warnings for guarded mode.
+
+        The structured list produced by ``analysis.analyze_symbol`` is the
+        canonical source; the English prose in ``warnings`` is still scanned as
+        a fallback so a caller that supplies only prose cannot slip through.
+        Neither list is removed or rewritten - they are only inspected.
+        """
+        reasons: list[str] = []
+        structured = analysis.get("guarded_risk_warnings")
+        if isinstance(structured, list):
+            reasons.extend(str(w) for w in structured if str(w).strip())
+        for warning in analysis.get("warnings") or []:
+            text = str(warning).lower()
+            if ("disagree" in text or "spiking" in text) and str(warning) not in reasons:
+                reasons.append(str(warning))
+        return reasons
 
     # ---------------------------------------------------------------- output
     def _finish(self, agent: dict[str, Any], report: dict[str, Any]) -> None:
         report["duration_ms"] = int((time.time() - float(report["started_at"])) * 1000)
         if agent.get("id"):
             self.store.mark_agent_run(str(agent["id"]), report)
+
+    @classmethod
+    def pre_proposal_blockers(
+        cls, agent: dict[str, Any], analysis: dict[str, Any], mode: str, cfg, llm
+    ) -> list[str]:
+        """Guarded-mode risk refusal evaluated BEFORE any proposal is created.
+
+        Volatility-spiking and timeframe-disagreement warnings must stop a
+        guarded agent from creating a proposal at all, not merely leave one
+        pending. The confidence threshold and the warnings themselves are
+        unchanged - only their place in the flow moves earlier.
+        """
+        mode = str(mode or "advisory").lower()
+        if mode != "guarded":
+            return []
+        if getattr(llm, "mode", "auto") == "web" and not getattr(cfg, "demo_cash_policy", False):
+            return []
+        if getattr(cfg, "opencode_url", ""):
+            return []
+        if not getattr(cfg, "allow_trading", False):
+            return []
+        blockers: list[str] = []
+        confidence = int((analysis.get("scenario") or {}).get("confidence") or 0)
+        if confidence < GUARDED_MIN_CONFIDENCE:
+            blockers.append(f"mode=guarded: confidence {confidence} < {GUARDED_MIN_CONFIDENCE}")
+        risky = AgentEngine._guarded_risk_warnings(analysis)
+        if risky:
+            blockers.append("mode=guarded: " + "; ".join(risky))
+        return blockers
 
     def _summary_fa(self, report: dict[str, Any]) -> str:
         lines: list[str] = []
