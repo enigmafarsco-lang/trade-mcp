@@ -1,0 +1,99 @@
+{
+  "schema": "trade-mcp/runtime-report",
+  "report_id": "20261120T113947Z-rules-guarded-demo-run",
+  "generated_at": "2026-11-20T11:39:47Z",
+  "commit_base": "276b7c22110bd887c93c160424d16d0018a0411c",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "workflow": "bounded DEMO acceptance continuation: monitor restored via native MT5 MCP tools, fresh preflight passed, exactly one run_rules_guarded invocation",
+  "execution_authorized_by_report": false,
+  "monitor_recovery": {
+    "native_mt5_tools_discovered_dynamically": true,
+    "tools_available_including_chart_ea": true,
+    "monitor_absent_inferred_from_logs_only": false,
+    "actual_chart_inspection": "list_open_charts showed only connector chart with TradeMCPConnector; TradeMCPCostMonitor absent",
+    "recovery_per_docs_RULES_GUARDED_verified_procedure": true,
+    "actions": [
+      "opened one dedicated XAUUSD H1 chart (105389480649722)",
+      "attached existing compiled TradeMCPCostMonitor.ex5 with verified bounded inputs From=1767225600,MaxDeals=10000,IntervalSeconds=5",
+      "connector chart 105274268700280 untouched",
+      "no MT5/Wine restart, no recompile, no input change, no duplicate writer, no snapshot edit"
+    ],
+    "snapshot_updates_observed": 4,
+    "cost_reconciliation_after_recovery": {"ok": true, "diagnostic": true, "snapshot_fresh": true}
+  },
+  "preflight": {
+    "fresh": true,
+    "demo_usd_account": "pass",
+    "broker_positions_zero_before": "pass",
+    "broker_orders_zero_before": "pass",
+    "demo_cash_guard_no_latch_no_unresolved_intents": "pass",
+    "fresh_v2_snapshot_and_reconciliation": "pass",
+    "budget_revoked_scheduler_page_cycles_stopped": "pass",
+    "agent_single_symbol_limits_preserved": "pass (a76d1cff5b XAUUSD guarded max_lot=0.02 max_risk=0.5)",
+    "independent_guardian_runtime": "test console started with trading+demo policy enabled in process env only (guardian active)"
+  },
+  "invocation": {
+    "endpoint": "POST /api/agents/a76d1cff5b {\"action\":\"run_rules_guarded\"}",
+    "count": 1,
+    "http_status": 200,
+    "ok": true,
+    "cloud_calls": 0,
+    "forced_signal": false,
+    "threshold_changes": false,
+    "retry_or_repeat": false
+  },
+  "outcomes_separate": {
+    "model": "not_applicable (deterministic internal rules path; no cloud request/window)",
+    "signal": "not_observed_in_api_response_fields (proposal/execution occurred; see proposal and broker acceptance)",
+    "sizing": "observed_in_proposal (volume 0.02, capped by configured max_lot; risk fields recorded)",
+    "proposal": {
+      "id": "7f5e35c98b06",
+      "status": "executed",
+      "symbol": "XAUUSD",
+      "side": "sell",
+      "volume": 0.02,
+      "sl": 3598.85,
+      "tp": 3575.36,
+      "demo_cash_policy": true
+    },
+    "broker_acceptance": {
+      "observed": true,
+      "retcode": 10009,
+      "retcode_text": "done",
+      "deal": "152780909173",
+      "ticket": "152939567958",
+      "fill_volume": 0.02,
+      "fill_price_observed": 3585.38
+    },
+    "ownership": {
+      "observed": "tracked",
+      "position_open": true,
+      "position_ticket": "152939567958",
+      "symbol": "XAUUSD",
+      "side": "sell",
+      "volume": 0.02,
+      "broker_sl_present": true,
+      "broker_tp_present": true,
+      "demo_cash_guard_intent": "registered (awaiting_position/comment_reservation for owned intent); guardian protection retained in running test console"
+    },
+    "floating_net_pl": {
+      "observed_at_capture": true,
+      "state": "open (floating, not realized exit)",
+      "note": "small floating loss observed at capture; no realized exit"
+    },
+    "guardian_exit": "unobserved (position OPEN; no forced exit)"
+  },
+  "position_state": "OPEN",
+  "end_state": {
+    "broker_positions": 1,
+    "broker_orders": 0,
+    "demo_cash_guard_latched": false,
+    "unresolved_intent_present": true,
+    "console_test_process_trading_enabled": true,
+    "console_test_process_demo_cash_policy_enabled": true,
+    "reason_flags_kept_enabled": "guardian protection + broker SL retained for owned open position (not flat; exit not forced)",
+    "budget_revoked": true,
+    "entry_cycles_stopped": true,
+    "paid_api_disabled": true
+  }
+}
