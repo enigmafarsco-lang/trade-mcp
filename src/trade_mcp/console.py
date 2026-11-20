@@ -1012,8 +1012,8 @@ class Handler(BaseHTTPRequestHandler):
                             raise ValueError("enabled_single_symbol_agent_required")
                         if self.state.app.mt5.positions() or self.state.app.mt5.orders():
                             return  # Existing exposure: no new entry, guardian remains independent.
-                        AgentEngine(cfg=cfg, mt5=self.state.app.mt5, store=store,
-                                    llm=LLMClient(mode="auto")).run({**selected, "mode": "guarded"})
+                        return AgentEngine(cfg=cfg, mt5=self.state.app.mt5, store=store,
+                                           llm=LLMClient(mode="rules")).run({**selected, "mode": "guarded"})
                 return run_window(step, self.state.rules_window_stop, duration=duration)
             finally:
                 self.state.rules_window_lock.release()
@@ -1041,7 +1041,7 @@ class Handler(BaseHTTPRequestHandler):
         with self.state.lock:
             if action == 'run_rules_guarded':
                 engine = AgentEngine(cfg=self.state.cfg, mt5=self.state.app.mt5,
-                                     store=store, llm=LLMClient(mode="auto"))
+                                     store=store, llm=LLMClient(mode="rules"))
             else:
                 engine = self.state.agent_engine("agent_run")
             report = engine.run(agent)

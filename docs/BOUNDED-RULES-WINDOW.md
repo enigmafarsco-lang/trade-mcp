@@ -37,3 +37,24 @@ as a volatility scenario. Optional diagnostic display can be enabled locally via
 `localStorage.setItem('trade-mcp-show-volatility-scenarios','true')`; this is not
 an order signal. Do not claim a validated prediction without out-of-sample
 horizon-specific evaluation and real model provenance.
+
+## Pending-proposal flood correction
+
+Explicit rules endpoints now construct `LLMClient(mode="rules")`, which cannot
+carry provider configuration. Only this explicit path under enabled demo cash
+policy is independent of the unrelated web OpenCode URL's human-approval gate.
+Normal auto/web approval behavior is unchanged. Guarded warnings remain checked
+before proposal creation even when the web OpenCode URL is configured.
+
+A window halts after its first pending-confirmation result or engine error;
+it never repeats that pending proposal for the remaining seconds. The response
+includes `halt_reason`, `pending_entries` and `executed_entries` (application
+execution statuses, not independently reconciled broker fills). Existing expired
+or pending proposals are not deleted, confirmed or adopted by this correction.
+
+Local deployment: fresh flat/no-order/no-unresolved-intent check before restart;
+install updated source and run full tests. Preserve existing journal rows as
+historical evidence. Run at most one previously authorized 300-second DEMO window
+with fresh complete preflight, no cloud use and no retries. Inspect the actual
+returned halt reason; do not label HTTP 200 alone as successful trading. Keep
+protection for open positions and disable execution only when safely flat.

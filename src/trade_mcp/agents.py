@@ -92,7 +92,10 @@ class LLMClient:
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex, init=False)
 
     def __post_init__(self) -> None:
-        self.mode = "web" if str(self.mode).lower() == "web" else "auto"
+        selected = str(self.mode).lower()
+        self.mode = selected if selected in {"web", "rules"} else "auto"
+        if self.mode == "rules" and (self.base_url or self.api_key or self.model):
+            raise ValueError("Rules mode cannot configure a provider")
         self.usage_convention = normalise_convention(self.usage_convention)
 
     @classmethod
@@ -742,7 +745,9 @@ class AgentEngine:
     ) -> list[str]:
         if getattr(self.llm, "mode", "auto") == "web" and not self.cfg.demo_cash_policy:
             return ["dedicated web model: explicit human confirmation required"]
-        if self.cfg.opencode_url:
+        if getattr(self.llm, "mode", "auto") == "rules" and not self.cfg.demo_cash_policy:
+            return ["rules execution requires explicit demo cash policy"]
+        if self.cfg.opencode_url and getattr(self.llm, "mode", "auto") != "rules":
             return ["OpenCode: explicit human confirmation required"]
         if mode == "advisory":
             return ["mode=advisory: waiting for your confirmation"]
@@ -798,7 +803,7 @@ class AgentEngine:
             return []
         if getattr(llm, "mode", "auto") == "web" and not getattr(cfg, "demo_cash_policy", False):
             return []
-        if getattr(cfg, "opencode_url", ""):
+        if getattr(cfg, "opencode_url", "") and getattr(llm, "mode", "auto") != "rules":
             return []
         if not getattr(cfg, "allow_trading", False):
             return []

@@ -58,3 +58,18 @@ def test_stop():
     def step():
         t.stopped = True
     assert run_window(step, t, clock=t.clock)['evaluations'] == 1
+
+
+def test_pending_stops_without_proposal_flood():
+    t = Timer()
+    result = run_window(lambda: {'symbols': [{'status': 'pending'}]}, t, clock=t.clock)
+    assert result['evaluations'] == 1
+    assert result['halt_reason'] == 'pending_confirmation'
+    assert result['pending_entries'] == 1
+
+
+def test_engine_errors_stop_without_retry():
+    t = Timer()
+    result = run_window(lambda: {'errors': [{'error': 'blocked'}]}, t, clock=t.clock)
+    assert result['evaluations'] == 1
+    assert result['halt_reason'] == 'evaluation_error'

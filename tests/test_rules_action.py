@@ -67,3 +67,18 @@ def test_stop_window_leaves_guardian_untouched():
     h.state.rules_window_stop = threading.Event()
     assert Handler._agent_action(h, 'test', {'action': 'stop_rules_window'})['ok']
     assert h.state.rules_window_stop.is_set()
+
+
+def test_rules_auto_confirmation_independent_of_web_url():
+    from trade_mcp.agents import AgentEngine, LLMClient
+    engine = AgentEngine(cfg=SimpleNamespace(opencode_url='http://localhost:1234',
+        demo_cash_policy=True, allow_trading=True), mt5=object(), store=object(),
+        llm=LLMClient(mode='rules'))
+    analysis = {'scenario': {'confidence': 80}, 'warnings': []}
+    assert engine._auto_confirm_blockers({}, analysis, 'guarded') == []
+    analysis['warnings'] = ['volatility is spiking']
+    assert engine._auto_confirm_blockers({}, analysis, 'guarded')
+    assert engine.pre_proposal_blockers({}, analysis, 'guarded', engine.cfg, engine.llm)
+    engine.llm = LLMClient(mode='auto')
+    assert engine._auto_confirm_blockers({}, analysis, 'guarded') == [
+        'OpenCode: explicit human confirmation required']
