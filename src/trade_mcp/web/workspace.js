@@ -127,7 +127,19 @@ async function refresh(){
   node('workspace-status').textContent=`داده: ${d.backend}${d.backend==='mock'?' — ساختگی؛ دادهٔ واقعی نیست':''} | اجرای معامله: ${d.trading_enabled?'فعال؛ هر پیشنهاد نیازمند تأیید شماست':'غیرفعال'} | provider: ${d.model_provider||'—'} | مدل: ${d.model||'تنظیم نشده'}\n${d.scheduler.running?'چرخهٔ ایجنت فعال است':'چرخهٔ خودکار خاموش است؛ دریافت قیمت به معنی معامله نیست.'}`;
   node('workspace-provider').textContent=`backend: ${d.model_backend||'—'} | provider: ${d.model_provider||'نامشخص'} | مدل: ${d.model||'تنظیم نشده'} | وضعیت: ${d.model_configured?'تنظیم شده؛ فقط مسیر صریح انتخاب‌شده استفاده می‌شود':'تنظیم نشده؛ درخواست مدل مسدود است'}\nبرچسب billing: ${d.model_billing_project||'ندارد'} (فقط metadata؛ اثبات صورت‌حساب جدا نیست)\nقرارداد usage: ${d.model_usage_convention||'unknown'} | پروفایل درخواست ایجنت: ${d.model_request_profile||'provider-default'}`;
   const cash=d.demo_cash_guard||{};
-  if(cash.enabled)node('workspace-status').textContent+='\nحفاظت دلاری دمو: زیان ۱۰ / سود ۲ دلار | '+(cash.ok===false?'خطای تطبیق؛ ورود جدید مجاز نیست':cash.latched?'قفل سه زیان؛ بازبینی استراتژی لازم است':'زیان متوالی: '+(cash.loss_streak??'نامشخص'))+' | پایش: '+(cash.running?'فعال':'غیرفعال');
+  if(cash.enabled || (cash.unresolved_intent_count||0)>0 || cash.current_blocker_code || cash.last_poll_at || cash.last_successful_reconciliation_at){
+   const blocker=cash.current_blocker_code;
+   const blockerText={unresolved_intent:'intent حل‌نشده؛ ورود جدید مجاز نیست',loss_latch:'قفل سه زیان؛ بازبینی استراتژی لازم است',history_may_be_truncated:'سابقه ممکن است ناقص باشد',explicit_cost_fields_required:'هزینه‌ها/کارمزد نامشخص؛ سود/زیان خالص قطعی نشده',incomplete_closed_position_volume:'حجم بسته‌شده ناقص',opening_deal_history_required:'سابقهٔ معاملهٔ بازکننده در دسترس نیست',reserved_opening_identity_missing:'هویت معاملهٔ رزروشده تأیید نشد',reserved_opening_time_mismatch:'زمان معاملهٔ رزروشده منطبق نیست',reversal_or_unknown_entry:'نوع ورود/خروج مبهم',missing_or_duplicate_deal_ticket:'شناسهٔ معامله نامعتبر/تکراری',position_identity_mismatch:'هویت موقعیت منطبق نیست',broker_sl_required:'SL بروکر الزامی',floating_pnl_incomplete:'سود/زیان شناور ناقص',cost_source_aged_before_close:'منبع هزینه برای بستن منقضی شد',cash_guard_reconciliation_failed:'تطبیق نگهبان ناموفق',exit_due:'شرط خروج نقدی برقرار است'}[blocker]||'';
+   const parts=['حفاظت نقدی دمو (USD/DEMO)', cash.running?'پایش: فعال':'پایش: غیرفعال/خوانش موردی'];
+   parts.push('intent حل‌نشده: '+(cash.unresolved_intent_count??0));
+   if(cash.loss_streak!=null)parts.push('زیان متوالی: '+cash.loss_streak);
+   if(cash.latched)parts.push('قفل ضرر فعال');
+   if(blockerText)parts.push('انسداد: '+blockerText+(blocker?' ('+blocker+')':''));
+   else if(cash.ok===false)parts.push('انسداد: تطبیق ناموفق');
+   if(cash.last_poll_at)parts.push('آخرین بررسی: '+time(cash.last_poll_at));
+   if(cash.last_successful_reconciliation_at)parts.push('آخرین تطبیق موفق: '+time(cash.last_successful_reconciliation_at));
+   node('workspace-status').textContent+='\n'+parts.join(' | ');
+  }
   node('workspace-budget').textContent=budgetText(d.model_budget);
   syncBudgetButton(d.model_budget);
   node('workspace-usage').textContent=usageText(d.model_usage);

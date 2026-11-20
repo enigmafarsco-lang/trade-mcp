@@ -765,6 +765,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(self._agent_action(path.split("/")[3], payload))
             if path == "/api/scheduler":
                 return self._json(self._scheduler(payload))
+            if path == "/api/demo-cash-guard":
+                action = str(payload.get('action') or 'reconcile')
+                if action != 'reconcile':
+                    return self._json({"ok": False, "error": "invalid_action"}, 400)
+                with self.state.lock:
+                    health, result = self.state.demo_guardian.reconcile_now(execute=False)
+                response = {"ok": bool(health.get('ok')), "demo_cash_guard": health,
+                            "reconciled": result is not None}
+                if result is not None:
+                    response["reconciliation"] = {
+                        "unresolved_intent_count": result.get("unresolved_intent_count", 0),
+                        "review_required": bool(result.get("review_required")),
+                        "blocker_code": result.get("blocker_code"),
+                        "latched": bool(result.get("latched")),
+                        "loss_streak": result.get("loss_streak", 0),
+                    }
+                return self._json(response)
             if path == "/api/journal":
                 note = self.state.store.add_note(
                     str(payload.get("text") or "")[:4000],
@@ -882,7 +899,7 @@ class Handler(BaseHTTPRequestHandler):
                             "session_adapter_revision": ADAPTER_REVISION},
                 "journal_identity": journal_identity(cfg.journal_path),
                 "workspace_identity": workspace_identity(cfg),
-                "demo_cash_guard": self.state.demo_guardian.last,
+                "demo_cash_guard": self.state.demo_guardian.status(),
                 "model_backend": "opencode-session" if cfg.web_model_backend == "opencode-session" else "openai-compatible", "model_source": "web",
                 "model_configured": web_llm.configured,
                 "model_configuration_issue": (None if web_llm.configured else
