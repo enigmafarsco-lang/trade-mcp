@@ -35,7 +35,7 @@ from .analysis import analyze_symbol
 from .bridge.base import BridgeError
 from .config import Config
 from .execution import confirm, propose_manage, propose_open
-from .forecast import hourly_scenarios
+from .forecast import hourly_scenarios, trend_forecast
 from .live import QuoteFeed
 from .manual import automatic_stop
 from .model_usage import (
@@ -298,6 +298,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "symbol": symbol, "timeframe": tf,
                                    "bars": bars, "series": indicators,
                                    "hourly_scenarios": hourly_scenarios(bars, tf),
+                                   "trend_forecast": trend_forecast(bars, tf),
                                    "received_at_ms": int(time.time()*1000)})
             if path == "/api/order-ticket":
                 with self.state.lock:
@@ -337,6 +338,7 @@ class Handler(BaseHTTPRequestHandler):
                     result = {"ok": True, "symbol": symbol, "timeframe": tf,
                               "bars": bars, "series": indicators,
                                    "hourly_scenarios": hourly_scenarios(bars, tf),
+                                   "trend_forecast": trend_forecast(bars, tf),
                               "quote": mt5.tick(symbol), "spec": mt5.symbol_info(symbol),
                               "account": mt5.account_info(fresh=True),
                               "positions": mt5.positions(), "orders": mt5.orders(),

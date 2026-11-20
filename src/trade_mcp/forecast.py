@@ -35,3 +35,64 @@ def hourly_scenarios(bars, timeframe="M15", *, now=None):
                        "upper": last[4] * math.exp(width)})
     return {**base, "available": True, "as_of": now,
             "last_closed_bar_time": last[0], "points": points}
+
+
+def _trend_price(closes, horizon):
+    """32-bar OLS log-price slope, anchored to the last observed close."""
+    values = [math.log(v) for v in closes[-32:]]
+    mid = (len(values)-1)/2
+    slope = sum((i-mid)*v for i, v in enumerate(values)) / sum(
+        (i-mid)**2 for i in range(len(values)))
+    exponent = slope*horizon
+    if abs(exponent) > 2:
+        raise ValueError('Unstable trend extrapolation')
+    return closes[-1]*math.exp(exponent)
+
+
+def trend_forecast(bars, timeframe='M15', *, now=None):
+    """Experimental point forecast with rolling-origin errors, never an order signal."""
+    now = time.time() if now is None else now
+    base = {'available': False, 'execution_eligible': False,
+            'method': 'independent_32_bar_log_ols_anchored_trend',
+            'source': 'closed_broker_bars_not_llm', 'validated_for_trading': False}
+    if timeframe not in {'M1', 'M5', 'M15'}:
+        return {**base, 'reason': 'use_M1_M5_M15_for_hourly_forecast'}
+    step = STEPS[timeframe]
+    rows = validate_ohlcv([[b['time'], b['open'], b['high'], b['low'],
+                            b['close'], b.get('tick_volume', 0)] for b in bars])
+    rows = [r for r in rows if r[0]+step <= now]
+    max_horizon = 3600//step
+    if len(rows) < 32+max_horizon+20:
+        return {**base, 'reason': 'insufficient_walk_forward_history'}
+    if now-(rows[-1][0]+step) > 2*step:
+        return {**base, 'reason': 'stale_closed_bars'}
+    # Gaps invalidate equal-spacing extrapolation, rather than inventing bars.
+    sample = rows[-(32+max_horizon+20):]
+    if any(b[0]-a[0] != step for a, b in zip(sample, sample[1:], strict=False)):
+        return {**base, 'reason': 'non_contiguous_history'}
+    closes = [r[4] for r in rows]
+    points = []
+    try:
+        for minutes in (15, 30, 60):
+            horizon = minutes*60//step
+            errors, baseline, hits = [], [], []
+            for origin in range(len(closes)-horizon-20, len(closes)-horizon):
+                prediction = _trend_price(closes[:origin+1], horizon)
+                actual, current = closes[origin+horizon], closes[origin]
+                errors.append(abs(prediction-actual))
+                baseline.append(abs(current-actual))
+                hits.append((prediction-current)*(actual-current) > 0)
+            prediction = _trend_price(closes, horizon)
+            points.append({'minutes_ahead': minutes,
+                           'time': rows[-1][0]+step+minutes*60,
+                           'price': prediction,
+                           'direction': 'up' if prediction > closes[-1] else
+                           'down' if prediction < closes[-1] else 'flat',
+                           'evaluation_samples': 20, 'mae': sum(errors)/20,
+                           'no_change_mae': sum(baseline)/20,
+                           'direction_accuracy': sum(hits)/20})
+    except (ValueError, OverflowError):
+        return {**base, 'reason': 'unstable_extrapolation'}
+    return {**base, 'available': True, 'as_of': rows[-1][0]+step,
+            'last_closed_bar_time': rows[-1][0], 'anchor_price': closes[-1],
+            'points': points, 'warning': 'پیش‌بینی آماری آزمایشی؛ خطا دارد و سیگنال سفارش نیست'}

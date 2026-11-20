@@ -82,10 +82,12 @@ class Chart {
   const w=rect.width,h=rect.height,dpr=window.devicePixelRatio||1;this.cv.width=Math.round(w*dpr);this.cv.height=Math.round(h*dpr);
   const c=this.cv.getContext('2d');c.scale(dpr,dpr);c.direction='ltr';c.textAlign='left';c.fillStyle='#090e15';c.fillRect(0,0,w,h);c.font='10px monospace';
   const end=this.data.bars.length-this.offset,start=Math.max(0,end-this.count),bars=this.data.bars.slice(start,end);if(!bars.length)return;
-  const lo=Math.min(...bars.map(b=>b.low)),hi=Math.max(...bars.map(b=>b.high)),pad=(hi-lo||1)*.08;
+  const f=this.data.trend_forecast;
+  const futurePrices=this.offset===0&&f?.available?f.points.map(p=>p.price).filter(Number.isFinite):[];
+  const lo=Math.min(...bars.map(b=>b.low),...futurePrices),hi=Math.max(...bars.map(b=>b.high),...futurePrices),pad=(hi-lo||1)*.08;
   const lowerKeys=['rsi','macd','atr','adx','stochastic'].filter(k=>this.selected.has(k)&&this.data.series[k]);
   const plotH=lowerKeys.length?Math.max(140,h-32-lowerKeys.length*45):h-35;
-  const y=p=>plotH-10-(p-lo+pad)/(hi-lo+2*pad)*(plotH-30),dx=(w-85)/bars.length;
+  const y=p=>plotH-10-(p-lo+pad)/(hi-lo+2*pad)*(plotH-30),dx=(w-85)*(futurePrices.length?.72:1)/bars.length;
   this.scale={bars,dx,price:py=>lo-pad+(plotH-10-py)/(plotH-30)*(hi-lo+2*pad)};
   for(let i=0;i<6;i++){const p=lo+(hi-lo)*i/5;c.strokeStyle='#1b2939';c.beginPath();c.moveTo(0,y(p));c.lineTo(w-80,y(p));c.stroke();c.fillStyle='#91a5bd';c.fillText(p.toFixed(this.data.spec.digits??2),w-78,y(p));}
   bars.forEach((b,i)=>{const x=(i+.5)*dx;c.strokeStyle=c.fillStyle=b.close>=b.open?'#41c69b':'#ed6678';c.beginPath();c.moveTo(x,y(b.high));c.lineTo(x,y(b.low));c.stroke();c.fillRect(x-dx*.3,Math.min(y(b.open),y(b.close)),Math.max(1,dx*.6),Math.max(1,Math.abs(y(b.open)-y(b.close))));});
@@ -97,43 +99,23 @@ class Chart {
   if(this.offset===0)for(const [field,color,label] of [['bid','#60a5fa','BID'],['ask','#f9a870','ASK']]){
    const price=this.data.quote?.[field];if(price&&price>=lo-pad&&price<=hi+pad){c.strokeStyle=color;c.setLineDash([2,3]);c.beginPath();c.moveTo(0,y(price));c.lineTo(w-85,y(price));c.stroke();c.setLineDash([]);c.fillStyle=color;c.fillText(label+' '+fmt(price),Math.max(8,w-200),y(price)+(field==='ask'?-4:12));}
   }
-  // Future scenario overlay (15/30/45/60m): dashed, illustrative only. No fabricated candles/probabilities/signals.
-  const scenario=this.data.hourly_scenarios;
-  const tfStep={M1:60,M5:300,M15:900,M30:1800,H1:3600,H4:14400,D1:86400,W1:604800}[this.tf]||900;
-  const scenarioOk=localStorage.getItem('trade-mcp-show-volatility-scenarios')==='true'&&scenario&&scenario.available===true&&Array.isArray(scenario.points)&&scenario.points.length===4
-    &&this.data.symbol===this.symbol&&this.data.timeframe===this.tf
-    &&this.offset===0&&typeof scenario.last_closed_bar_time==='number'&&Math.abs((bars.at(-1).time||0)-scenario.last_closed_bar_time)<=tfStep*2;
-  if(scenarioOk){
-   const lastBar=bars.at(-1),lastClose=lastBar.close;
-   const lastX=(bars.length-0.5)*dx;
-   const futureEnd=Math.max(0,w-85-lastX);
-   if(futureEnd>8){
-    // Dedicated horizon area: all four horizons fit; labels show elapsed minutes.
-    const mapTime=t=>lastX+Math.max(0,Math.min(1,(t-scenario.as_of)/3600))*(futureEnd-8);
-    const pts=scenario.points.map(p=>({m:p.minutes_ahead,x:mapTime(p.time),lo:p.lower,mid:p.center,hi:p.upper}))
-      .filter(p=>Number.isFinite(p.x)&&Number.isFinite(p.lo)&&Number.isFinite(p.hi));
-    const yClip=v=>Math.max(18,Math.min(plotH-2,y(v)));
-    c.save();c.beginPath();c.rect(lastX,18,Math.max(0,w-85-lastX),plotH-18);c.clip();
-    // uncertainty band (dashed bounds)
-    c.strokeStyle='rgba(147,197,253,.45)';c.lineWidth=1;c.setLineDash([6,4]);
-    c.beginPath();c.moveTo(lastX,yClip(lastClose));for(const p of pts)c.lineTo(Math.min(w-86,p.x),yClip(p.hi));c.stroke();
-    c.beginPath();c.moveTo(lastX,yClip(lastClose));for(const p of pts)c.lineTo(Math.min(w-86,p.x),yClip(p.lo));c.stroke();
-    // center path (dashed)
-    c.strokeStyle='rgba(147,197,253,.75)';c.setLineDash([4,4]);
-    c.beginPath();c.moveTo(lastX,yClip(lastClose));for(const p of pts)c.lineTo(Math.min(w-86,p.x),yClip(p.mid));c.stroke();
-    // markers + labels
-    const horizonColors={15:'#22d3ee',30:'#fbbf24',45:'#a78bfa',60:'#fb7185'};
-    c.font='9px sans-serif';
-    for(const p of pts){const x=Math.min(w-86,p.x);if(x<=lastX+2)continue;
-     c.fillStyle=horizonColors[p.m]||'#94a3b8';c.strokeStyle=c.fillStyle;
-     c.setLineDash([3,3]);c.beginPath();c.moveTo(x,yClip(p.lo));c.lineTo(x,yClip(p.hi));c.stroke();
-     for(const val of [p.lo,p.mid,p.hi]){const yy=yClip(val);c.beginPath();c.arc(x,yy,2,0,Math.PI*2);c.fill();}
-     c.fillText(p.m+"'",x-6,18+10);
+  // A single statistical forecast path, distinct from historical candles.
+  const forecast=this.data.trend_forecast;
+  const forecastFresh=forecast?.available&&this.offset===0&&this.data.symbol===this.symbol&&this.data.timeframe===this.tf
+   &&Math.abs(Date.now()/1000-forecast.as_of)<({M1:180,M5:900,M15:2700}[this.tf]||0);
+  if(forecastFresh){
+   const left=bars.length*dx,right=w-90,span=right-left;
+   if(span>30){
+    c.save();c.beginPath();c.rect(left,18,span,plotH-18);c.clip();
+    c.setLineDash([5,4]);c.lineWidth=2;let px=left,py=y(forecast.anchor_price);
+    const palette={15:'#22d3ee',30:'#fbbf24',60:'#fb7185'};
+    for(const p of forecast.points){const x=left+span*p.minutes_ahead/60,yy=y(p.price);
+     c.strokeStyle=c.fillStyle=palette[p.minutes_ahead];c.beginPath();c.moveTo(px,py);c.lineTo(x,yy);c.stroke();
+     c.beginPath();c.arc(x,yy,3,0,Math.PI*2);c.fill();
+     c.fillText(p.minutes_ahead+'m '+fmt(p.price),Math.min(x-20,right-80),Math.max(45,Math.min(plotH-12,yy-8)));
+     px=x;py=yy;
     }
-    c.setLineDash([]);c.lineWidth=1;c.font='10px sans-serif';
-    c.fillStyle='rgba(147,197,253,.95)';
-    c.fillText('سناریوی نوسان (غیرکالیبره، نه پیش‌بینی/سیگنال)',Math.min(w-350,Math.max(8,lastX+6)),32);
-    c.restore();
+    c.restore();c.fillStyle='#cbd5e1';c.fillText('پیش‌بینی آماری آزمایشی — نه سیگنال سفارش',Math.max(8,left-180),40);
    }
   }
   // Real broker positions, not hypothetical orders; never drag-to-trade.
@@ -231,6 +213,8 @@ el('desk-compare').onclick=async()=>{
  if(!active)return;const chart=active,box=el('desk-candles');box.textContent='در حال بازخوانی مستقیم…';
  try{const d=await get('/api/chart?'+new URLSearchParams({symbol:chart.symbol,tf:chart.tf,selected:[...chart.selected].join(',')||'ema',full:'1'}));if(chart.symbol!==d.symbol||chart.tf!==d.timeframe)return;
  chart.data={...chart.data,...d};chart.draw();box.replaceChildren();box.append(make('p',d.symbol+' / '+d.timeframe+' • آخرین ردیف ممکن است کندل در حال تشکیل باشد.'));
+ const forecast=d.trend_forecast;
+ if(forecast?.available){box.append(make('p',forecast.warning+' | روش: OLS روی ۳۲ کندل بسته، بدون مدل زبانی'));for(const p of forecast.points)box.append(make('p',p.minutes_ahead+' دقیقه: '+fmt(p.price)+' | MAE: '+fmt(p.mae)+' | MAE بدون تغییر: '+fmt(p.no_change_mae)+' | آزمون گذشته: '+p.evaluation_samples));}else{box.append(make('p','پیش‌بینی در دسترس نیست: '+(forecast?.reason||'unknown')));}
  const scenario=d.hourly_scenarios;
  const scenarioLabel='سناریوی نوسان یک‌ساعته (غیرکالیبره) — نه پیش‌بینی قابل‌اتکا و نه سیگنال خرید/فروش';
  if(scenario?.available){box.append(make('p',scenarioLabel));box.append(make('p',scenario.warning||''));const st=make('table');const sh=make('tr');for(const label of ['دقیقهٔ آینده','سناریوی پایین','مرکز بدون روند','سناریوی بالا'])sh.append(make('th',label));st.append(sh);for(const p of scenario.points){const row=make('tr');for(const v of [p.minutes_ahead,p.lower,p.center,p.upper])row.append(make('td',fmt(v)));st.append(row);}box.append(st);}else{box.append(make('p','سناریوی نوسان یک‌ساعته (غیرکالیبره) در دسترس نیست؛ دادهٔ بستهٔ تازه در M1 تا H1 لازم است.'));}

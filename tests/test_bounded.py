@@ -73,3 +73,11 @@ def test_engine_errors_stop_without_retry():
     result = run_window(lambda: {'errors': [{'error': 'blocked'}]}, t, clock=t.clock)
     assert result['evaluations'] == 1
     assert result['halt_reason'] == 'evaluation_error'
+
+
+def test_refusal_counts_explain_zero_orders():
+    t = Timer()
+    result = run_window(lambda: {'symbols': [{'status': 'refused',
+        'blockers': ['mode=guarded: confidence 50 < 62']}]}, t, duration=2, clock=t.clock)
+    assert result['refusal_counts'] == {'confidence_below_threshold': 2}
+    assert result['executed_entries'] == 0

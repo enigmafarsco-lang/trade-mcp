@@ -11,12 +11,20 @@ def run_window(step, stop, *, duration=300, clock=time.monotonic):
     pending = 0
     executed = 0
     halt_reason = None
+    refusals = {}
     while attempts < duration and clock() < deadline and not stop.is_set():
         # Exceptions stop the entire window; no automatic retry.
         report = step()
         attempts += 1
         if isinstance(report, dict):
             entries = report.get('symbols') or []
+            for entry in entries:
+                for blocker in entry.get('blockers') or []:
+                    # Keep only bounded known reason categories, never raw records.
+                    reason = ('confidence_below_threshold' if 'confidence' in str(blocker)
+                              else 'guarded_risk_warning' if any(s in str(blocker).lower()
+                                   for s in ('spiking', 'disagree')) else 'other_guard')
+                    refusals[reason] = refusals.get(reason, 0)+1
             executed += sum(e.get('status') == 'executed' for e in entries)
             pending += sum(e.get('status') == 'pending' for e in entries)
             if pending or report.get('errors'):
@@ -27,4 +35,5 @@ def run_window(step, stop, *, duration=300, clock=time.monotonic):
         stop.wait(max(0, min(next_slot, deadline) - clock()))
     return {'ok': True, 'evaluations': attempts, 'stopped': stop.is_set(),
             'duration_limit_seconds': duration, 'orders_guaranteed': False,
-            'executed_entries': executed, 'pending_entries': pending, 'halt_reason': halt_reason}
+            'executed_entries': executed, 'pending_entries': pending, 'halt_reason': halt_reason,
+            'refusal_counts': refusals}
