@@ -87,3 +87,22 @@ def test_kronos_checks_python_before_install_and_preserves_pip_diagnostics():
     for cell in _nb(KRONOS_NB)['cells']:
         if cell['cell_type'] == 'code':
             compile(''.join(cell['source']), '<colab-cell>', 'exec')
+
+
+def test_kronos_runtime_validation_precedes_upload_and_protects_partial_imports():
+    nb = _nb(KRONOS_NB)
+    text = _text(nb)
+    assert text.index('validate runtime BEFORE') < text.index('uploaded = files.upload()')
+    assert '_changed_loaded' in text
+    assert 'TORCH_LIBRARY/prims' in text
+    assert 'Runtime > Restart session' in text
+    assert 'torch.tensor([1.0, 2.0])' in text
+    for cell in nb['cells']:
+        if cell['cell_type'] != 'code':
+            continue
+        code = ''.join(cell['source'])
+        compile(code, '<colab-cell>', 'exec')
+        assert cell['execution_count'] is None
+        assert cell['outputs'] == []
+        if code.startswith('# COLAB ONLY - actual upstream inference'):
+            assert code.index("globals().get('_KRONOS_RUNTIME_READY')") < code.index('from model import')
