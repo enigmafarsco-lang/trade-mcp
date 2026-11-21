@@ -63,3 +63,30 @@ def closed_m1_segment(bars, *, now, minimum=420, maximum=1000):
         )
     # Most recent eligible continuous segment, selected before seeing any forecasts.
     return eligible[-1][-maximum:]
+
+
+def broker_time_research_segment(bars, *, minimum=420, maximum=1000):
+    """Keep broker wall-clock labels, NOT UTC. Successor proves each kept bar closed.
+
+    No timezone inference and no live freshness claim. Discard latest broker bar;
+    reject mixed/malformed/duplicate timestamps before selecting a continuous segment.
+    """
+    if not isinstance(bars, list) or len(bars) < 2:
+        raise HistoryExportError('EMPTY_HISTORY', 'At least two broker bars required')
+    converted = []
+    seen = set()
+    for bar in bars:
+        try:
+            stamp = bar['time']
+            if isinstance(stamp, bool):
+                raise ValueError
+            stamp = float(stamp)
+            if not math.isfinite(stamp) or stamp <= 0 or stamp % 60 or stamp in seen:
+                raise ValueError
+            seen.add(stamp)
+            converted.append(dict(bar, time_utc=stamp))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            raise HistoryExportError('INVALID_TIMESTAMP', 'Invalid broker wall-clock timestamp') from None
+    converted.sort(key=lambda b: b['time_utc'])
+    # Internal numeric validation only: these numbers remain broker labels, never UTC.
+    return closed_m1_segment(converted[:-1], now=math.inf, minimum=minimum, maximum=maximum)

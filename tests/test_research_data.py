@@ -85,3 +85,70 @@ def test_export_cli_hides_transport_secrets(tmp_path, monkeypatch, capsys):
     assert 'HISTORY_REQUEST_FAILED' in str(exc.value)
     assert 'SECRET' not in str(exc.value)+str(capsys.readouterr())
     assert not output.exists()
+
+
+def test_broker_research_works_without_utc_and_discards_latest():
+    from trade_mcp.research_data import broker_time_research_segment
+
+    data = [dict(b, time=b['time_utc'], time_utc=None) for b in bars(1001, start=60000)]
+    result = broker_time_research_segment(data)
+    assert len(result) == 1000
+    assert result[0][0] == 60000
+    assert result[-1][0] == data[-2]['time']
+    assert all(b['time_utc'] is None for b in data)
+    with pytest.raises(ValueError, match='Verified UTC'):
+        closed_m1_segment(data, now=200000)
+
+
+def test_broker_research_rejects_duplicates_short_and_gapped():
+    from trade_mcp.research_data import broker_time_research_segment
+
+    data = [dict(b, time=b['time_utc']) for b in bars(421, start=60000)]
+    with pytest.raises(ValueError):
+        broker_time_research_segment(data+[data[-1]])
+    with pytest.raises(ValueError):
+        broker_time_research_segment(data[:-1])
+    with pytest.raises(ValueError):
+        broker_time_research_segment(data[:200]+data[201:])
+
+
+def test_export_cli_broker_mode_marks_output_not_utc(tmp_path, monkeypatch):
+    import importlib.util
+    import json
+    import sys
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    path = Path(__file__).resolve().parents[1]/'scripts'/'export_kronos_history.py'
+    spec = importlib.util.spec_from_file_location('history_export_broker', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    calls = []
+
+    class FakeMT5:
+        def __init__(self, *args):
+            pass
+
+        def candles(self, symbol, timeframe, count):
+            calls.append(count)
+            return [dict(b, time=b['time_utc'], time_utc=None)
+                    for b in bars(1001, start=60000)]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(module, 'MT5', FakeMT5)
+    monkeypatch.setattr(module, 'NativeBridge', lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, 'load_dotenv', lambda: None)
+    monkeypatch.setattr(module.Config, 'from_env', lambda: SimpleNamespace(
+        backend='native', mcp_url='private', mcp_token='private', timeout=1))
+    output = tmp_path/'output.json'
+    monkeypatch.setattr(sys, 'argv', ['export', str(output), '--broker-time-research'])
+    module.main()
+    result = json.loads(output.read_text())
+    assert calls == [1001]
+    assert result['timezone'] == 'broker_wall_clock'
+    assert result['time_audit']['utc_verified'] is False
+    assert result['time_audit']['execution_authorized'] is False
+    assert len(result['rows']) == 1000
+    assert output.stat().st_mode & 0o777 == 0o600

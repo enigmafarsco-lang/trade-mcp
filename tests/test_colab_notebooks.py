@@ -173,3 +173,11 @@ def test_multi_origin_evaluator_pin_exists_in_git():
         ['git', 'rev-parse', '--verify', pin+'^{commit}'], cwd=ROOT, text=True,
     ).strip()
     assert resolved == pin
+
+
+def test_multi_origin_broker_clock_is_explicit_research_not_utc():
+    text = _text(_nb(ROOT/'notebooks'/'kronos_multi_origin_colab.ipynb'))
+    assert "TIME_BASIS in ('UTC','broker_wall_clock')" in text
+    assert "audit.get('newest_bar_discarded') is True" in text
+    assert "audit.get('execution_authorized') is False" in text
+    assert "report.update(time_basis=TIME_BASIS,utc_verified=TIME_BASIS=='UTC'" in text
