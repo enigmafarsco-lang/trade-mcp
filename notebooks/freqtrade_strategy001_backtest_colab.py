@@ -12,12 +12,30 @@ assert 'google.colab' in sys.modules and Path('/content').is_dir(), 'Hosted Goog
 assert (3,11)<=sys.version_info[:2]<=(3,12), 'Use Colab Python 3.11..3.12'
 WORK=Path('/content/freqtrade-real-backtest')
 WORK.mkdir(exist_ok=True)
-PY=WORK/'venv/bin/python'
-if not PY.exists():
-    subprocess.check_call([sys.executable,'-m','venv',str(WORK/'venv')])
+# Colab system Python may lack ensurepip; preserve any partial old venv.
+# Install bootstrap tooling into /content only, not the notebook environment.
+def run_visible(args, **kwargs):
+    result=subprocess.run(list(map(str,args)),capture_output=True,text=True,**kwargs)
+    if result.stdout:
+        print(result.stdout)
+    if result.stderr:
+        print(result.stderr)
+    if result.returncode:
+        raise RuntimeError('Command failed; read the complete output above. Do not continue.')
+    return result
+BOOTSTRAP=WORK/'virtualenv-bootstrap'
+run_visible([sys.executable,'-m','pip','install','--target',BOOTSTRAP,'virtualenv==20.28.0'])
+ENV=WORK/'isolated-env'
+PY=ENV/'bin/python'
+bootstrap_env=os.environ.copy()
+bootstrap_env['PYTHONPATH']=str(BOOTSTRAP)
+run_visible([sys.executable,'-m','virtualenv','--no-download','--python',sys.executable,ENV],
+            env=bootstrap_env)
+run_visible([PY,'-c',
+    'import sys,pip; assert sys.prefix!=sys.base_prefix; print("Isolated Python ready:",sys.version)'])
 FREQTRADE_VERSION='2025.10'
-subprocess.check_call([str(PY),'-m','pip','install','freqtrade=='+FREQTRADE_VERSION])
-subprocess.check_call([str(PY),'-m','freqtrade','--version'])
+run_visible([PY,'-m','pip','install','freqtrade=='+FREQTRADE_VERSION])
+run_visible([PY,'-m','freqtrade','--version'])
 subprocess.check_call([str(PY),'-m','pip','freeze'],stdout=open(WORK/'dependencies.txt','w'))
 
 

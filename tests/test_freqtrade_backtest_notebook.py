@@ -73,3 +73,16 @@ def test_engine_result_reader_preserves_zero_trades_and_exports(tmp_path, monkey
     (results/'final_test'/'result.zip').unlink()
     with pytest.raises(AssertionError, match='actual engine result'):
         exec(compile(codes()[-1], '<missing-result>', 'exec'), env)
+
+
+def test_setup_avoids_system_ensurepip_and_checks_real_isolation():
+    setup = codes()[0]
+    assert "'virtualenv==20.28.0'" in setup
+    assert "'--target',BOOTSTRAP" in setup
+    assert "'-m','virtualenv','--no-download'" in setup
+    assert 'sys.prefix!=sys.base_prefix' in setup
+    assert "'-m','venv'" not in setup
+    assert 'capture_output=True,text=True' in setup
+    assert 'print(result.stderr)' in setup
+    assert 'if result.returncode:' in setup
+    assert setup.index('sys.prefix!=sys.base_prefix') < setup.index("'freqtrade=='+FREQTRADE_VERSION")
