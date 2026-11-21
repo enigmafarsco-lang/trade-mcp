@@ -1,0 +1,95 @@
+{
+  "schema": "kronos-multi-origin-evaluation/v1",
+  "time_basis": "broker_wall_clock",
+  "utc_verified": false,
+  "origins": 5,
+  "final_test_origins": 1,
+  "final_test_used_for_tuning": false,
+  "research_only": true,
+  "execution_authorized": false,
+  "validated_for_trading": false,
+  "evaluator_commit": "4f66fe8b4ea4a3ba8f68ca2d96f70d1d05b426da",
+  "settings": {
+    "origins": 5,
+    "final_test_origins": 1,
+    "step": 60,
+    "lookback": 15
+  },
+  "split_summary": {
+    "evaluation": [
+      {
+        "minutes_ahead": 15,
+        "n": 4,
+        "kronos_mae": 11.038344726562514,
+        "no_change_mae": 8.014999999999986,
+        "simple_trend_mae": 13.100044642857142,
+        "kronos_vs_no_change_ratio": 1.3772108205318194,
+        "kronos_vs_simple_trend_ratio": 0.8426188633319827
+      },
+      {
+        "minutes_ahead": 30,
+        "n": 4,
+        "kronos_mae": 13.763588867187536,
+        "no_change_mae": 7.2650000000001,
+        "simple_trend_mae": 15.845089285714266,
+        "kronos_vs_no_change_ratio": 1.8945063822694215,
+        "kronos_vs_simple_trend_ratio": 0.8686343521962111
+      },
+      {
+        "minutes_ahead": 60,
+        "n": 4,
+        "kronos_mae": 36.11251708984389,
+        "no_change_mae": 11.385000000000105,
+        "simple_trend_mae": 20.80017857142832,
+        "kronos_vs_no_change_ratio": 3.1719382599774755,
+        "kronos_vs_simple_trend_ratio": 1.7361638009901035
+      }
+    ],
+    "final_test": [
+      {
+        "minutes_ahead": 15,
+        "n": 1,
+        "kronos_mae": 18.343925781250164,
+        "no_change_mae": 5.539999999999964,
+        "simple_trend_mae": 5.481249999999818,
+        "kronos_vs_no_change_ratio": 3.311177938853842,
+        "kronos_vs_simple_trend_ratio": 3.3466683295326383
+      },
+      {
+        "minutes_ahead": 30,
+        "n": 1,
+        "kronos_mae": 17.025097656250182,
+        "no_change_mae": 4.519999999999982,
+        "simple_trend_mae": 17.522500000000036,
+        "kronos_vs_no_change_ratio": 3.7666145257190817,
+        "kronos_vs_simple_trend_ratio": 0.9716135058496302
+      },
+      {
+        "minutes_ahead": 60,
+        "n": 1,
+        "kronos_mae": 23.6125781249998,
+        "no_change_mae": 1.4399999999995998,
+        "simple_trend_mae": 42.64500000000044,
+        "kronos_vs_no_change_ratio": 16.397623697921084,
+        "kronos_vs_simple_trend_ratio": 0.5537009760815936
+      }
+    ]
+  },
+  "postprocessing_summary": {
+    "origins_with_ohlc_corrections": 4,
+    "origins_with_volume_corrections": 0,
+    "ohlc_corrections_total": 18,
+    "volume_corrections_total": 0,
+    "ohlc_corrections_mean_per_origin": 3.6,
+    "volume_corrections_mean_per_origin": 0.0,
+    "ohlc_correction_size_mean_of_origin_means": 0.1740273902529762,
+    "volume_correction_size_mean_of_origin_means": 0.0
+  },
+  "evidence": "User-supplied Colab report; inspected in Arena, not independently rerun",
+  "assessment": "Kronos worse than no-change at all reported horizons in evaluation and final test; no trading validation",
+  "limitations": [
+    "Only four evaluation origins and one final-test origin",
+    "Broker wall-clock labels, not verified UTC",
+    "Reported flags are provenance claims, not proof against prior tuning"
+  ]
+}
