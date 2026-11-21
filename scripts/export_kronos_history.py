@@ -1,5 +1,7 @@
 """Read-only native M1 export for Colab; never loads models or account/order data."""
 import argparse
+import contextlib
+import io
 import json
 import os
 import sys
@@ -11,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'src'))
 from trade_mcp.bridge.client import MT5  # noqa: E402
 from trade_mcp.bridge.native import NativeBridge  # noqa: E402
 from trade_mcp.config import Config, load_dotenv  # noqa: E402
-from trade_mcp.research_data import closed_m1_segment  # noqa: E402
+from trade_mcp.research_data import HistoryExportError, closed_m1_segment  # noqa: E402
 
 
 def main():
@@ -28,12 +30,25 @@ def main():
         raise SystemExit('Native broker history required; no mock substitution')
     mt5 = MT5(NativeBridge(cfg.mcp_url, cfg.mcp_token, timeout=cfg.timeout), args.symbol)
     try:
-        rows = closed_m1_segment(mt5.candles(args.symbol, 'M1', args.count),
-                                 now=time.time(), maximum=args.count)
+        # Transport libraries must not print URLs, headers or raw payloads.
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            try:
+                bars = mt5.candles(args.symbol, 'M1', args.count)
+            except Exception:
+                raise HistoryExportError(
+                    'HISTORY_REQUEST_FAILED',
+                    'Native history request failed; verify running MCP server and local connection settings. '
+                    'No raw exception, URL, token or payload printed.',
+                ) from None
+        rows = closed_m1_segment(bars, now=time.time(), maximum=args.count)
+    except HistoryExportError as exc:
+        raise SystemExit(f'History export blocked [{exc.code}]: {exc}') from None
     except Exception:
         raise SystemExit('History export failed; check UTC/contiguity/access locally. Raw error withheld.') from None
     finally:
-        mt5.close()
+        with (contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()),
+              contextlib.suppress(Exception)):
+            mt5.close()
     args.output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd = os.open(args.output, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     with os.fdopen(fd, 'w') as stream:
