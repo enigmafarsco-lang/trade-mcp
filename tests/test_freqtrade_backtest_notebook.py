@@ -100,7 +100,7 @@ def test_engine_command_wrapper_surfaces_stderr_without_hidden_retry():
         raise RuntimeError('visible engine diagnostic')
 
     env = {'PY': Path('/isolated/python'), 'CONFIG': Path('/research/config.json'),
-           'run_visible': fail_visible}
+           'run_visible': fail_visible, 'USERDIR': Path('/research/user_data')}
     exec(compile(ast.Module(body=[node], type_ignores=[]), '<wrapper>', 'exec'), env)
     with pytest.raises(RuntimeError, match='visible engine diagnostic'):
         env['ft']('download-data', '--pairs', 'BTC/USDT')
@@ -109,3 +109,19 @@ def test_engine_command_wrapper_surfaces_stderr_without_hidden_retry():
     with pytest.raises(AssertionError):
         env['ft']('trade')
     assert len(calls) == 1
+
+
+
+def test_onecell_is_full_script_and_stops_on_first_failure():
+    nb = json.loads((ROOT/'notebooks/freqtrade_strategy001_onecell_colab.ipynb').read_text())
+    cells = [c for c in nb['cells'] if c['cell_type'] == 'code']
+    assert len(cells) == 1
+    script = ''.join(cells[0]['source'])
+    assert script == (ROOT/'notebooks/freqtrade_strategy001_backtest_colab.py').read_text()
+    compile(script, '<onecell>', 'exec')
+    assert "USERDIR.mkdir(parents=True,exist_ok=True)" in script
+    assert "'--userdir',USERDIR" in script
+    assert "run_visible([PY,'-c',coverage_code,DATA])" in script
+    assert script.index('COVERAGE_VERIFIED=False') < script.index("ft('download-data'")
+    assert script.index('COVERAGE_VERIFIED=True') < script.index("ft('backtesting'")
+    assert 'Data checks did not pass; do not backtest' in script

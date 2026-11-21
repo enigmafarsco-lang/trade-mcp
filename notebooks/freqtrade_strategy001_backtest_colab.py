@@ -1,4 +1,6 @@
-# Exported Colab cells; run only in a fresh hosted Colab runtime.
+# Complete hosted-Colab-only Freqtrade backtest. Paste the entire file into ONE cell.
+# No credentials, MT5 calls, live trading, fallback or optimization.
+# A failure stops the whole cell. Fix the reported cause before rerunning.
 
 # # بک‌تست واقعی Strategy001 با موتور Freqtrade
 # **آمادهٔ اجرا در Google Colab؛ هنوز اجرا نشده است.** این آزمایش مستقل BTC/USDT در Binance spot است؛ نه XAUUSD، نه مومنتوم M1 و نه سفارش MT5.
@@ -43,9 +45,9 @@ FREQTRADE_COMMIT='f3340ce11f5bdf62f598522e64d1f5638eaa13f5'
 STRATEGY001_SHA256='2357996e6594458e8db45b5f757918462afa3c998de9d06e2af0c009ddc4b80d'
 REPO=WORK/'freqtrade-strategies'
 if not REPO.exists():
-    subprocess.check_call(['git','clone','https://github.com/freqtrade/freqtrade-strategies.git',str(REPO)])
-subprocess.check_call(['git','-C',str(REPO),'fetch','origin',FREQTRADE_COMMIT])
-subprocess.check_call(['git','-C',str(REPO),'checkout','--detach',FREQTRADE_COMMIT])
+    run_visible(['git','clone','https://github.com/freqtrade/freqtrade-strategies.git',str(REPO)])
+run_visible(['git','-C',str(REPO),'fetch','origin',FREQTRADE_COMMIT])
+run_visible(['git','-C',str(REPO),'checkout','--detach',FREQTRADE_COMMIT])
 source_path=REPO/'user_data/strategies/Strategy001.py'
 assert hashlib.sha256(source_path.read_bytes()).hexdigest()==STRATEGY001_SHA256, 'Upstream source mismatch'
 assert subprocess.check_output(['git','-C',str(REPO),'rev-parse','HEAD'],text=True).strip()==FREQTRADE_COMMIT
@@ -56,6 +58,8 @@ print('Verified genuine GPL-3.0 Strategy001. Source is not modified.')
 # سرمایه و stake زیر صرفاً عددهای شبیه‌سازی USDT هستند. کارمزد فرضی ۰٫۱٪ در هر سمت، یک معاملهٔ باز، warm-up برابر۲۰۰ کندل؛ ROI و stoploss خود Strategy001 دست‌نخورده می‌مانند.
 # موتور جزئیات کندل۱دقیقه را برای استراتژی۵دقیقه استفاده می‌کند؛ این دادهٔ تیک/Bid/Ask نیست و اسلیپیج، صف سفارش و اجرای بروکر را اثبات نمی‌کند.
 
+USERDIR=WORK/'user_data'
+USERDIR.mkdir(parents=True,exist_ok=True)
 DATA=WORK/'data'
 DATA.mkdir(exist_ok=True)
 CONFIG=WORK/'config.json'
@@ -74,12 +78,13 @@ config={
  'telegram':{'enabled':False},'api_server':{'enabled':False},'bot_name':'research_only'
 }
 CONFIG.write_text(json.dumps(config,indent=2))
+COVERAGE_VERIFIED=False
 PLAN={'evaluation':'20260101-20260301','final_test':'20260301-20260401'}
 print('Fixed test plan:',PLAN)
 # Only two allowlisted engine subcommands; never trade, webserver or hyperopt.
 def ft(command,*args):
     assert command in ('download-data','backtesting')
-    return run_visible([PY,'-m','freqtrade',command,'--config',CONFIG,*args])
+    return run_visible([PY,'-m','freqtrade',command,'--config',CONFIG,'--userdir',USERDIR,*args])
 ft('download-data','--datadir',DATA,'--pairs','BTC/USDT','--timeframes','5m','1m',
    '--timerange','20251230-20260401','--data-format-ohlcv','feather')
 
@@ -87,6 +92,7 @@ ft('download-data','--datadir',DATA,'--pairs','BTC/USDT','--timeframes','5m','1m
 # ## بررسی داده، قبل از دیدن نتیجه
 # نبود داده/شکاف/کمبود warm-up باعث توقف می‌شود؛ از موفقیت ظاهری با بازهٔ خالی جلوگیری می‌کند. دادهٔ گمشده ساخته نمی‌شود.
 
+COVERAGE_VERIFIED=False
 coverage_code = r"""
 import sys,json,hashlib
 from pathlib import Path
@@ -95,7 +101,9 @@ root=Path(sys.argv[1])
 audit={}
 for tf,seconds in [('5m',300),('1m',60)]:
     path=root/f'BTC_USDT-{tf}.feather'
+    assert path.is_file(), f'Missing data file: {path.name}; download did not produce expected candles'
     df=pd.read_feather(path)
+    assert not df.empty, f'Empty data file: {path.name}'
     dates=pd.to_datetime(df['date'],utc=True)
     assert dates.is_monotonic_increasing and dates.is_unique, 'Unsorted/duplicate candles'
     assert ((dates.diff().dropna().dt.total_seconds())==seconds).all(), 'Historical gap; stop, do not fill'
@@ -112,11 +120,13 @@ for tf,seconds in [('5m',300),('1m',60)]:
 (root.parent/'coverage.json').write_text(json.dumps(audit,indent=2))
 print(json.dumps(audit,indent=2))
 """
-subprocess.check_call([str(PY),'-c',coverage_code,str(DATA)])
+run_visible([PY,'-c',coverage_code,DATA])
+COVERAGE_VERIFIED=True
 
 
 # Real engine, two predeclared windows. No optimization and no result cache.
-RESULTS=WORK/'results'
+assert globals().get('COVERAGE_VERIFIED') is True, 'Data checks did not pass; do not backtest'
+RESULTS=WORK/'verified-results'
 RESULTS.mkdir(exist_ok=True)
 for split,timerange in PLAN.items():
     output=RESULTS/split
