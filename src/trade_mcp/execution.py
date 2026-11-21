@@ -8,13 +8,15 @@ trigger.
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any
 
 from .bridge.base import BridgeError
-from .config import Config
+from .config import Config, sizing_balance
 from .risk import (
     has_blockers,
+    loss_per_lot,
     lots_for_risk,
     normalise_volume,
     validate_order,
@@ -35,6 +37,25 @@ def _blockers(issues: list[dict[str, str]]) -> list[str]:
     return [f"{i['code']}: {i['message']}" for i in issues if i.get("severity") == "blocker"]
 
 
+def _effective_lot_cap(cfg: Config, max_lot: float | None) -> float | None:
+    """Stricter of the config ceiling and an optional caller (agent) ceiling.
+
+    A caller can only lower the cap. Invalid or non-positive call caps are
+    ignored rather than silently widening the config limit.
+    """
+    cap = float(cfg.max_lot) if cfg.max_lot else None
+    if max_lot is None:
+        return cap
+    try:
+        call_cap = float(max_lot)
+    except (TypeError, ValueError):
+        return cap
+    if call_cap <= 0:
+        return cap
+    return call_cap if cap is None else min(cap, call_cap)
+
+
+
 def propose_open(
     *,
     mt5,
@@ -47,7 +68,15 @@ def propose_open(
     stop_loss: float | None = None,
     take_profit: float | None = None,
     comment: str = "trade-mcp",
+    entry_guard=None,
+    max_lot: float | None = None,
 ) -> dict[str, Any]:
+    """Price, size and journal an opening proposal.
+
+    ``max_lot`` is an optional stricter ceiling for this call (an agent's own
+    limit). It is applied during sizing and can only lower the volume - it never
+    raises ``cfg.max_lot`` and never rounds up to the broker minimum.
+    """
     side = str(side).lower()
     if side not in {"buy", "sell"}:
         return {"ok": False, "error": "bad_side", "message": "side must be 'buy' or 'sell'"}
@@ -55,7 +84,16 @@ def propose_open(
     symbol = mt5.resolve_symbol(symbol or cfg.default_symbol)
     info = mt5.symbol_info(symbol)
     digits = int(float(info.get("digits") or 2))
-    entry = _market_price(mt5, symbol, side)
+    if entry_guard is not None:
+        tick = mt5.tick(symbol)
+        check = entry_guard(tick, info)
+        if not check.get('ok'):
+            return {'ok':False, 'error':'post_response_check_failed',
+                    'message':'Entry conditions no longer valid; no proposal created.',
+                    'post_response_check':check}
+        entry = float(tick['ask'] if side == 'buy' else tick['bid'])
+    else:
+        entry = _market_price(mt5, symbol, side)
     account = mt5.account_info(fresh=True)
     positions = mt5.positions()
 
@@ -66,20 +104,53 @@ def propose_open(
             "message": "provide stop_loss (and optionally risk_percent) so the volume can be sized",
         }
 
+    cash_policy = cfg.demo_cash_policy and comment.startswith('agent:')
+    if cash_policy:
+        from .demo_guard import LOSS_USD, account_key
+        try:
+            account_key(account)
+        except ValueError:
+            return {'ok':False,'error':'usd_demo_required'}
+        if positions or mt5.orders():
+            return {'ok':False,'error':'cash_policy_single_position_required'}
+        if not stop_loss or sizing_balance(account,cfg) <= 0:
+            return {'ok':False,'error':'cash_policy_protective_stop_required'}
+        risk_percent = min(LOSS_USD/sizing_balance(account,cfg)*100,
+                           float(risk_percent if risk_percent is not None else cfg.max_risk_percent),
+                           cfg.max_risk_percent)
+
     sizing: dict[str, Any] | None = None
     if volume is None:
         sizing = lots_for_risk(
-            balance=float(account.get("equity") or account.get("balance") or 0.0),
+            balance=sizing_balance(account, cfg),
             risk_percent=(cfg.max_risk_percent if risk_percent is None else float(risk_percent)),
             entry=entry,
             stop=float(stop_loss),
             info=info,
-            max_lot=cfg.max_lot,
+            max_lot=_effective_lot_cap(cfg, max_lot),
         )
         if not sizing.get("ok"):
-            return {"ok": False, "error": "sizing_failed", "message": sizing.get("error")}
+            return {"ok": False, "error": "sizing_failed", "message": sizing.get("error"),
+                    "sizing": sizing, "checked_entry": entry,
+                    "stop_loss": stop_loss, "take_profit": take_profit,
+                    "effective_sizing_balance": sizing_balance(account, cfg),
+                    "max_lot": _effective_lot_cap(cfg, max_lot)}
         volume = float(sizing["volume"])
+    elif max_lot is not None:
+        cap = _effective_lot_cap(cfg, max_lot)
+        if float(volume) > cap + 1e-9:
+            return {"ok": False, "error": "volume_above_call_lot_cap",
+                    "message": f"requested {volume} lot exceeds the {cap} lot cap; no proposal created",
+                    "checked_entry": entry, "stop_loss": stop_loss,
+                    "take_profit": take_profit, "max_lot": cap}
     volume, vol_warnings = normalise_volume(float(volume), info)
+
+    if cash_policy:
+        from .demo_guard import TARGET_USD
+        per_price = loss_per_lot(info, 1.0)*volume
+        if per_price <= 0:
+            return {'ok':False,'error':'cash_policy_tick_value_required'}
+        take_profit = round(entry + (TARGET_USD/per_price if side == 'buy' else -TARGET_USD/per_price), digits)
 
     if take_profit is None and stop_loss:
         risk = abs(entry - float(stop_loss))
@@ -109,6 +180,9 @@ def propose_open(
 
     payload = {
         "kind": "open",
+        "demo_cash_policy": cash_policy,
+        "cash_loss_usd": min(10.0, float(cfg.demo_cash_loss_usd)) if cash_policy else None,
+        "cash_account_key": account_key(account) if cash_policy else None,
         "symbol": symbol,
         "side": side,
         "volume": volume,
@@ -120,8 +194,18 @@ def propose_open(
         "digits": digits,
         "sizing": sizing,
     }
+    if entry_guard is not None:
+        # Sizing/margin bridge calls can also be slow. Expire the SAME priced
+        # tick rather than silently substituting a new entry after calculations.
+        check = entry_guard(tick, info)
+        if not check.get('ok'):
+            return {'ok':False, 'error':'post_response_check_failed',
+                    'message':'Entry conditions expired during validation; no proposal created.',
+                    'post_response_check':check}
     proposal = store.create_proposal(payload, ttl=cfg.proposal_ttl)
     blocked = has_blockers(issues)
+    estimated_risk = (loss_per_lot(info, abs(entry-float(stop_loss)))*volume
+                      if stop_loss else None)
 
     return {
         "ok": True,
@@ -141,17 +225,13 @@ def propose_open(
             "take_profit": payload["tp"] or None,
             "risk_per_unit": payload["risk_per_unit"],
             "estimated_margin": margin,
-            "risk_amount": (sizing or {}).get("actual_risk"),
-            "risk_percent_of_equity": (
-                round(
-                    float((sizing or {}).get("actual_risk") or 0)
-                    / float(account.get("equity") or 1)
-                    * 100,
-                    2,
-                )
-                if sizing
-                else None
-            ),
+            "estimated_profit": (round(loss_per_lot(info, abs(entry-float(take_profit)))*volume, 4)
+                                 if take_profit else None),
+            "risk_amount": round(estimated_risk, 4) if estimated_risk is not None else None,
+            "risk_percent_of_budget": (round(estimated_risk/sizing_balance(account, cfg)*100, 4)
+                                       if estimated_risk is not None and sizing_balance(account, cfg)>0 else None),
+            "risk_percent_of_equity": (round(estimated_risk/float(account.get("equity") or 1)*100, 4)
+                                       if estimated_risk is not None else None),
             "trading_enabled": cfg.allow_trading,
         },
         "next_step": (
@@ -306,6 +386,9 @@ def cancel(*, store: Store, proposal_id: str) -> dict[str, Any]:
 def confirm(
     *, mt5, cfg: Config, store: Store, proposal_id: str, deviation: int | None = None
 ) -> dict[str, Any]:
+    if getattr(cfg, 'paper_trading', False):
+        return {'ok': False, 'paper': True, 'error': 'paper_mode_no_broker_execution',
+                'message': 'Use the paper runner; no broker request or simulated fill was created'}
     prop = store.get_proposal(proposal_id)
     if prop is None:
         return {"ok": False, "error": "unknown_proposal", "message": f"no proposal {proposal_id}"}
@@ -336,6 +419,8 @@ def confirm(
 
     try:
         if kind == "open":
+            if cfg.demo_cash_policy and not payload.get('demo_cash_policy'):
+                return {'ok':False,'error':'fresh_cash_policy_proposal_required','executed':False}
             symbol = payload["symbol"]
             side = payload["side"]
             current = _market_price(mt5, symbol, side)
@@ -353,16 +438,59 @@ def confirm(
                     "current_price": current,
                     "reference_price": reference,
                 }
+            account = mt5.account_info(fresh=True)
+            if payload.get('demo_cash_policy'):
+                from .demo_guard import account_key
+                try:
+                    if account_key(account) != payload.get('cash_account_key'):
+                        return {'ok':False,'error':'cash_policy_account_changed','executed':False}
+                except ValueError:
+                    return {'ok':False,'error':'usd_demo_required','executed':False}
+            if cfg.opencode_url and account.get('trade_mode') != 'demo':
+                return {"ok": False, "error": "demo_account_required", "executed": False}
+            info = mt5.symbol_info(symbol, fresh=True)
+            margin = float(mt5.calc_order(symbol, side, float(payload['volume'])).get('margin') or 0)
+            issues = validate_order(cfg=cfg, info=info, symbol=symbol, side=side,
+                                    volume=float(payload['volume']), entry=current,
+                                    stop=float(payload.get('sl') or 0), take_profit=float(payload.get('tp') or 0),
+                                    account=account, open_positions=mt5.positions(), margin_required=margin)
+            if has_blockers(issues):
+                return {"ok": False, "error": "revalidation_failed", "executed": False,
+                        "blockers": _blockers(issues), "message": "Current conditions no longer pass validation; request a fresh preview."}
+            cash_key = marker = None
+            if payload.get('demo_cash_policy'):
+                cash_limit = min(10.0, float(cfg.demo_cash_loss_usd),
+                                 float(payload.get('cash_loss_usd', 10.0)))
+                planned_loss = loss_per_lot(info, abs(current-float(payload.get('sl') or 0)))*float(payload['volume'])
+                if not math.isfinite(cash_limit) or cash_limit <= 0 or not math.isfinite(planned_loss) or planned_loss > cash_limit+1e-8:
+                    return {'ok': False, 'error': 'cash_loss_limit_exceeded', 'executed': False}
+                if not cfg.demo_cash_policy:
+                    return {'ok':False,'error':'cash_policy_disabled'}
+                from .demo_guard import reserve_entry
+                try:
+                    cash_key, marker = reserve_entry(mt5, cfg.with_overrides(demo_cash_loss_usd=cash_limit), store)
+                except (ValueError, KeyError, TypeError, BridgeError):
+                    return {'ok':False,'error':'cash_policy_entry_blocked','executed':False}
+            if not store.claim_proposal(proposal_id):
+                if marker:
+                    from .demo_guard import entry_result
+                    entry_result(store, cash_key, marker, False)
+                return {"ok": False, "error": "not_pending", "executed": False,
+                        "message": "Proposal already claimed or expired; do not retry automatically."}
             result = mt5.open_order(
                 symbol=symbol,
                 side=side,
                 volume=float(payload["volume"]),
                 sl=float(payload.get("sl") or 0.0),
                 tp=float(payload.get("tp") or 0.0),
-                comment=payload.get("comment") or "trade-mcp",
+                comment=marker or payload.get("comment") or "trade-mcp",
+                magic=73104219 if marker and cfg.backend != 'native' else 0,
                 deviation=dev,
             )
             retcode = int(result.get("retcode") or 0) if isinstance(result, dict) else 0
+            if marker:
+                from .demo_guard import entry_result
+                entry_result(store, cash_key, marker, retcode in (0, 10008, 10009))
             if retcode not in (0, 10008, 10009):
                 store.mark_proposal(proposal_id, "failed", result)
                 return {
@@ -382,19 +510,43 @@ def confirm(
             }
 
         if kind == "close":
+            if not store.claim_proposal(proposal_id):
+                return {"ok": False, "error": "not_pending", "executed": False,
+                        "message": "Proposal already claimed or expired; do not retry automatically."}
             result = mt5.close_position(
                 ticket=int(payload["ticket"]), volume=float(payload.get("volume") or 0), deviation=dev
             )
+            if int(result.get("retcode") or 0) not in {10008, 10009, 10010}:
+                store.mark_proposal(proposal_id, "failed", result)
+                return {"ok": False, "error": "broker_rejected", "executed": False, "result": result}
             store.mark_proposal(proposal_id, "executed", result)
             store.record_trade(proposal_id, payload, result)
             return {"ok": True, "proposal_id": proposal_id, "executed": True, "result": result}
 
         if kind == "modify":
+            target = next((p for p in mt5.positions()
+                           if int(p.get("ticket") or 0) == int(payload["ticket"])), None)
+            if target is None:
+                return {"ok": False, "error": "position_not_found", "executed": False}
+            old_sl = float(target.get("sl") or 0)
+            new_sl = float(payload.get("sl") or 0)
+            current = float(target.get("price_current") or 0)
+            buy = str(target.get("type", "")).lower() in {"buy", "0"}
+            if old_sl and (not new_sl or (new_sl < old_sl if buy else new_sl > old_sl)):
+                return {"ok": False, "error": "stop_widening", "executed": False}
+            if new_sl and ((new_sl >= current) if buy else (new_sl <= current)):
+                return {"ok": False, "error": "stop_wrong_side", "executed": False}
+            if not store.claim_proposal(proposal_id):
+                return {"ok": False, "error": "not_pending", "executed": False,
+                        "message": "Proposal already claimed or expired; do not retry automatically."}
             result = mt5.modify_position(
                 ticket=int(payload["ticket"]),
                 sl=float(payload.get("sl") or 0),
                 tp=float(payload.get("tp") or 0),
             )
+            if int(result.get("retcode") or 0) not in {10008, 10009, 10010}:
+                store.mark_proposal(proposal_id, "failed", result)
+                return {"ok": False, "error": "broker_rejected", "executed": False, "result": result}
             store.mark_proposal(proposal_id, "executed", result)
             store.record_trade(proposal_id, payload, result)
             return {"ok": True, "proposal_id": proposal_id, "executed": True, "result": result}

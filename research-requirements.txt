@@ -1,0 +1,4 @@
+# OPTIONAL: install only in a separate Python >=3.11 environment.
+# TradingAgents: Apache-2.0. Backtesting.py: AGPL-3.0. Review before deployment.
+tradingagents @ git+https://github.com/TauricResearch/TradingAgents.git@9fa1196fffbcfd9de5146d2dd2869df84ab99838
+backtesting==0.6.5

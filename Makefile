@@ -1,7 +1,7 @@
 PY ?= .venv/bin/python
 PIP ?= .venv/bin/pip
 
-.PHONY: help venv install dev test lint doctor mock serve tools clean
+.PHONY: help venv install dev test lint doctor mock serve console tools discover clean
 
 help:
 	@echo "make venv      create .venv"
@@ -12,6 +12,8 @@ help:
 	@echo "make doctor    check the MT5 link (waits for the EA)"
 	@echo "make mock      doctor against synthetic data (no MT5)"
 	@echo "make serve     run the MCP server on stdio"
+	@echo "make discover  find the terminal's MQL5/Files folder (file backend)"
+	@echo "make console   local web console on http://127.0.0.1:8790"
 	@echo "make tools     list exposed MCP tools"
 
 venv:
@@ -38,6 +40,12 @@ mock:
 
 serve:
 	.venv/bin/trade-mcp serve
+
+console:
+	.venv/bin/trade-mcp console
+
+discover:
+	.venv/bin/trade-mcp discover
 
 tools:
 	.venv/bin/trade-mcp tools

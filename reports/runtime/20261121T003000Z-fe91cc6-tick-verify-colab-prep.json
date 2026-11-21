@@ -1,0 +1,66 @@
+{
+  "schema": "trade-mcp/runtime-report",
+  "report_id": "20261121T003000Z-fe91cc6-tick-verify-colab-prep",
+  "generated_at": "2026-11-21T05:35:00Z",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "loaded_commit_deployed": "fe91cc62bf6f2c566d95278055a7f8172d3fceac (local fix applied on top)",
+  "workflow": "fetch/ff through fe91cc6 -> safe deploy (trading/policy off) -> disabled-execution verification checks -> diagnose/fix clock normalization format/offset with regression test -> complete DEMO/guardian/cost preflight check -> prepare Colab notebooks + offline tests + Persian instructions -> tests -> commit/push",
+  "execution_authorized_by_report": false,
+  "explicit_user_authorization_session": true,
+  "disabled_execution_verification": {
+    "native_forming_m1_time_utc": {
+      "time_utc_present": true,
+      "time_source": "broker_history_clock_normalized",
+      "legacy_time_to_time_utc_offset_seconds": -12600,
+      "time_utc_on_minute_boundary": true,
+      "matches_current_utc_minute": false,
+      "diagnosis": "Format/offset normalization bug found and fixed: trade_server_last_known_time can be stale at market close; offset now prefers local_time vs utc_time. After fix, time_utc normalization is correct (UTC+3:30 offset, minute boundary). Last M1 bar is stale relative to current UTC minute because market is closed/no current forming bar; forming-candle check correctly refuses (not bypassed).",
+      "regression_test": "tests/test_native_bridge.py::test_stale_trade_server_last_known_time_does_not_break_utc_normalization"
+    },
+    "quote_timestamp_provenance": {
+      "time_source": "received",
+      "provenance_honest": true,
+      "evidence_kind": "received_quote_samples (as reported by tick_momentum when tick.time_source==received)"
+    },
+    "specific_tick_refusal_reasons_preserved": {
+      "dry_observe_reason": "forming_M1_required",
+      "collapsed_into_other_guard": false,
+      "bounded_test": "tests/test_bounded.py::test_tick_refusals_are_not_lost_in_other_guard pass"
+    }
+  },
+  "demo_guardian_cost_preflight": {
+    "broker": "DEMO/USD MetaQuotes-Demo, positions=0, orders=0",
+    "durable_guard": "unresolved=0, latched=false, streak=0",
+    "guardian_status_console_disabled_mode": "ok=true, enabled=false, running=false (console intentionally trading/policy off for verification)",
+    "cost_reconciliation": {"ok": false, "error": "cost_check_failed", "stage": "snapshot", "note": "cost snapshot stale (~12.4h age at check) - external dependency; preflight not fully passing"},
+    "complete_preflight_passed": false
+  },
+  "tick_window": {
+    "performed": false,
+    "reason": "Complete DEMO/guardian/cost preflight did not fully pass (stale cost snapshot/cost_check_failed). No tick window executed; no retry/second window."
+  },
+  "kronos_freqtrade_cloud": {
+    "actual_upstream_cloud_execution_completed": false,
+    "status": "External execution dependency, not completed prediction. No provisioned cloud worker/weights/artifact available locally; notebooks prepared for user Colab runtime only."
+  },
+  "colab_notebooks_prepared": {
+    "kronos": "notebooks/kronos_colab.ipynb (cloud-only, pinned Kronos commit, redacted OHLCV upload, actual upstream execution cell, hold-out metrics/baseline, trade-mcp compatible artifact download; no fabricated results; no MT5/orders/public server)",
+    "freqtrade": "notebooks/freqtrade_strategy001_colab.ipynb (cloud-only, pinned Freqtrade commit+Strategy001 SHA256 verification, 5m actual Strategy001, research hold-out/baseline, research artifact download; not M1 tick momentum; GPL-3.0 respected; no MT5/orders/public server)",
+    "offline_tests": "tests/test_colab_notebooks.py pass",
+    "persian_instructions": "docs/COLAB-NOTEBOOKS-FA.md",
+    "notebooks_executed": false
+  },
+  "tests": {
+    "targeted": "pass (native_bridge, tick_momentum, bounded, kronos_artifact, colab_notebooks)",
+    "full_suite": "pass (skips as applicable)"
+  },
+  "safety": {
+    "trading_off": true,
+    "cloud_budget_revoked": true,
+    "no_new_trading_window": true,
+    "no_cloud_request_from_local": true,
+    "no_risk_limit_change": true,
+    "forming_candle_check_not_bypassed": true,
+    "secrets_not_committed": true
+  }
+}

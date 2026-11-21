@@ -243,3 +243,187 @@ async def main():
 asyncio.run(main())
 PY
 ```
+
+## Development chat vs. the dedicated web model
+
+There are two distinct model paths:
+
+- OpenCode -> trade-mcp MCP tools: coding/operating the application, including
+  `list_web_agents`, `create_web_agent`, and `run_web_agent`. This remains the
+  development-chat integration and keeps its own OpenCode credentials, billing
+  and `session_v2` totals.
+- trade-mcp web console -> dedicated OpenAI-compatible provider: one direct
+  endpoint configured through `TRADE_MCP_LLM_BASE_URL`, `TRADE_MCP_LLM_MODEL`,
+  `TRADE_MCP_LLM_API_KEY`, `TRADE_MCP_LLM_BILLING_PROJECT`, and
+  `TRADE_MCP_LLM_USAGE_CONVENTION`. The web path never selects OpenCode, never
+  inherits its credentials, and never falls back to it. Missing web-provider
+  configuration fails closed. All model tools are denied; the local execution
+  engine alone validates and creates proposals. Every web proposal requires
+  explicit human confirmation, even if an existing agent was previously set to
+  guarded/auto mode.
+
+The web routes are also gated by a persisted, explicitly activated test budget:
+300 seconds measured from the first authorized attempt and at most five actual
+provider attempts shared by model tests, agent runs, explanations and page cycles.
+Refreshing the page or restarting the console does not create a new window.
+Usage is recorded in a separate `model_usage` ledger; it is never merged with
+OpenCode session totals. Unknown token/cost values remain NULL.
+
+### One launcher for MT5, the OpenCode development server and the web console
+
+Prerequisites: working OpenCode CLI with provider authentication, the project venv,
+and a running native MT5 MCP server. OpenCode authentication is only for the
+development chat/MCP surface. The web console separately needs its own direct
+provider configuration (`TRADE_MCP_LLM_BASE_URL`, `_MODEL`, `_API_KEY`); do not
+reuse or copy the OpenCode provider key.
+
+```bash
+export TRADE_MCP_LLM_BASE_URL="https://provider.example/v1"
+export TRADE_MCP_LLM_MODEL="web-model-id"
+# enter the web-provider key hidden; never paste it into chat
+read -rsp 'web model provider key: ' MK; echo
+export TRADE_MCP_LLM_API_KEY="$MK"; unset MK
+.venv/bin/python scripts/mt5_mcp_connect.py --console --enable-demo-trading --opencode --opencode-model opencode/big-pickle
+```
+
+The OpenCode model ID above is an example matching the reported setup; it must be
+available to your installed OpenCode account. Omit `--opencode-model` to use the
+server's default model, which is not necessarily the model selected in another
+interactive OpenCode session.
+
+Start the launcher first, then click MT5 MCP Copy at its prompt, return and press
+Enter only. Never paste the copied configuration into a shell. The launcher checks
+MT5 and the demo account, reuses a healthy OpenCode server on loopback port 4096 or
+starts `opencode serve` there, then starts the console. Terminal credentials are
+not passed to the OpenCode child process. An owned OpenCode process is stopped when
+the console exits; a pre-existing server is left alone. Provider credentials stay
+in OpenCode. Startup health only tests the HTTP server, not model access.
+
+Open `http://127.0.0.1:8790`, open the agent workspace, explicitly activate the
+test budget, and click the model-response test. This sends one generic request to
+the dedicated web provider, consumes one of five attempts, and may incur provider
+usage charges. Then create or run an agent in the Agents tab. Reports show the web
+backend, actual model usage, decisions and errors. Pending proposals are reviewed
+and confirmed in the existing proposal UI. No trade is sent by creating/running a
+web agent. Insufficient sizing budget can still block a proposal; integration does
+not raise risk limits or promise a profitable trade.
+
+### API compatibility and security boundary
+
+This adapter auto-detects OpenCode v1 and v2. The **v1 server API** was checked
+against upstream v1.2.15 source: `GET /global/health`, `POST /session`,
+`POST /session/{id}/message`, `POST /session/{id}/abort`, `DELETE /session/{id}`.
+V1 requires an echoed session permission rule denying `*` for pattern `*` before
+sending market context. **V2 support is checked against the v2.2.7 tagged source
+and OpenAPI schema**: `GET /api/info` detects the version, then
+`POST /api/experimental/generate/text` sends `{prompt, model?: {providerID, id}}`
+and reads `data.text`. This is stateless model generation, not an agent session:
+no shell, MCP or repository tools are supplied and no session is created.
+The generation endpoint is experimental and may change in future releases.
+
+V2 requires server authentication and otherwise generates an unknown password.
+When starting an owned server, the launcher generates an ephemeral password and
+passes it to the server and console through their environments only. It is not a
+model-provider key or MT5 key and is never printed or written to a config file.
+For an existing protected server, supply its password securely via
+`OPENCODE_PASSWORD` (preferred) or `OPENCODE_SERVER_PASSWORD` before launching.
+A server on port 4096 with unknown credentials is not replaced or killed.
+
+Unknown APIs, unavailable models, invalid decisions and connection failures
+fail closed: no deterministic decision is substituted for OpenCode.
+
+Only market summaries and whitelisted account metrics are provided, not account
+IDs or terminal keys. The summary can reach the model provider configured in
+OpenCode. Cleanup is attempted after each request, but provider/server retention
+policies still apply. The model has no shell, file, MCP or execution tools in these
+analysis requests. Do not weaken the deny-all rule to fix a connection error.
+No live provider or native MT5 integration is exercised by the offline tests.
+
+For an already managed server, set `TRADE_MCP_OPENCODE_URL` in the console process
+instead of using the launcher flag. Optional `TRADE_MCP_OPENCODE_MODEL` uses
+`provider/model` format. Optional `OPENCODE_PASSWORD` (legacy alias `OPENCODE_SERVER_PASSWORD`) uses the default
+OpenCode username `opencode`. The URL must be loopback HTTP without embedded
+credentials. In auto mode (development MCP tools), OpenCode takes precedence over
+the direct OpenAI-compatible adapter. The web console never uses auto mode for
+model requests: it constructs `LLMClient.from_config(cfg, mode="web")`, which
+ignores OpenCode entirely.
+
+The external MCP tools share agents/reports with the console only when both use
+the same journal path. `create_web_agent` creates a disabled advisory agent;
+`run_web_agent` uses that MCP process's own model configuration (OpenCode in auto
+mode) and runs once without enabling the scheduler or confirming anything. The web
+console's process environment is not automatically inherited by an independently
+launched MCP process. Use the console for running agents if that MCP process is
+not configured.
+
+### Attach to the running desktop app, without starting a CLI server
+
+If the desktop application already owns an authenticated server, use its actual
+loopback URL instead of `--opencode`. Example using an observed desktop port:
+
+```bash
+.venv/bin/python scripts/mt5_mcp_connect.py --console --opencode-url http://127.0.0.1:49374 --opencode-model opencode/big-pickle --opencode-password-prompt
+```
+
+This prompts first for the **OpenCode server password**, hidden and process-only,
+then asks you to click MT5 Copy and press Enter only. The server password is not a
+provider API key and not an MT5 key. Do not guess it or send it in chat. Desktop
+ports may change after restarting the app. This command keeps trading disabled,
+uses native MT5 data after the clipboard check, and opens the web console.
+
+An explicit `--opencode-url` (or inherited `TRADE_MCP_OPENCODE_URL`) means
+**attach-only**: on any connection/authentication failure, no alternate OpenCode
+process is spawned, no desktop process is stopped, and startup fails closed.
+The application server and console remain distinct processes; neither inherits
+configuration changes made to the other after launch.
+
+`TRADE_MCP_OPENCODE_PASSWORD` is accepted by Config and has precedence over the
+standard `OPENCODE_PASSWORD` and legacy `OPENCODE_SERVER_PASSWORD` aliases.
+Configured password values are never included in the settings response.
+For successful model decisions reports use `source: opencode` and
+`llm_status: used`, not `llm_status: opencode`.
+
+### Automatic private desktop discovery (recommended for OpenCode 2.2.7)
+
+You do not need to view or copy the server password. Keep the desktop app open:
+
+```bash
+.venv/bin/python scripts/mt5_mcp_connect.py --console --opencode-desktop --opencode-model opencode/big-pickle
+```
+
+This reads only the standard private service registration at
+`$XDG_STATE_HOME/opencode/service.json` (default
+`~/.local/state/opencode/service.json`), following OpenCode's v2 discovery contract.
+It requires a regular, non-symlink, current-user-owned file with no group/other
+permissions. It authenticates to the advertised loopback server and compares the
+server PID with the registration before accepting it. Passwords remain in process
+memory/environment; the source file is not modified and its contents are never
+printed. No process environments, shell histories or credential directories are
+searched. No alternate server is started on failure. Custom release-channel
+registration filenames are not automatically searched.
+
+The desktop is checked before MT5 clipboard setup, avoiding repeated MT5 steps
+when desktop discovery fails. Trading stays disabled unless explicitly enabled by
+the separate demo-trading flag. Do not cat, paste or upload the registration file.
+
+### Run the desktop-discovered native MCP server without a shell wrapper
+
+Configure OpenCode's local `trade` MCP command as an argv array consisting of the
+absolute venv Python path, absolute `scripts/mt5_mcp_connect.py` path, and:
+
+```text
+--serve --opencode-desktop --opencode-model opencode/big-pickle
+```
+
+No password or terminal key belongs in the OpenCode config. This mode reads the
+private desktop registration, then the MT5 Copy block from the clipboard, and
+launches `trade-mcp serve` with backend=native and trading=false, overriding stale
+mock/trading settings. It never prompts on protocol stdin or writes diagnostic
+text to protocol stdout. Failures produce a generic stderr message and no fallback.
+It does not run doctor; call `mt5_status` after the handshake to verify native auth.
+
+After saving configuration, click MT5 MCP Copy immediately before reconnecting the
+`trade` MCP server in the desktop app. Do not copy shell commands afterward, since
+that replaces the clipboard. This is required on each MCP restart; no terminal key
+is persisted. The console remains a separate process using the same journal path.
+An already running MCP process must be restarted to load this launcher/configuration.

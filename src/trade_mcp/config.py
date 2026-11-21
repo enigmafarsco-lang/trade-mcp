@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+
+from .model_usage import normalise_convention
 
 ENV_PREFIX = "TRADE_MCP_"
 
@@ -61,6 +64,12 @@ def _env_list(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
 
 def load_dotenv(path: str | os.PathLike[str] = ".env") -> None:
     """Minimal .env loader (no dependency). Existing env vars win."""
+    # Keep the test suite hermetic when a local .env is present; runtime/CLI
+    # environments can still opt out of .env loading explicitly if needed.
+    if os.environ.get("TRADE_MCP_SKIP_DOTENV") or (
+        "pytest" in sys.modules or os.environ.get("PYTEST_CURRENT_TEST")
+    ):
+        return
     p = Path(path).expanduser()
     if not p.is_file():
         return
@@ -78,16 +87,50 @@ class Config:
     # transport
     host: str = "127.0.0.1"
     port: int = 8787
-    backend: str = "bridge"  # "bridge" | "mock"
+    backend: str = "bridge"  # "bridge" (socket) | "file" (shared files) | "native" (MT5 MCP) | "mock"
     timeout: float = 20.0
+
+    # file transport (backend="file")
+    files_dir: str | None = None
+    file_stale_after: float = 8.0
+
+    # native transport (backend="native"): MetaTrader's own MCP server
+    mcp_url: str = "http://127.0.0.1:22346/mcp"
+    mcp_token: str = ""
+    mcp_marketdata_url: str = "https://www.metatrader.com/mcp"
+    mcp_marketdata_token: str = ""
+
+    # local console app + built-in agent
+    console_host: str = "127.0.0.1"
+    console_port: int = 8790
+    demo_cash_loss_usd: float = 10.0  # per-entry override; persisted in ownership intent
+    opencode_url: str = ""
+    opencode_model: str = ""
+    opencode_variant: str = ""
+    opencode_free_fallback: bool = False
+    opencode_password: str = field(default="", repr=False)
+    research_python: str = ""
+    kronos_forecast_path: str = ""
+    web_model_backend: str = "direct"
+    llm_base_url: str = ""
+    llm_api_key: str = field(default="", repr=False)
+    llm_model: str = ""
+    llm_fast_advisory: bool = False
+    llm_billing_project: str = ""
+    llm_usage_convention: str = "unknown"
+    news_feeds: tuple[str, ...] = ()
 
     # instrument defaults
     default_symbol: str = DEFAULT_SYMBOL
     timeframes: tuple[str, ...] = DEFAULT_TIMEFRAMES
 
     # trading guard rails
+    paper_trading: bool = False  # legacy broker path: explicit kill switch; runner defaults paper
     allow_trading: bool = False
     max_lot: float = 0.10
+    cost_snapshot_path: str = ""
+    demo_cash_policy: bool = False
+    training_budget: float = 100.0  # shared conservative sizing cap; account currency
     max_risk_percent: float = 1.0
     max_open_positions: int = 3
     max_spread_points: float = 60.0
@@ -109,12 +152,50 @@ class Config:
             port=_env_int("PORT", 8787),
             backend=(_env("BACKEND", "bridge") or "bridge").strip().lower(),
             timeout=_env_float("TIMEOUT", 20.0),
+            files_dir=(_env("FILES_DIR") or "").strip() or None,
+            file_stale_after=_env_float("FILE_STALE_AFTER", 8.0),
+            mcp_url=(_env("MCP_URL") or "http://127.0.0.1:22346/mcp").strip(),
+            mcp_token=(
+                (_env("MCP_TOKEN") or "").strip()
+                or (os.environ.get("MT5_MCP_TOKEN") or "").strip()
+                or (os.environ.get("MT5_MCP_TOKEN_TERMINAL") or "").strip()
+            ),
+            mcp_marketdata_url=(
+                _env("MCP_MARKETDATA_URL") or "https://www.metatrader.com/mcp"
+            ).strip(),
+            mcp_marketdata_token=(
+                (_env("MCP_MARKETDATA_TOKEN") or "").strip()
+                or (os.environ.get("MT5_MCP_TOKEN_MARKETDATA") or "").strip()
+            ),
+            console_host=(_env("CONSOLE_HOST", "127.0.0.1") or "127.0.0.1").strip(),
+            console_port=_env_int("CONSOLE_PORT", 8790),
+            opencode_url=(_env("OPENCODE_URL") or "").strip(),
+            opencode_model=(_env("OPENCODE_MODEL") or "").strip(),
+            kronos_forecast_path=(_env("KRONOS_FORECAST_PATH") or "").strip(),
+            opencode_variant=(_env("OPENCODE_VARIANT") or "").strip(),
+            opencode_free_fallback=_env_bool("OPENCODE_FREE_FALLBACK", False),
+            opencode_password=(_env("OPENCODE_PASSWORD") or os.environ.get("OPENCODE_PASSWORD") or os.environ.get("OPENCODE_SERVER_PASSWORD", "")),
+            research_python=(_env("RESEARCH_PYTHON") or "").strip(),
+            web_model_backend=(_env("WEB_MODEL_BACKEND", "direct") or "direct").strip(),
+            llm_base_url=(_env("LLM_BASE_URL") or "").strip(),
+            llm_api_key=(_env("LLM_API_KEY") or "").strip(),
+            llm_model=(_env("LLM_MODEL") or "").strip(),
+            llm_fast_advisory=_env_bool("LLM_FAST_ADVISORY", False),
+            llm_billing_project=(_env("LLM_BILLING_PROJECT") or "").strip(),
+            llm_usage_convention=normalise_convention(
+                _env("LLM_USAGE_CONVENTION") or "unknown"
+            ),
+            news_feeds=_env_list("NEWS_FEEDS", ()),
             default_symbol=(_env("SYMBOL", DEFAULT_SYMBOL) or DEFAULT_SYMBOL).strip(),
             timeframes=tuple(
                 tf.upper() for tf in _env_list("TIMEFRAMES", DEFAULT_TIMEFRAMES)
             ),
+            paper_trading=_env_bool("PAPER_TRADING", False),
             allow_trading=_env_bool("ALLOW_TRADING", False),
             max_lot=_env_float("MAX_LOT", 0.10),
+            training_budget=_env_float("TRAINING_BUDGET", 100.0),
+            cost_snapshot_path=(_env("COST_SNAPSHOT_PATH") or "").strip(),
+            demo_cash_policy=_env_bool("DEMO_CASH_POLICY", False),
             max_risk_percent=_env_float("MAX_RISK_PERCENT", 1.0),
             max_open_positions=_env_int("MAX_OPEN_POSITIONS", 3),
             max_spread_points=_env_float("MAX_SPREAD_POINTS", 60.0),
@@ -125,10 +206,14 @@ class Config:
             deviation_points=_env_int("DEVIATION", 30),
             journal_path=str(Path(_env("JOURNAL", "~/.local/share/trade-mcp/journal.sqlite3") or "~/.local/share/trade-mcp/journal.sqlite3").expanduser()),
         )
-        if cfg.backend not in {"bridge", "mock"}:
+        if cfg.backend == "mcp":  # friendly alias
+            cfg.backend = "native"
+        if cfg.backend not in {"bridge", "file", "native", "mock"}:
             cfg.backend = "bridge"
         if cfg.port <= 0:
             cfg.port = 8787
+        if cfg.console_port <= 0:
+            cfg.console_port = 8790
         return cfg
 
     def with_overrides(self, **kwargs) -> Config:
@@ -136,7 +221,7 @@ class Config:
 
     @property
     def trading_enabled(self) -> bool:
-        return bool(self.allow_trading)
+        return bool(self.allow_trading and not self.paper_trading)
 
     def is_symbol_allowed(self, symbol: str) -> bool:
         sym = (symbol or "").strip().upper()
@@ -161,3 +246,19 @@ class Config:
             if tf in VALID_TIMEFRAMES and tf not in out:
                 out.append(tf)
         return tuple(out) or self.timeframes
+
+
+def sizing_balance(account: dict, cfg) -> float:
+    """Never size against more than the account or the explicit practice cap."""
+    import math
+
+    if getattr(cfg, 'demo_cash_policy', False):
+        if account.get('trade_mode') != 'demo' or account.get('currency') != 'USD':
+            return 0.0
+        value = float(account.get('equity') or 0)
+        return value if math.isfinite(value) and value > 0 else 0.0
+    equity = float(account.get("equity") or account.get("balance") or 0)
+    budget = float(getattr(cfg, "training_budget", 100))
+    if not math.isfinite(budget) or budget <= 0:
+        return 0.0
+    return max(0.0, min(equity, budget)) if math.isfinite(equity) else 0.0

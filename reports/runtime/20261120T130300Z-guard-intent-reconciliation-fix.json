@@ -1,0 +1,65 @@
+{
+  "schema": "trade-mcp/runtime-report",
+  "report_id": "20261120T130300Z-guard-intent-reconciliation-fix",
+  "generated_at": "2026-11-20T13:03:00Z",
+  "commit_base": "9e51d7c76bafd0bf7646f2eca14aab1c8fceb8f7",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "workflow": "supported source fix for unresolved accepted-order intent; read-only/no-order reconciliation of existing intent; no new entry/invocation/cloud request/budget activation/forced close",
+  "execution_authorized_by_report": false,
+  "preconditions_verified": {
+    "demo_usd_account": "pass",
+    "broker_positions": 0,
+    "broker_pending_orders": 0,
+    "flat_before_safe_restart_and_reconcile": true,
+    "unresolved_intent_preserved_before_fix": true,
+    "journal_and_evidence_preserved": true,
+    "trading_and_demo_cash_policy_false_in_console": true
+  },
+  "actual_cause": {
+    "summary": "Durable comment-reservation intent remained awaiting_position because guardian reconciliation rejected the uniquely owned opening deal on unverifiable reservation-time correlation.",
+    "trace": [
+      "accepted broker result recorded and demo-guard intent reserved/awaiting with comment-reservation ownership",
+      "owned position opened and closed between guardian polls (broker later flat)",
+      "native deal history normalization yielded unparseable/unavailable opening-deal timestamp (epoch-zero) for the owned deal",
+      "inspect_positions required opening-deal time >= intent.started_at-5 for comment-reservation and raised a reservation-time mismatch, blocking reconciliation despite unique broker-supported marker identity and correlatable owned lifecycle",
+      "guardian polling caught exceptions as generic reconciliation failure, leaving intent durably unresolved/entry-blocking"
+    ],
+    "cost_completeness_for_incident": "v2 cost snapshot correlation/enrichment for the owned lifecycle was complete (all required cost fields present) once time correlation no longer falsely blocked; no costs fabricated"
+  },
+  "fix": {
+    "source_changes": [
+      "demo_guard: accept unique comment-reservation ownership when opening-deal time is unavailable/unreliable while preserving uniqueness and rejecting unverifiable identity/time when a valid comparable time mismatches; never infer ownership by symbol/side or adopt unrelated trades",
+      "demo_guard: separated read-only reconciliation of existing durable intents from order-submission/demo policy (reconcile_existing path, no close submission in no-order mode), with sanitized blocker codes and preserved latch/history semantics",
+      "demo_guard: explicit unresolved/ambiguous/incomplete/unknown-cost outcomes remain entry-blocking; unknown realized net P/L not marked zero",
+      "demo_guard/console: sanitized guardian health (last poll, last successful reconciliation, current blocker code, unresolved intent count, latched/streak summary) without raw exceptions/records",
+      "console: supported no-order reconciliation endpoint/action (POST /api/demo-cash-guard reconcile) and health exposure; UI workspace status updated for sanitized fields",
+      "regression tests: redacted fixtures for incident (opened-and-closed-between-polls with unparseable deal time, complete costs), accepted-while-open reconciliation, missing/changed comment unresolved, unknown costs blocked/preserved unknown, partial/incomplete history blocked, process-restart/repeated reconciliation idempotence, sanitized guardian health"
+    ],
+    "separation_of_read_only_reconciliation": "read-only reconciliation updates durable intent state to match verified broker reality without enabling broker order submission/execution; trading and demo cash policy remained false in console"
+  },
+  "reconciliation_outcome": {
+    "supported_application_path": "POST /api/demo-cash-guard {\"action\":\"reconcile\"} on safe console (trading=false, demo_cash_policy=false)",
+    "result": "reconciled",
+    "existing_intent": "closed",
+    "ownership_identity": "uniquely matched by reserved comment marker with correlated owned lifecycle evidence (not inferred by symbol/side)",
+    "position_id_linked": true,
+    "realized_net_pl": "cost-complete net P/L recorded in durable state; exact amount excluded from Git (not zero-fabricated)",
+    "broker_flat": true,
+    "unresolved_intents": 0,
+    "loss_latch": false,
+    "loss_streak": 0
+  },
+  "checks": {
+    "ruff_check_src_tests": "pass",
+    "pytest_full_offline": "pass",
+    "new_regressions": "pass",
+    "py_compile": "pass",
+    "js_check_note": "node --check reports pre-existing nullish-coalescing syntax incompatibility under available Node runtime; no new JS syntax introduced and no JS lint config present"
+  },
+  "remaining_blockers": [
+    "none for this incident intent (reconciled, broker flat, no unresolved intents, no latch)",
+    "guardian last-successful-poll/health previously not exposed in queried APIs during incident; now exposed via sanitized guardian health fields",
+    "JS syntax check under installed Node version is limited by pre-existing modern syntax in web assets (environment/tooling note, not a runtime fix in this scope)"
+  ],
+  "commits_preserved": ["91b61d1a13ec7d2a9e2bf816a90a80c474d2aea4", "9e51d7c76bafd0bf7646f2eca14aab1c8fceb8f7"]
+}

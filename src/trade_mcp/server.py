@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import math
 import time
 from collections.abc import Callable
 from typing import Any
@@ -13,8 +14,10 @@ from mcp.server.fastmcp import FastMCP
 from . import analysis, execution
 from .app import get_app
 from .bridge.base import BridgeError
-from .config import VALID_TIMEFRAMES
+from .config import VALID_TIMEFRAMES, sizing_balance
 from .risk import loss_per_lot, lots_for_risk
+from .risk_manager import HARD_MAX_RISK_PERCENT
+from .workspace import WorkspaceManager
 
 LOG = logging.getLogger(__name__)
 
@@ -88,6 +91,7 @@ def mt5_status() -> dict[str, Any]:
             "default_symbol": cfg.default_symbol,
             "timeframes": list(cfg.timeframes),
             "allow_trading": cfg.allow_trading,
+            "paper_trading": cfg.paper_trading,
             "max_lot": cfg.max_lot,
             "max_risk_percent": cfg.max_risk_percent,
             "max_open_positions": cfg.max_open_positions,
@@ -130,7 +134,7 @@ def account_info() -> dict[str, Any]:
     positions = app.mt5.positions()
     account["open_positions"] = len(positions)
     account["floating_profit"] = round(sum(float(p.get("profit") or 0) for p in positions), 2)
-    return {"ok": True, "account": account, "trading_enabled": app.cfg.allow_trading}
+    return {"ok": True, "account": account, "trading_enabled": app.cfg.trading_enabled, "paper_trading": app.cfg.paper_trading}
 
 
 @mcp.tool()
@@ -278,10 +282,18 @@ def position_size(
         entry = float(app.mt5.tick(resolved).get("ask") or 0.0)
     if not stop:
         return {"ok": False, "error": "missing_stop", "message": "a stop price is required"}
-    equity = float(balance or app.mt5.account_info().get("equity") or 0.0)
-    pct = min(float(risk_percent), app.cfg.max_risk_percent)
+    account = app.mt5.account_info(fresh=True)
+    effective = sizing_balance(account, app.cfg)
+    if balance is not None:
+        requested_balance = float(balance)
+        if not math.isfinite(requested_balance) or requested_balance < 0:
+            return {"ok": False, "error": "invalid_balance"}
+        effective = min(effective, requested_balance)
+    if not math.isfinite(float(risk_percent)) or float(risk_percent) <= 0:
+        return {"ok": False, "error": "invalid_risk_percent"}
+    pct = min(float(risk_percent), app.cfg.max_risk_percent, HARD_MAX_RISK_PERCENT)
     sizing = lots_for_risk(
-        balance=equity, risk_percent=pct, entry=entry, stop=stop, info=info, max_lot=app.cfg.max_lot
+        balance=effective, risk_percent=pct, entry=entry, stop=stop, info=info, max_lot=app.cfg.max_lot
     )
     if sizing.get("ok"):
         try:
@@ -292,11 +304,15 @@ def position_size(
     return {
         "ok": bool(sizing.get("ok")),
         "symbol": resolved,
-        "equity_used": round(equity, 2),
+        "equity_used": round(effective, 2),
+        "effective_sizing_balance": effective,
+        "account_equity": account.get("equity"),
+        "training_budget": app.cfg.training_budget,
+        "requested_balance": balance,
         "requested_risk_percent": risk_percent,
         "applied_risk_percent": pct,
         "sizing": sizing,
-        "cap_note": f"risk above {app.cfg.max_risk_percent}% is clamped by configuration",
+        "cap_note": f"risk above {app.cfg.max_risk_percent}% is clamped; sizing balance cannot exceed equity or the training budget",
     }
 
 
@@ -417,6 +433,7 @@ def risk_report() -> dict[str, Any]:
             "max_open_positions": cfg.max_open_positions,
             "max_spread_points": cfg.max_spread_points,
             "allow_trading": cfg.allow_trading,
+            "paper_trading": cfg.paper_trading,
         },
         "warnings": warnings,
     }
@@ -547,6 +564,80 @@ def journal_list(limit: int = 20, symbol: str = "") -> dict[str, Any]:
     return {"ok": True, "count": len(notes), "notes": notes}
 
 
+# One owned console per MCP process; never stop unrelated listeners.
+
+_web_workspace = WorkspaceManager()
+
+
+@mcp.tool()
+@_safe
+def start_web_workspace(open_browser: bool = False) -> dict[str, Any]:
+    """Start/reuse the read-only native web console using this active connection.
+
+    No clipboard or password prompt, no new OpenCode server, no model requests,
+    no scheduler and no trades. Requires a verified native demo connection and
+    OpenCode configuration in this MCP process. open_browser uses the system browser.
+    """
+    return _web_workspace.start(get_app(), open_browser=open_browser)
+
+
+@mcp.tool()
+@_safe
+def web_workspace_status() -> dict[str, Any]:
+    """Read console readiness and saved reports only. Does not run models or agents."""
+    return _web_workspace.status(get_app().cfg)
+
+
+@mcp.tool()
+@_safe
+def stop_owned_web_workspace() -> dict[str, Any]:
+    """Stop only the console started by this MCP process, never a reused listener."""
+    return _web_workspace.stop()
+
+
+# Web agents share the journal with this MCP process when journal paths match.
+@mcp.tool()
+@_safe
+def list_web_agents() -> dict[str, Any]:
+    """List persisted agents and their last reports, also visible in the web console."""
+    return {"ok": True, "agents": get_app().store.list_agents()}
+
+
+@mcp.tool()
+@_safe
+def create_web_agent(name: str, symbols: list[str], max_risk: float = 0.5,
+                     max_lot: float = 0.01) -> dict[str, Any]:
+    """Create a disabled advisory web agent. Never starts a loop or places a trade."""
+    app = get_app()
+    if not symbols or not all(math.isfinite(v) and v > 0 for v in (max_risk, max_lot)):
+        return {"ok": False, "error": "invalid_agent_limits"}
+    agent = app.store.create_agent({
+        "name": name[:60], "symbols": [s.strip().upper() for s in symbols[:8]],
+        "max_risk": min(max_risk, app.cfg.max_risk_percent),
+        "max_lot": min(max_lot, app.cfg.max_lot), "mode": "advisory", "enabled": False,
+    })
+    return {"ok": True, "agent": agent}
+
+
+@mcp.tool()
+@_safe
+def run_web_agent(agent_id: str) -> dict[str, Any]:
+    """Run one OpenCode-backed analysis, producing proposals only. Never confirms.
+
+    Requires OPENCODE_URL in this MCP process. View the saved report and any pending
+    proposals in the web console using the same journal. No scheduler is enabled.
+    """
+    from .agents import AgentEngine
+    app = get_app()
+    if not app.cfg.opencode_url:
+        return {"ok": False, "error": "opencode_not_configured_in_this_process"}
+    agent = app.store.get_agent(agent_id)
+    if not agent:
+        return {"ok": False, "error": "unknown_agent"}
+    report = AgentEngine(cfg=app.cfg, mt5=app.mt5, store=app.store).run({**agent, "mode": "advisory"})
+    return {"ok": True, "report": report}
+
+
 # ---------------------------------------------------------------------- prompts
 @mcp.prompt()
 def gold_session_briefing(symbol: str = "XAUUSD") -> str:
@@ -584,3 +675,9 @@ def trade_review(days: str = "30") -> str:
 - سه اقدام مشخص برای بهبود انضباط ریسک در هفته آینده
 اگر داده کافی نیست، صریح بگو و حدس نزن.
 """
+
+
+# Additive clean-string facade: existing clients retain their structured tools.
+from .text_tools import register_text_tools  # noqa: E402
+
+register_text_tools(mcp)

@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated_at": "2026-11-19T14:07:36.111023+00:00",
+  "commit": "d5123f5d55178933172b03eaa317e76ee45b09ff",
+  "checks": {
+    "account_match": "pass",
+    "analysis": "fail",
+    "compile": "pass",
+    "financial_fields": "pass",
+    "floating_net_pnl": "not_run",
+    "guardian": "blocked",
+    "order": "blocked",
+    "position_lifecycle": "not_run",
+    "proposal": "not_run",
+    "snapshot_fresh": "pass",
+    "three_loss_latch": "blocked",
+    "unique_tickets": "pass"
+  },
+  "counts": {
+    "cloud_requests": 1,
+    "deals": 3078,
+    "orders_submitted": 0,
+    "positions": null
+  },
+  "execution_authorized_by_report": false
+}

@@ -1,0 +1,351 @@
+#!/usr/bin/env python3
+"""Read MT5's Copy configuration locally. Never print/store keys or paste into Bash."""
+from __future__ import annotations
+
+import argparse
+import getpass
+import json
+import os
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from urllib.parse import urlparse
+
+
+def parse_terminal(text: str) -> tuple[str, str]:
+    """Extract only terminal, never silently substitute metaeditor/marketdata."""
+    config = None
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r'\{', text):
+        try:
+            candidate, _ = decoder.raw_decode(text[match.start():])
+        except ValueError:
+            continue
+        if isinstance(candidate, dict) and isinstance(candidate.get('mcpServers'), dict):
+            config = candidate['mcpServers'].get('terminal')
+            break
+    if config is not None:
+        if not isinstance(config, dict):
+            raise ValueError('Invalid terminal configuration.')
+        url = config.get('url', '')
+        headers = config.get('headers') or {}
+        auth = next((v for k, v in headers.items() if k.lower() == 'authorization'), '')
+    else:
+        section = re.search(r'^\s*\[mcp_servers\.terminal\]\s*$(.*?)(?=^\s*\[|\Z)', text, re.M | re.S)
+        if not section:
+            raise ValueError('No terminal section found. Use the MT5 MCP Copy button, not the API Key field.')
+        body = section.group(1)
+        def quoted(pattern):
+            m = re.search(pattern, body, re.M | re.I)
+            return m.group(1) if m else ''
+        url = quoted(r'''^\s*url\s*=\s*["']([^"']+)["']''')
+        auth = quoted(r'''["']Authorization["']\s*=\s*["']([^"']+)["']''')
+    if not isinstance(url, str) or not isinstance(auth, str):
+        raise ValueError('Invalid terminal URL or authorization header.')
+    parsed = urlparse(url)
+    if parsed.scheme != 'http' or parsed.hostname not in {'127.0.0.1', 'localhost', '::1'} or parsed.username or parsed.password:
+        raise ValueError('Only a local HTTP terminal endpoint is accepted.')
+    if not auth.lower().startswith('bearer '):
+        raise ValueError('Missing terminal Bearer authorization header.')
+    token = auth[7:].strip()
+    if len(token) < 12 or any(c.isspace() or c in '\"\'{}[]' for c in token):
+        raise ValueError('Invalid terminal key. Copy the saved MCP configuration again.')
+    return url, token
+
+
+def read_clipboard() -> str:
+    commands = []
+    if os.environ.get('WAYLAND_DISPLAY'):
+        commands.append(['wl-paste', '--no-newline'])
+    commands.extend([['xclip', '-selection', 'clipboard', '-o'], ['xsel', '--clipboard', '--output']])
+    for command in commands:
+        if not shutil.which(command[0]):
+            continue
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=5)
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    try:
+        import tkinter
+        root = tkinter.Tk()
+        root.withdraw()
+        try:
+            return root.clipboard_get()
+        finally:
+            root.destroy()
+    except Exception:
+        raise ValueError('Cannot read clipboard. On Ubuntu/X11 install xclip: sudo apt install xclip') from None
+
+
+def configure_llm(env: dict[str, str]) -> bool:
+    """Prompt locally and verify a real response; do not persist or print secrets."""
+    from trade_mcp.agents import LLMClient
+
+    try:
+        base = input('OpenAI-compatible base URL (include /v1 if required): ').strip()
+        model = input('Exact model ID from your provider: ').strip()
+        parsed = urlparse(base)
+        local = parsed.hostname in {'localhost', '127.0.0.1', '::1'}
+        if (not parsed.hostname or parsed.username or parsed.password or parsed.query
+                or parsed.fragment or (parsed.scheme != 'https' and not (local and parsed.scheme == 'http'))):
+            print('Use HTTPS for remote providers or HTTP for a local model. No credentials in the URL.')
+            return False
+        if not model:
+            print('A model ID is required.')
+            return False
+        key = getpass.getpass('Model API key (hidden; Enter for a keyless local server): ').strip()
+        print('Testing one model request. Provider usage charges may apply.', flush=True)
+        client = LLMClient(base_url=base, api_key=key, model=model, timeout=30)
+        response = client.chat([{'role': 'user', 'content': 'Reply with OK only.'}])
+        if not response:
+            print('Model returned an empty response. Console not started.')
+            return False
+    except (EOFError, KeyboardInterrupt):
+        print('Model setup cancelled.')
+        return False
+    except Exception:
+        # Provider errors may echo credentials, request bodies or account information.
+        print('Model test failed. Check the provider URL, model ID, key, credit and network. Console not started.')
+        return False
+    env.update(TRADE_MCP_LLM_BASE_URL=base, TRADE_MCP_LLM_MODEL=model, TRADE_MCP_LLM_API_KEY=key)
+    print('Model response verified. Settings stay in this process only; agent JSON decisions can still fail validation.')
+    return True
+
+
+def wait_for_copy():
+    """Do not echo accidental secret pastes; discard queued input on POSIX."""
+    try:
+        getpass.getpass('After clicking MT5 Copy, press Enter only (no paste): ')
+    finally:
+        try:
+            import termios
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+        except (ImportError, OSError, ValueError):
+            pass
+
+
+def startup_failure_reason(text):
+    """Return only fixed diagnostic labels, never raw child output."""
+    text = text.lower()
+    if any(x in text for x in ('eaddrinuse', 'address already in use')):
+        return 'port 4096 is already occupied'
+    if any(x in text for x in ('invalid config', 'configuration is invalid', 'configinvalid', 'unrecognized key')):
+        return 'OpenCode configuration was rejected'
+    if any(x in text for x in ('unknown option', 'unknown argument', 'unknown command')):
+        return 'the installed OpenCode CLI does not accept the server command'
+    if any(x in text for x in ('permission denied', 'eacces')):
+        return 'OpenCode encountered an operating-system permission error'
+    return 'server startup or health check failed; the exact cause is not yet known'
+
+
+def serve_desktop(model='', variant=''):
+    """Noninteractive MCP startup: stdout and stdin belong to the protocol."""
+    from trade_mcp.opencode import discover_desktop
+    try:
+        desktop_url, password = discover_desktop()
+        terminal_url, token = parse_terminal(read_clipboard())
+    except Exception:
+        print('MCP startup refused: verify OpenCode desktop registration and click MT5 MCP Copy before reconnecting. No fallback server started.', file=sys.stderr)
+        return 4
+    env = os.environ.copy()
+    env.update(TRADE_MCP_BACKEND='native', TRADE_MCP_MCP_URL=terminal_url,
+               TRADE_MCP_MCP_TOKEN=token, TRADE_MCP_ALLOW_TRADING='false',
+               TRADE_MCP_TRAINING_BUDGET='100', TRADE_MCP_OPENCODE_URL=desktop_url,
+               TRADE_MCP_OPENCODE_PASSWORD=password,
+               TRADE_MCP_OPENCODE_MODEL=model or env.get('TRADE_MCP_OPENCODE_MODEL', ''),
+               TRADE_MCP_OPENCODE_VARIANT=variant or env.get('TRADE_MCP_OPENCODE_VARIANT', ''))
+    # Do not run doctor here: it writes human-readable output to protocol stdout.
+    # Native authentication is checked by mt5_status after the MCP handshake.
+    return subprocess.call([sys.executable, '-m', 'trade_mcp', 'serve'], env=env)
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--serve', action='store_true', help='run stdio MCP using desktop discovery and MT5 clipboard; no prompts, no trading')
+    parser.add_argument('--no-browser', action='store_true', help='do not open the console in a browser')
+    parser.add_argument('--console', action='store_true', help='start read-only console after doctor succeeds')
+    parser.add_argument('--enable-demo-trading', action='store_true',
+                        help='enable execution only after a fresh demo-account check; requires --console')
+    parser.add_argument('--setup-llm', action='store_true',
+                        help='prompt for an OpenAI-compatible model and verify a response; no keys saved')
+    parser.add_argument('--opencode', action='store_true',
+                        help='use a local OpenCode v1/v2 server, starting it if needed')
+    parser.add_argument('--opencode-variant', default='', help='optional model variant such as max')
+    parser.add_argument('--opencode-model', default='', help='optional provider/model ID')
+    parser.add_argument('--opencode-desktop', action='store_true', help='discover the running desktop from its private service registration; no password prompt or CLI spawn')
+    parser.add_argument('--opencode-url', default='', help='attach only to an existing desktop server; never start another server')
+    parser.add_argument('--opencode-password-prompt', action='store_true', help='read the existing server password without echo or persistence')
+    args = parser.parse_args(argv)
+    if args.serve:
+        if (not args.opencode_desktop or args.console or args.enable_demo_trading or args.setup_llm
+                or args.opencode or args.opencode_url or args.opencode_password_prompt):
+            parser.error('--serve requires --opencode-desktop and cannot combine with console, trading or other connection modes')
+        return serve_desktop(args.opencode_model, args.opencode_variant)
+    if args.opencode and (not args.console or args.setup_llm):
+        parser.error('--opencode requires --console and cannot be combined with --setup-llm')
+    if args.setup_llm and (not args.console or not sys.stdin.isatty()):
+        parser.error('--setup-llm requires --console and an interactive terminal')
+    if (args.opencode_url or args.opencode_password_prompt or args.opencode_desktop) and not args.console:
+        parser.error('desktop OpenCode options require --console')
+    if args.opencode_password_prompt and not sys.stdin.isatty():
+        parser.error('--opencode-password-prompt requires an interactive terminal')
+    if args.opencode_desktop and (args.opencode or args.opencode_url or args.opencode_password_prompt or args.setup_llm):
+        parser.error('--opencode-desktop cannot be combined with other connection modes')
+    model_env = {}
+    if args.opencode_desktop:
+        from trade_mcp.opencode import discover_desktop
+        try:
+            desktop_url, desktop_password = discover_desktop()
+        except RuntimeError as exc:
+            print(str(exc))
+            return 4
+        model_env['TRADE_MCP_OPENCODE_URL'] = desktop_url
+        model_env['TRADE_MCP_OPENCODE_PASSWORD'] = desktop_password
+        print('Existing OpenCode desktop verified. Private registration read locally; password hidden. No server started.', flush=True)
+    if args.opencode_password_prompt:
+        try:
+            model_env['TRADE_MCP_OPENCODE_PASSWORD'] = getpass.getpass('OpenCode desktop server password (hidden; not the MT5 key): ')
+        except (EOFError, KeyboardInterrupt):
+            print('Cancelled.')
+            return 2
+    if args.setup_llm and not configure_llm(model_env):
+        return 4
+    if args.enable_demo_trading and not args.console:
+        parser.error('--enable-demo-trading requires --console')
+    if sys.stdin.isatty():
+        print('Open MT5 > Tools > Options > MCP and click Copy now.')
+        print('Return here and press Enter only. Do NOT paste the configuration.')
+        try:
+            wait_for_copy()
+        except (EOFError, KeyboardInterrupt):
+            print('Cancelled.')
+            return 2
+    try:
+        url, token = parse_terminal(read_clipboard())
+    except (ValueError, TypeError, AttributeError):
+        # Clipboard content and parser exceptions can contain secrets. Do not log them.
+        print('Cannot read a valid local terminal configuration from the clipboard.')
+        print('Use MT5 > Tools > Options > MCP > Copy. Do not paste it into Bash or chat.')
+        print('On Ubuntu/X11, install a clipboard reader if needed: sudo apt install xclip')
+        return 2
+    env = os.environ.copy()
+    env.update(model_env)
+    env.update(TRADE_MCP_BACKEND='native', TRADE_MCP_MCP_URL=url,
+               TRADE_MCP_MCP_TOKEN=token, TRADE_MCP_ALLOW_TRADING='false',
+               TRADE_MCP_TRAINING_BUDGET='100')
+    # doctor normally prints a partial key; run it with redacted output here.
+    print('Testing the terminal configuration copied from MT5. Trading is disabled.', flush=True)
+    result = subprocess.run([sys.executable, '-m', 'trade_mcp', 'doctor', '--wait', '0'],
+                            env=env, capture_output=True, text=True)
+    for line in (result.stdout + result.stderr).splitlines():
+        if 'mcp key' in line:
+            print('  mcp key     : loaded from clipboard (hidden)')
+        else:
+            print(line.replace(token, '[REDACTED]'))
+    if result.returncode:
+        print('Console not started. If HTTP 401 persists, the saved terminal key was rejected by the running server.')
+        return result.returncode
+    if args.enable_demo_trading:
+        check = subprocess.run([sys.executable, '-c',
+            'from trade_mcp.app import build_app; from trade_mcp.config import Config; '
+            'a=build_app(Config.from_env()); '
+            'account=a.mt5.account_info(fresh=True); a.close(); '
+            'raise SystemExit(0 if account.get("trade_mode")=="demo" else 3)'],
+            env=env, capture_output=True, text=True)
+        if check.returncode:
+            print('Demo account could not be verified. Trading remains disabled; console not started.')
+            return 3
+        env['TRADE_MCP_ALLOW_TRADING'] = 'true'
+        print('Demo account verified. Execution enabled; each web order still requires confirmation.', flush=True)
+    if args.console:
+        owned = None
+        desktop_url = args.opencode_url or env.get("TRADE_MCP_OPENCODE_URL", "")
+        if args.opencode or desktop_url:
+            from trade_mcp.opencode import OpenCodeClient
+            endpoint = desktop_url or 'http://127.0.0.1:4096'
+            client = OpenCodeClient(endpoint, password=(env.get('TRADE_MCP_OPENCODE_PASSWORD') or env.get('OPENCODE_PASSWORD') or env.get('OPENCODE_SERVER_PASSWORD', '')), timeout=2)
+            try:
+                client.health()
+            except RuntimeError:
+                if desktop_url:
+                    print('Cannot authenticate or identify the existing OpenCode server. Check URL, server password and API version.')
+                    print('Attach-only mode: no OpenCode process was started or stopped. Console not started.')
+                    return 4
+                if not shutil.which('opencode'):
+                    print('OpenCode CLI not found. Install it and sign in to your provider first.')
+                    return 4
+                # The OpenCode process must never inherit the terminal token.
+                child_env = {k: v for k, v in os.environ.items()
+                             if not k.startswith(('TRADE_MCP_', 'MT5_MCP_'))}
+                # v2 generates an unknown password unless one is explicitly supplied.
+                # Use an ephemeral shared credential, never a provider or MT5 key.
+                password = client.password or secrets.token_urlsafe(32)
+                client.password = password
+                child_env['OPENCODE_PASSWORD'] = password
+                child_env['OPENCODE_SERVER_PASSWORD'] = password
+                env['OPENCODE_PASSWORD'] = password
+                env['OPENCODE_SERVER_PASSWORD'] = password
+                print('Starting OpenCode on 127.0.0.1:4096; allowing up to 60 seconds.', flush=True)
+                with tempfile.TemporaryFile(mode='w+b') as log:
+                    try:
+                        owned = subprocess.Popen(['opencode', 'serve', '--hostname', '127.0.0.1', '--port', '4096'],
+                                                 env=child_env, stdout=log, stderr=subprocess.STDOUT)
+                    except OSError:
+                        print('Cannot execute OpenCode. Check its executable path and permissions.')
+                        return 4
+                    ready = False
+                    deadline = time.monotonic()+60
+                    while time.monotonic() < deadline:
+                        if owned.poll() is not None:
+                            break
+                        try:
+                            client.health()
+                            ready = True
+                            break
+                        except RuntimeError:
+                            time.sleep(.25)
+                    if not ready:
+                        exit_code = owned.poll()
+                        if exit_code is None:
+                            owned.terminate()
+                            try:
+                                owned.wait(timeout=10)
+                            except subprocess.TimeoutExpired:
+                                owned.kill()
+                                owned.wait()
+                        log.seek(0)
+                        reason = startup_failure_reason(log.read(65536).decode('utf-8', 'replace'))
+                        print('OpenCode not ready: '+reason+'.')
+                        print('Child exit code: '+str(exit_code)+' (None means startup timed out).')
+                        print('Raw logs are not printed because they may contain secrets.')
+                        print('Next read-only checks: opencode --version ; opencode serve --help')
+                        return 4
+            env['TRADE_MCP_OPENCODE_URL'] = endpoint
+            env['TRADE_MCP_OPENCODE_MODEL'] = args.opencode_model or env.get('TRADE_MCP_OPENCODE_MODEL', '')
+            env['TRADE_MCP_OPENCODE_VARIANT'] = args.opencode_variant or env.get('TRADE_MCP_OPENCODE_VARIANT', '')
+            print('OpenCode connected (API '+(client.api_version or 'detected')+'). Web agents require human confirmation, including existing auto agents.')
+            print('Model credentials stay in OpenCode. Use the web model test to verify provider access.')
+        try:
+            command = [sys.executable, '-m', 'trade_mcp', 'console']
+            if args.no_browser:
+                command.append('--no-browser')
+            return subprocess.call(command, env=env)
+        finally:
+            if owned is not None and owned.poll() is None:
+                owned.terminate()
+                try:
+                    owned.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    owned.kill()
+                    owned.wait()
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
