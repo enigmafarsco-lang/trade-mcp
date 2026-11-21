@@ -142,3 +142,21 @@ def test_failed_baseline_exports_honest_research_file(tmp_path):
     assert result['research_only']
     assert not result['execution_authorized']
     assert not result['validated_for_trading']
+
+
+def test_multi_origin_notebook_wires_pinned_evaluator_and_fixed_test_plan():
+    nb = _nb(ROOT/'notebooks'/'kronos_multi_origin_colab.ipynb')
+    text = _text(nb)
+    assert nb['nbformat'] == 4
+    for value in ('4f66fe889c615cb4b6d689f57d3d8ee1cda9ba3e',
+                  'evaluate_kronos_multi_origin(rows,predictor,**SETTINGS)',
+                  "'origins':5,'final_test_origins':1,'step':60", '420<=len(rows)',
+                  "report['split_summary'].get('final_test'", "execution_authorized=False",
+                  'files.download(output)', 'allow_nan=False'):
+        assert value in text
+    assert text.index('plan=fixed_multi_origin_splits') < text.index('report=evaluate_kronos_multi_origin')
+    for c in nb['cells']:
+        if c['cell_type'] == 'code':
+            compile(''.join(c['source']), '<multi-origin-notebook>', 'exec')
+            assert c['outputs'] == []
+            assert c['execution_count'] is None
