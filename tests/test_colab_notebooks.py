@@ -148,7 +148,7 @@ def test_multi_origin_notebook_wires_pinned_evaluator_and_fixed_test_plan():
     nb = _nb(ROOT/'notebooks'/'kronos_multi_origin_colab.ipynb')
     text = _text(nb)
     assert nb['nbformat'] == 4
-    for value in ('4f66fe889c615cb4b6d689f57d3d8ee1cda9ba3e',
+    for value in ('4f66fe8b4ea4a3ba8f68ca2d96f70d1d05b426da',
                   'evaluate_kronos_multi_origin(rows,predictor,**SETTINGS)',
                   "'origins':5,'final_test_origins':1,'step':60", '420<=len(rows)',
                   "report['split_summary'].get('final_test'", "execution_authorized=False",
@@ -160,3 +160,16 @@ def test_multi_origin_notebook_wires_pinned_evaluator_and_fixed_test_plan():
             compile(''.join(c['source']), '<multi-origin-notebook>', 'exec')
             assert c['outputs'] == []
             assert c['execution_count'] is None
+
+
+def test_multi_origin_evaluator_pin_exists_in_git():
+    import subprocess
+
+    nb = _nb(ROOT/'notebooks'/'kronos_multi_origin_colab.ipynb')
+    text = _text(nb)
+    import re
+    pin = re.search(r"EVALUATOR_COMMIT='([0-9a-f]{40})'", text).group(1)
+    resolved = subprocess.check_output(
+        ['git', 'rev-parse', '--verify', pin+'^{commit}'], cwd=ROOT, text=True,
+    ).strip()
+    assert resolved == pin
