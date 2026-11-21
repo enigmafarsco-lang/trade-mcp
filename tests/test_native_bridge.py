@@ -554,6 +554,34 @@ def test_forward_limited_history_covers_latest_bars(monkeypatch):
     assert len([c for c in calls if c[0] == 'get_time_information']) == 1
 
 
+def test_stale_trade_server_last_known_time_does_not_break_utc_normalization(monkeypatch):
+    from datetime import datetime, timezone
+
+    native = NativeBridge('http://unused', 'test')
+    calls = []
+
+    def call(tool, args=None):
+        calls.append((tool, args))
+        if tool == 'get_time_information':
+            # trade_server_last_known_time can be stale (market close); local_time+utc_time are current.
+            return {'utc_time': '2026-11-21T05:28:47Z',
+                    'local_time': '2026-11-21T08:58:47',
+                    'local_utc_offset_minutes': 0,
+                    'trade_server_last_known_time': '2026-11-20T23:59:59'}
+        start = int(datetime.fromisoformat(args['datetime_from']).replace(tzinfo=timezone.utc).timestamp())
+        end = int(datetime.fromisoformat(args['datetime_to']).replace(tzinfo=timezone.utc).timestamp())
+        history = [dict(time=t, open=100, high=102, low=99, close=101)
+                   for t in range(start, end+1, 900)]
+        return {'history': history[:args['limit']]}
+
+    monkeypatch.setattr(native, 'call', call)
+    data = native._cmd_rates(symbol='XAUUSD', timeframe='M15', count=3)
+    assert len(data['rates']) == 3
+    # local_time is UTC+3:30 ahead of utc_time => 12600s offset.
+    assert data['rates'][-1]['time_utc'] == data['rates'][-1]['time']-12600
+    assert data['rates'][-1]['time_source'] == 'broker_history_clock_normalized'
+
+
 def test_trading_permission_error_is_distinct(monkeypatch):
     from types import SimpleNamespace
 

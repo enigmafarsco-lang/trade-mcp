@@ -579,9 +579,15 @@ class NativeBridge:
         clock = self._history_clock
         if clock is None or time.monotonic() - clock[0] > 60:
             clock_raw = self.call("get_time_information")
-            server = to_epoch(find(clock_raw, "trade_server_last_known_time", "trade_server_time"))
             utc = to_epoch(find(clock_raw, "utc_time"))
-            self._history_clock = (time.monotonic(), server - utc if server and utc else 0)
+            # Prefer local_time: trade_server_last_known_time can be stale at market close.
+            local = to_epoch(find(clock_raw, "local_time"))
+            if local and utc:
+                offset = local - utc
+            else:
+                server = to_epoch(find(clock_raw, "trade_server_last_known_time", "trade_server_time"))
+                offset = server - utc if server and utc else 0
+            self._history_clock = (time.monotonic(), offset)
         now = datetime.now(timezone.utc) + timedelta(seconds=self._history_clock[1])
         start = now - timedelta(seconds=step * (bars + 5) * 3)
         raw = self.call(
