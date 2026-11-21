@@ -111,7 +111,7 @@ def test_kronos_runtime_validation_precedes_upload_and_protects_partial_imports(
 def test_generated_kronos_defects_are_diagnosed_not_silently_repaired():
     text = _text(_nb(KRONOS_NB))
     for code in ('non_finite_model_output', 'non_positive_price',
-                 'high_below_open_close_or_low', 'low_above_open_close_or_high',
+                 'envelope_preserve_open_close_with_raw_audit', 'ohlc_adjustments',
                  'negative_to_zero_with_raw_audit'):
         assert code in text
     assert 'all(math.isfinite(x)' in text

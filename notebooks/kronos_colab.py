@@ -117,6 +117,7 @@ def kronos_predict(rows, predictor):
         raise ValueError('Kronos must return 60 future candles')
     out=[]
     volume_adjustments=[]
+    ohlc_adjustments=[]
     for i, (_, row) in enumerate(result.iterrows()):
         o,h,l,c,v = [float(row[k]) for k in ['open','high','low','close','volume']]
         # Diagnose actual model-output defects separately; never silently repair them.
@@ -126,10 +127,12 @@ def kronos_predict(rows, predictor):
         else:
             if min(o,h,l,c) <= 0:
                 problems.append('non_positive_price')
-            if h < max(o,c,l):
-                problems.append('high_below_open_close_or_low')
-            if l > min(o,c,h):
-                problems.append('low_above_open_close_or_high')
+            # Declared envelope projection: preserve raw values, never change open/close.
+            if h < max(o,c,l) or l > min(o,c,h):
+                raw = {'open':o, 'high':h, 'low':l, 'close':c}
+                h, l = max(h,o,c), min(l,o,c)
+                ohlc_adjustments.append({'minute':i+1, 'raw':raw,
+                                         'used':{'open':o,'high':h,'low':l,'close':c}})
             if v < 0:
                 # Explicit physical-domain projection, NOT a raw model prediction.
                 volume_adjustments.append({'minute': i+1, 'raw_volume': v, 'used_volume': 0.0})
@@ -139,12 +142,15 @@ def kronos_predict(rows, predictor):
                 'Kronos inference completed but generated an invalid candle at horizon minute '
                 + str(i+1) + ': ' + ', '.join(problems) +
                 '. No artifact was produced. This is not an HF_TOKEN or download error. '
-                'Do not repair OHLC prices or repeatedly sample until it passes.')
+                'Non-positive or non-finite prices cannot be projected; no repeated sampling.')
         out.append([int(rows[-1][0])+60*(i+1), o,h,l,c,v])
     return {'candles': out, 'source': 'official_KronosPredictor.predict',
             'upstream_commit_expected': KRONOS_COMMIT, 'execution_authorized': False, 'validated_for_trading': False,
             'postprocessing': {'volume_policy':'negative_to_zero_with_raw_audit',
-                               'prices_modified':False, 'volume_adjustments':volume_adjustments}}
+                               'ohlc_policy':'envelope_preserve_open_close_with_raw_audit',
+                               'prices_modified':bool(ohlc_adjustments),
+                               'ohlc_adjustments':ohlc_adjustments,
+                               'volume_adjustments':volume_adjustments}}
 
 # held-out evaluation on final 60 bars (never given to predictor for that origin)
 training, holdout = rows[:-60], rows[-60:]

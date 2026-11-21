@@ -53,6 +53,15 @@ result=namespace['kronos_predict'](rows[:120],FakePredictor())
 assert result['candles'][0][5] == 0
 assert result['postprocessing']['volume_adjustments'][0]['raw_volume'] == -1
 assert result['candles'][0][1:5] == [100,102,99,101]
+class InconsistentPredictor:
+    def predict(self, **kw):
+        return pd.DataFrame([dict(open=100,high=98,low=103,close=101,volume=1)]*60)
+for predict in (kronos_predict, namespace['kronos_predict']):
+    fixed=predict(rows[:120], InconsistentPredictor())
+    assert fixed['candles'][0][1:5] == [100,101,100,101]
+    assert fixed['postprocessing']['prices_modified'] is True
+    assert fixed['postprocessing']['ohlc_adjustments'][0]['raw']['high'] == 98
+    assert fixed['postprocessing']['ohlc_adjustments'][0]['raw']['low'] == 103
 '''
     result = subprocess.run([python, '-c', code], env={'PATH': os.environ.get('PATH', ''),
         'PYTHONPATH': str(Path(__file__).resolve().parents[1]/'src')},

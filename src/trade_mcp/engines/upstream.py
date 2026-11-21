@@ -36,8 +36,17 @@ def kronos_predict(rows, predictor):
     output = [[clean[-1][0]+60*(i+1), *[float(row[k]) for k in ('open', 'high', 'low', 'close')],
                float(row.get('volume', 0))] for i, (_, row) in enumerate(result.iterrows())]
     volume_adjustments = []
+    ohlc_adjustments = []
     for i, row in enumerate(output):
-        # Prices remain unmodified; retain every volume-domain correction.
+        if not all(math.isfinite(x) for x in row[1:]) or min(row[1:5]) <= 0:
+            raise ValueError('Non-finite output or non-positive model price')
+        o, h, low, c = row[1:5]
+        if h < max(o, c, low) or low > min(o, c, h):
+            raw = {'open': o, 'high': h, 'low': low, 'close': c}
+            row[2], row[3] = max(h, o, c), min(low, o, c)
+            ohlc_adjustments.append({'minute': i+1, 'raw': raw,
+                'used': {'open': o, 'high': row[2], 'low': row[3], 'close': c}})
+        # Retain every declared physical-domain correction.
         if math.isfinite(row[5]) and row[5] < 0:
             volume_adjustments.append({'minute': i+1, 'raw_volume': row[5], 'used_volume': 0.0})
             row[5] = 0.0
@@ -45,7 +54,10 @@ def kronos_predict(rows, predictor):
     return {'candles': output, 'source': 'official_KronosPredictor.predict',
             'upstream_commit_expected': KRONOS_COMMIT, 'execution_authorized': False,
             'postprocessing': {'volume_policy': 'negative_to_zero_with_raw_audit',
-                               'prices_modified': False, 'volume_adjustments': volume_adjustments},
+                               'ohlc_policy': 'envelope_preserve_open_close_with_raw_audit',
+                               'prices_modified': bool(ohlc_adjustments),
+                               'ohlc_adjustments': ohlc_adjustments,
+                               'volume_adjustments': volume_adjustments},
             'validated_for_trading': False}
 
 
