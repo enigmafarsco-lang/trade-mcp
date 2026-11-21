@@ -106,3 +106,13 @@ def test_kronos_runtime_validation_precedes_upload_and_protects_partial_imports(
         assert cell['outputs'] == []
         if code.startswith('# COLAB ONLY - actual upstream inference'):
             assert code.index("globals().get('_KRONOS_RUNTIME_READY')") < code.index('from model import')
+
+
+def test_generated_kronos_defects_are_diagnosed_not_silently_repaired():
+    text = _text(_nb(KRONOS_NB))
+    for code in ('non_finite_model_output', 'non_positive_price',
+                 'high_below_open_close_or_low', 'low_above_open_close_or_high',
+                 'negative_predicted_volume'):
+        assert code in text
+    assert 'all(math.isfinite(x)' in text
+    assert 'No artifact was produced' in text
