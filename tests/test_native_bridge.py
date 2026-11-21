@@ -577,9 +577,9 @@ def test_stale_trade_server_last_known_time_does_not_break_utc_normalization(mon
     monkeypatch.setattr(native, 'call', call)
     data = native._cmd_rates(symbol='XAUUSD', timeframe='M15', count=3)
     assert len(data['rates']) == 3
-    # local_time is UTC+3:30 ahead of utc_time => 12600s offset.
-    assert data['rates'][-1]['time_utc'] == data['rates'][-1]['time']-12600
-    assert data['rates'][-1]['time_source'] == 'broker_history_clock_normalized'
+    # Local timezone cannot substitute for the unknown broker timezone.
+    assert data['rates'][-1]['time_utc'] is None
+    assert data['rates'][-1]['time_source'] == 'broker_clock_unverified'
 
 
 def test_trading_permission_error_is_distinct(monkeypatch):

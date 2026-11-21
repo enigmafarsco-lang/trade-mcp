@@ -21,7 +21,7 @@ def run_window(step, stop, *, duration=300, clock=time.monotonic):
             for entry in entries:
                 for blocker in entry.get('blockers') or []:
                     # Keep only bounded known reason categories, never raw records.
-                    tick_reasons = {'invalid_or_stale_quote', 'forming_M1_required',
+                    tick_reasons = {'broker_clock_unverified', 'invalid_or_stale_quote', 'forming_M1_required',
                         'duplicate_or_out_of_order_tick', 'warming_up',
                         'insufficient_aligned_ticks', 'forming_M1_missing',
                         'existing_exposure', 'volume_below_minimum',

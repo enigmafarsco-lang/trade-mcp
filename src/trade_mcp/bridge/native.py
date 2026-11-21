@@ -580,13 +580,15 @@ class NativeBridge:
         if clock is None or time.monotonic() - clock[0] > 60:
             clock_raw = self.call("get_time_information")
             utc = to_epoch(find(clock_raw, "utc_time"))
-            # Prefer local_time: trade_server_last_known_time can be stale at market close.
-            local = to_epoch(find(clock_raw, "local_time"))
-            if local and utc:
-                offset = local - utc
-            else:
-                server = to_epoch(find(clock_raw, "trade_server_last_known_time", "trade_server_time"))
-                offset = server - utc if server and utc else 0
+            # A workstation timezone is not the broker timezone. Never infer one
+            # from local_time. A stale/non-timezone-like server delta is unknown.
+            server = to_epoch(find(clock_raw, "trade_server_time")) or to_epoch(
+                find(clock_raw, "trade_server_last_known_time"))
+            delta = server-utc if server and utc else None
+            known = (delta is not None and abs(delta) <= 14*3600
+                     and abs(delta-round(delta/900)*900) <= 2)
+            offset = round(delta/900)*900 if known else 0
+            self._history_clock_verified = known
             self._history_clock = (time.monotonic(), offset)
         now = datetime.now(timezone.utc) + timedelta(seconds=self._history_clock[1])
         start = now - timedelta(seconds=step * (bars + 5) * 3)
@@ -630,10 +632,11 @@ class NativeBridge:
             stamp = to_epoch(raw_time)
             text = str(raw_time).strip()
             aware = bool(re.search(r"(?:Z|[+-]\d{2}:?\d{2})$", text))
-            explicit_utc[stamp] = stamp if aware else stamp-self._history_clock[1]
+            explicit_utc[stamp] = stamp if aware else (stamp-self._history_clock[1]
+                if getattr(self, '_history_clock_verified', False) else None)
         for bar in out:
             bar["time_utc"] = explicit_utc[bar["time"]]
-            bar["time_source"] = "broker_history_clock_normalized"
+            bar["time_source"] = "broker_history_clock_normalized" if bar["time_utc"] is not None else "broker_clock_unverified"
         out = sorted({bar["time"]: bar for bar in out if bar["time"] > 0}.values(),
                      key=lambda bar: bar["time"])[-bars:]
         if not out:

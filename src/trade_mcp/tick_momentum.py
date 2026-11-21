@@ -27,6 +27,9 @@ class TickMomentum:
         # Millisecond timestamp preferred. Seconds-only sources count at most once/second.
         stamp = number(tick.get('time_msc') or number(tick['time'])*1000)
         bid, ask = number(tick['bid']), number(tick['ask'])
+        if candle.get('time_source') == 'broker_clock_unverified':
+            self.previous, self.count, self.direction = None, 0, 0
+            return {'action': 'wait', 'reason': 'broker_clock_unverified'}
         opened = number(candle['open'])
         start = number(candle.get('time_utc', candle['time']))
         if min(bid, ask, opened) <= 0 or ask < bid or not -2 <= now-stamp/1000 <= 2:
