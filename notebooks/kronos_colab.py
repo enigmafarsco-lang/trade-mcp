@@ -167,11 +167,21 @@ print(json.dumps(evaluation, indent=2))
 
 # %%
 # COLAB ONLY - build trade-mcp compatible artifact
+baseline_failures = []
 for m in evaluation['metrics']:
     if not (math.isfinite(m['absolute_error']) and math.isfinite(m['no_change_absolute_error'])):
         raise ValueError('Invalid metric')
     if m['absolute_error'] >= m['no_change_absolute_error']:
-        raise ValueError('Failed baseline screen; do not fabricate a passing artifact')
+        baseline_failures.append(m['minutes_ahead'])
+baseline_screen = {
+    'passed': not baseline_failures,
+    'failed_horizons_minutes': baseline_failures,
+    'criterion': 'absolute_error < no_change_absolute_error at every horizon',
+    'independent_origins': 1,
+}
+print('Baseline screen:', json.dumps(baseline_screen))
+if baseline_failures:
+    print('RESEARCH ONLY: baseline failed; exported output is not approved for live display/trading.')
 live_forecast = kronos_predict(rows, predictor)  # uses all provided closed bars as context
 artifact = {
   'symbol': symbol,
@@ -181,6 +191,9 @@ artifact = {
   'upstream_commit_expected': KRONOS_COMMIT,
   'candles': live_forecast['candles'],
   'holdout_evaluation': evaluation,
+  'baseline_screen': baseline_screen,
+  'research_only': True,
+  'display_eligible': not baseline_failures,
   'postprocessing': live_forecast['postprocessing'],
   'execution_authorized': False,
   'validated_for_trading': False,

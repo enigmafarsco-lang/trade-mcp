@@ -34,7 +34,7 @@ def test_kronos_notebook_has_required_safety_and_schema():
     ]:
         assert required in text
     assert ('جعلی' in text) or ('fabricate' in text.lower())
-    assert ('Failed baseline screen' in text) or ('failed_historical_baseline_check' in text)
+    assert 'baseline_screen' in text and 'failed_horizons_minutes' in text
     # artifact format accepted by trade-mcp load_forecast
     artifact = {
         'symbol': 'XAUUSD', 'timeframe': 'M1', 'forecast_origin': 6000,
@@ -116,3 +116,29 @@ def test_generated_kronos_defects_are_diagnosed_not_silently_repaired():
         assert code in text
     assert 'all(math.isfinite(x)' in text
     assert 'No artifact was produced' in text
+
+
+def test_failed_baseline_exports_honest_research_file(tmp_path):
+    import math
+
+    nb = _nb(KRONOS_NB)
+    source = next(''.join(c['source']) for c in nb['cells']
+                  if c['cell_type'] == 'code' and 'baseline_failures = []' in ''.join(c['source']))
+    calls = []
+    def predict(rows, predictor):
+        calls.append(True)
+        return {'candles': [], 'postprocessing': {'prices_modified': False}}
+    namespace = {'math': math, 'json': json, 'rows': [[60, 1, 2, .5, 1, 0]],
+        'predictor': object(), 'kronos_predict': predict, 'symbol': 'TEST',
+        'KRONOS_COMMIT': KRONOS_COMMIT,
+        'evaluation': {'metrics': [{'minutes_ahead': h, 'absolute_error': 2,
+            'no_change_absolute_error': 1} for h in (15, 30, 60)]}}
+    exec(compile(source.replace('/content/', str(tmp_path)+'/'), '<export-cell>', 'exec'), namespace)
+    result = json.loads((tmp_path/'kronos_forecast_TEST_M1.json').read_text())
+    assert len(calls) == 1
+    assert not result['baseline_screen']['passed']
+    assert result['baseline_screen']['failed_horizons_minutes'] == [15, 30, 60]
+    assert not result['display_eligible']
+    assert result['research_only']
+    assert not result['execution_authorized']
+    assert not result['validated_for_trading']
