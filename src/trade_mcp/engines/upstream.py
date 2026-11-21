@@ -1,6 +1,7 @@
 """Optional genuine upstream adapters. No imports/downloads at module load; no orders."""
 import hashlib
 import importlib.util
+import math
 from pathlib import Path
 
 from .technical import validate_ohlcv
@@ -34,9 +35,17 @@ def kronos_predict(rows, predictor):
         raise ValueError('Kronos must return 60 future candles')
     output = [[clean[-1][0]+60*(i+1), *[float(row[k]) for k in ('open', 'high', 'low', 'close')],
                float(row.get('volume', 0))] for i, (_, row) in enumerate(result.iterrows())]
+    volume_adjustments = []
+    for i, row in enumerate(output):
+        # Prices remain unmodified; retain every volume-domain correction.
+        if math.isfinite(row[5]) and row[5] < 0:
+            volume_adjustments.append({'minute': i+1, 'raw_volume': row[5], 'used_volume': 0.0})
+            row[5] = 0.0
     output = validate_ohlcv(output)
     return {'candles': output, 'source': 'official_KronosPredictor.predict',
             'upstream_commit_expected': KRONOS_COMMIT, 'execution_authorized': False,
+            'postprocessing': {'volume_policy': 'negative_to_zero_with_raw_audit',
+                               'prices_modified': False, 'volume_adjustments': volume_adjustments},
             'validated_for_trading': False}
 
 

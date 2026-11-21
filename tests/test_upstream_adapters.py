@@ -31,12 +31,28 @@ class FakePredictor:
         assert kw['pred_len'] == 60
         assert len(kw['df']) == 120
         assert kw['x_timestamp'].iloc[-1] < kw['y_timestamp'].iloc[0]
-        return pd.DataFrame([dict(open=100,high=102,low=99,close=101,volume=1)]*60)
+        return pd.DataFrame([dict(open=100,high=102,low=99,close=101,volume=-1)]*60)
 rows = [[i*60,100,102,99,101,1] for i in range(180)]
 result = evaluate_kronos(rows, FakePredictor())
 assert result['holdout_candles'] == 60
 assert not result['validated_for_trading']
-assert len(kronos_predict(rows[:120], FakePredictor())['candles']) == 60
+result = kronos_predict(rows[:120], FakePredictor())
+assert len(result['candles']) == 60
+assert result['candles'][0][5] == 0
+assert result['postprocessing']['volume_adjustments'][0]['raw_volume'] == -1
+assert result['postprocessing']['prices_modified'] is False
+# Execute only the notebook function, not model loading or inference cells.
+import ast, json, math
+from pathlib import Path
+nb=json.loads(Path('notebooks/kronos_colab.ipynb').read_text())
+source=next(''.join(c['source']) for c in nb['cells'] if 'def kronos_predict(' in ''.join(c['source']))
+node=next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name=='kronos_predict')
+namespace={'math':math,'KRONOS_COMMIT':'fixture'}
+exec(compile(ast.Module(body=[node],type_ignores=[]),'<notebook-function>','exec'),namespace)
+result=namespace['kronos_predict'](rows[:120],FakePredictor())
+assert result['candles'][0][5] == 0
+assert result['postprocessing']['volume_adjustments'][0]['raw_volume'] == -1
+assert result['candles'][0][1:5] == [100,102,99,101]
 '''
     result = subprocess.run([python, '-c', code], env={'PATH': os.environ.get('PATH', ''),
         'PYTHONPATH': str(Path(__file__).resolve().parents[1]/'src')},
