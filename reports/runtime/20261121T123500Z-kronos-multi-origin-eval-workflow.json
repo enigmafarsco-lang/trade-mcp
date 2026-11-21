@@ -1,0 +1,44 @@
+{
+  "schema": "trade-mcp/runtime-report",
+  "report_id": "20261121T123500Z-kronos-multi-origin-eval-workflow",
+  "generated_at": "2026-11-21T12:35:00Z",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "trading_enabled": false,
+  "cloud_budget_revoked": true,
+  "new_inference_run": false,
+  "existing_checked": [
+    "src/trade_mcp/engines/upstream.py (single-origin evaluate_kronos, no-change only)",
+    "scripts/upstream_strategy_worker.py (single-origin)",
+    "notebooks/kronos_colab.py/.ipynb (single-origin Colab holdout)",
+    "src/trade_mcp/kronos_artifact.py (loader/gate)"
+  ],
+  "implemented": {
+    "file": "src/trade_mcp/engines/upstream.py",
+    "functions": [
+      "simple_trend_close_baseline",
+      "fixed_multi_origin_splits",
+      "evaluate_kronos_multi_origin"
+    ],
+    "properties": [
+      "fixed_historical_splits",
+      "no_future_leakage",
+      "same_model_settings_postprocessing_per_origin",
+      "baselines_no_change_and_simple_trend",
+      "horizons_15_30_60",
+      "per_horizon_errors_and_ratios",
+      "ohlc_volume_correction_frequency_and_size",
+      "final_test_not_used_for_tuning"
+    ]
+  },
+  "tests": {
+    "file": "tests/test_kronos_multi_origin.py",
+    "result": "pass (4 tests)",
+    "inference_used": false
+  },
+  "boundaries": [
+    "separate_from_M1_tick_momentum_execution_strategy",
+    "no_trading_enabled",
+    "stale_failed_artifact_not_live_forecast",
+    "no_new_paid_service_or_inference"
+  ]
+}

@@ -108,3 +108,194 @@ def freqtrade_strategy001(rows, source_path):
             'enter_long': bool(last.get('enter_long', 0) == 1),
             'exit_long': bool(last.get('exit_long', 0) == 1),
             'execution_authorized': False}
+
+
+def simple_trend_close_baseline(training_rows, horizon_minutes, *, lookback=15):
+    """Deterministic simple trend baseline: linear slope over last `lookback` closes.
+
+    No future leakage: uses only training_rows. Returns predicted close.
+    """
+    clean = validate_ohlcv(training_rows)
+    if horizon_minutes < 1 or lookback < 2 or len(clean) < lookback:
+        raise ValueError('Invalid trend baseline inputs')
+    closes = [r[4] for r in clean[-lookback:]]
+    n = len(closes)
+    x_mean = (n - 1) / 2.0
+    y_mean = sum(closes) / n
+    denom = sum((i - x_mean) ** 2 for i in range(n))
+    slope = 0.0 if denom == 0 else sum((i - x_mean) * (closes[i] - y_mean) for i in range(n)) / denom
+    # project horizon_minutes bars ahead from last close index (n-1)
+    return closes[-1] + slope * horizon_minutes
+
+
+def _postprocessing_stats(postprocessing):
+    post = postprocessing or {}
+    ohlc = post.get('ohlc_adjustments') or []
+    vol = post.get('volume_adjustments') or []
+    ohlc_sizes = []
+    for a in ohlc:
+        raw, used = a.get('raw') or {}, a.get('used') or {}
+        for k in ('open', 'high', 'low', 'close'):
+            if k in raw and k in used:
+                ohlc_sizes.append(abs(float(used[k]) - float(raw[k])))
+    vol_sizes = [abs(float(a.get('raw_volume', 0.0)) - float(a.get('used_volume', 0.0))) for a in vol]
+    return {
+        'ohlc_correction_count': len(ohlc),
+        'volume_correction_count': len(vol),
+        'ohlc_correction_size_mean': (sum(ohlc_sizes) / len(ohlc_sizes)) if ohlc_sizes else 0.0,
+        'ohlc_correction_size_max': max(ohlc_sizes) if ohlc_sizes else 0.0,
+        'volume_correction_size_mean': (sum(vol_sizes) / len(vol_sizes)) if vol_sizes else 0.0,
+        'volume_correction_size_max': max(vol_sizes) if vol_sizes else 0.0,
+    }
+
+
+def fixed_multi_origin_splits(rows, *, origins=5, horizon=60, min_context=120, step=60, final_test_origins=1):
+    """Deterministic fixed splits with no future leakage.
+
+    Returns list of dicts with origin_index, origin_time, split ('evaluation'|'final_test').
+    The final_test_origins are the last origins in chronological order and must not be used for tuning/selection.
+    """
+    clean = minute_rows(rows)
+    if origins < 1 or final_test_origins < 0 or final_test_origins >= origins:
+        raise ValueError('Invalid split configuration')
+    if horizon < 1 or min_context < 120 or step < 1:
+        raise ValueError('Invalid split parameters')
+    # Choose origins so each has min_context bars before/including origin and horizon bars after.
+    latest = len(clean) - horizon - 1
+    earliest = min_context - 1
+    if latest < earliest:
+        raise ValueError('Insufficient rows for requested splits')
+    candidates = list(range(earliest, latest + 1))
+    # deterministic evenly spaced selection over available candidates
+    if len(candidates) < origins:
+        raise ValueError('Insufficient rows for requested number of origins')
+    if origins == 1:
+        selected = [candidates[-1]]
+    else:
+        selected = []
+        for i in range(origins):
+            pos = int(round(i * (len(candidates) - 1) / (origins - 1)))
+            selected.append(candidates[pos])
+        # enforce minimum step when possible by greedy adjustment forward from left
+        adjusted = [selected[0]]
+        for idx in selected[1:]:
+            adjusted.append(max(idx, adjusted[-1] + step))
+        if adjusted[-1] > latest:
+            # fallback: place from right to left
+            adjusted = [latest - step * (origins - 1 - i) for i in range(origins)]
+            if adjusted[0] < earliest:
+                raise ValueError('Insufficient rows for requested origins/step')
+        selected = adjusted
+    splits = []
+    for i, origin_idx in enumerate(selected):
+        split = 'final_test' if i >= origins - final_test_origins else 'evaluation'
+        splits.append({'origin_index': origin_idx, 'origin_time': clean[origin_idx][0], 'split': split})
+    return splits
+
+
+def evaluate_kronos_multi_origin(rows, predictor, *, origins=5, horizons=(15, 30, 60), lookback=15,
+                                 final_test_origins=1, step=60):
+    """Reproducible multi-origin Kronos evaluation with fixed splits and no leakage.
+
+    - Uses fixed deterministic splits; final_test_origins are never for tuning/selection.
+    - Each origin uses only rows <= origin as context; holdout is future rows.
+    - Same predictor/settings/postprocessing path (kronos_predict) for every origin.
+    - Compares to no-change and simple trend baselines.
+    - Reports per-horizon errors and OHLC/volume correction frequency/size.
+    No inference is performed unless predictor is called; tests may pass a mock.
+    """
+    clean = minute_rows(rows)
+    horizons = tuple(int(h) for h in horizons)
+    if horizons != (15, 30, 60):
+        raise ValueError('This workflow currently requires horizons (15,30,60)')
+    splits = fixed_multi_origin_splits(clean, origins=origins, horizon=60, min_context=max(120, lookback),
+                                       step=step, final_test_origins=final_test_origins)
+    origin_reports = []
+    agg = {h: {'kronos_abs': [], 'no_change_abs': [], 'trend_abs': []} for h in horizons}
+    split_agg = {}
+    ohlc_counts, vol_counts, ohlc_sizes, vol_sizes = [], [], [], []
+    for spec in splits:
+        idx = spec['origin_index']
+        training, holdout = clean[:idx + 1], clean[idx + 1:idx + 61]
+        if len(holdout) < 60:
+            raise ValueError('Insufficient holdout bars for origin')
+        forecast = kronos_predict(training, predictor)
+        post = _postprocessing_stats(forecast.get('postprocessing'))
+        ohlc_counts.append(post['ohlc_correction_count'])
+        vol_counts.append(post['volume_correction_count'])
+        ohlc_sizes.append(post['ohlc_correction_size_mean'])
+        vol_sizes.append(post['volume_correction_size_mean'])
+        per_h = []
+        for h in horizons:
+            actual = float(holdout[h - 1][4])
+            pred = float(forecast['candles'][h - 1][4])
+            no_change = float(training[-1][4])
+            trend = float(simple_trend_close_baseline(training, h, lookback=lookback))
+            kronos_abs = abs(pred - actual)
+            no_change_abs = abs(no_change - actual)
+            trend_abs = abs(trend - actual)
+            agg[h]['kronos_abs'].append(kronos_abs)
+            agg[h]['no_change_abs'].append(no_change_abs)
+            agg[h]['trend_abs'].append(trend_abs)
+            split_agg.setdefault(spec['split'], {hh: {'kronos_abs': [], 'no_change_abs': [], 'trend_abs': []} for hh in horizons})
+            split_agg[spec['split']][h]['kronos_abs'].append(kronos_abs)
+            split_agg[spec['split']][h]['no_change_abs'].append(no_change_abs)
+            split_agg[spec['split']][h]['trend_abs'].append(trend_abs)
+            per_h.append({
+                'minutes_ahead': h,
+                'absolute_error': kronos_abs,
+                'no_change_absolute_error': no_change_abs,
+                'simple_trend_absolute_error': trend_abs,
+                'ratio_vs_no_change': (kronos_abs / no_change_abs) if no_change_abs else None,
+                'ratio_vs_simple_trend': (kronos_abs / trend_abs) if trend_abs else None,
+            })
+        origin_reports.append({
+            'origin_index': idx,
+            'origin_time': spec['origin_time'],
+            'split': spec['split'],
+            'forecast_origin': training[-1][0] + 60,
+            'postprocessing': post,
+            'metrics': per_h,
+        })
+
+    def _summarize(bucket):
+        out = []
+        for h in horizons:
+            b = bucket[h]
+            def mean(xs): return (sum(xs) / len(xs)) if xs else None
+            ka, na, ta = b['kronos_abs'], b['no_change_abs'], b['trend_abs']
+            out.append({
+                'minutes_ahead': h,
+                'n': len(ka),
+                'kronos_mae': mean(ka),
+                'no_change_mae': mean(na),
+                'simple_trend_mae': mean(ta),
+                'kronos_vs_no_change_ratio': (mean(ka) / mean(na)) if mean(na) else None,
+                'kronos_vs_simple_trend_ratio': (mean(ka) / mean(ta)) if mean(ta) else None,
+            })
+        return out
+
+    by_split = {name: _summarize(bucket) for name, bucket in split_agg.items()}
+    return {
+        'schema': 'kronos-multi-origin-evaluation/v1',
+        'workflow': 'fixed_historical_splits_no_future_leakage',
+        'horizons_minutes': list(horizons),
+        'origins': len(origin_reports),
+        'final_test_origins': final_test_origins,
+        'final_test_used_for_tuning': False,
+        'same_model_settings_postprocessing': True,
+        'baselines': ['no_change_close', f'simple_trend_close_linear_lookback_{lookback}'],
+        'split_summary': by_split,
+        'overall_summary': _summarize(agg),
+        'postprocessing_summary': {
+            'origins_with_ohlc_corrections': sum(1 for c in ohlc_counts if c > 0),
+            'origins_with_volume_corrections': sum(1 for c in vol_counts if c > 0),
+            'ohlc_corrections_total': sum(ohlc_counts),
+            'volume_corrections_total': sum(vol_counts),
+            'ohlc_corrections_mean_per_origin': (sum(ohlc_counts) / len(ohlc_counts)) if ohlc_counts else 0.0,
+            'volume_corrections_mean_per_origin': (sum(vol_counts) / len(vol_counts)) if vol_counts else 0.0,
+            'ohlc_correction_size_mean_of_origin_means': (sum(ohlc_sizes) / len(ohlc_sizes)) if ohlc_sizes else 0.0,
+            'volume_correction_size_mean_of_origin_means': (sum(vol_sizes) / len(vol_sizes)) if vol_sizes else 0.0,
+        },
+        'origins_detail': origin_reports,
+    }
