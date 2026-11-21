@@ -86,3 +86,26 @@ def test_setup_avoids_system_ensurepip_and_checks_real_isolation():
     assert 'print(result.stderr)' in setup
     assert 'if result.returncode:' in setup
     assert setup.index('sys.prefix!=sys.base_prefix') < setup.index("'freqtrade=='+FREQTRADE_VERSION")
+
+
+def test_engine_command_wrapper_surfaces_stderr_without_hidden_retry():
+    import ast
+
+    source = next(c for c in codes() if 'def ft(' in c)
+    node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == 'ft')
+    calls = []
+
+    def fail_visible(args):
+        calls.append(args)
+        raise RuntimeError('visible engine diagnostic')
+
+    env = {'PY': Path('/isolated/python'), 'CONFIG': Path('/research/config.json'),
+           'run_visible': fail_visible}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), '<wrapper>', 'exec'), env)
+    with pytest.raises(RuntimeError, match='visible engine diagnostic'):
+        env['ft']('download-data', '--pairs', 'BTC/USDT')
+    assert len(calls) == 1
+    assert calls[0][2:4] == ['freqtrade', 'download-data']
+    with pytest.raises(AssertionError):
+        env['ft']('trade')
+    assert len(calls) == 1

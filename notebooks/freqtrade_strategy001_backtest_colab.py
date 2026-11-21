@@ -79,7 +79,7 @@ print('Fixed test plan:',PLAN)
 # Only two allowlisted engine subcommands; never trade, webserver or hyperopt.
 def ft(command,*args):
     assert command in ('download-data','backtesting')
-    subprocess.check_call([str(PY),'-m','freqtrade',command,'--config',str(CONFIG),*map(str,args)])
+    return run_visible([PY,'-m','freqtrade',command,'--config',CONFIG,*args])
 ft('download-data','--datadir',DATA,'--pairs','BTC/USDT','--timeframes','5m','1m',
    '--timerange','20251230-20260401','--data-format-ohlcv','feather')
 
