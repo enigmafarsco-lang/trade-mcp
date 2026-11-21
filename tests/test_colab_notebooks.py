@@ -75,3 +75,15 @@ def test_notebooks_do_not_claim_execution_completed():
         text = _text(_nb(path)).lower()
         assert 'تا زمانی که واقعاً اجرا نشده' in _text(_nb(path)) or 'عدم اجرای نوت‌بوک' in _text(_nb(path))
         assert 'expose' not in text or 'public server' in text
+
+
+def test_kronos_checks_python_before_install_and_preserves_pip_diagnostics():
+    text = _text(_nb(KRONOS_NB))
+    assert "sys.version_info[:2] <= (3, 12)" in text
+    assert text.index('Runtime Python:') < text.index("'pip','install'")
+    assert "'pip','install','-q'" not in text
+    assert 'Read the pip ERROR lines above' in text
+    # Parse code cells without installing or executing cloud dependencies.
+    for cell in _nb(KRONOS_NB)['cells']:
+        if cell['cell_type'] == 'code':
+            compile(''.join(cell['source']), '<colab-cell>', 'exec')
