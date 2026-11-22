@@ -1,0 +1,68 @@
+{
+  "schema": "xauusd-research-check-report/v1",
+  "report_id": "20261122T122500Z-xauusd-offline-next-tests",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "head_at_execution": "d7eb696",
+  "command_executed": ".venv/bin/python scripts/xauusd_offline_next_tests.py",
+  "execution_count": 1,
+  "new_mt5_history_requests": 0,
+  "network_calls": 0,
+  "models_called": 0,
+  "orders_sent": 0,
+  "trading_off": true,
+  "cloud_budget_revoked": true,
+  "output_exists_prior": false,
+  "result": {
+    "schema": "xauusd-offline-next-tests/v1",
+    "status": "completed_all_new_tests",
+    "history_calls_made": 0,
+    "new_tests_planned": 25,
+    "new_tests_completed": 25,
+    "baseline_checks_attempted": 6,
+    "all_baselines_reproduced": true,
+    "not_blind_or_unbiased_holdout": true,
+    "windows": [
+      {"id":"additional_sample","tests":[
+        {"variant":"2_changes_spread_cap_1_00","entries":14,"profit":4,"loss":9,"gross_total":-10.780000000002474},
+        {"variant":"2_changes_no_spread_cap","entries":14,"profit":4,"loss":9,"gross_total":-10.780000000002474},
+        {"variant":"2_changes_spread_cap_0_50","entries":0,"profit":0,"loss":0,"gross_total":0},
+        {"variant":"2_changes_spread_cap_0_75","entries":14,"profit":4,"loss":9,"gross_total":-10.780000000002474},
+        {"variant":"3_changes_spread_cap_0_75","entries":5,"profit":1,"loss":4,"gross_total":-6.239999999999782}
+      ]},
+      {"id":"w1","tests":[
+        {"variant":"2_changes_no_spread_cap","entries":2,"profit":1,"loss":0,"gross_total":1.2199999999993452,"delta_vs_prev2cap1":0.0},
+        {"variant":"2_changes_spread_cap_0_50","entries":0,"profit":0,"loss":0,"gross_total":0,"delta_vs_prev2cap1":-1.2199999999993452},
+        {"variant":"2_changes_spread_cap_0_75","entries":2,"profit":1,"loss":0,"gross_total":1.2199999999993452,"delta_vs_prev2cap1":0.0},
+        {"variant":"3_changes_spread_cap_0_75","entries":4,"profit":1,"loss":2,"gross_total":-2.2600000000002183,"delta_vs_prev2cap1":-3.4799999999995634}
+      ]},
+      {"id":"w2","tests":[
+        {"variant":"2_changes_no_spread_cap","entries":2,"profit":0,"loss":1,"gross_total":-3.0,"delta_vs_prev2cap1":0.0},
+        {"variant":"2_changes_spread_cap_0_50","entries":0,"profit":0,"loss":0,"gross_total":0,"delta_vs_prev2cap1":3.0},
+        {"variant":"2_changes_spread_cap_0_75","entries":3,"profit":0,"loss":2,"gross_total":-5.519999999998618,"delta_vs_prev2cap1":-2.5199999999986176},
+        {"variant":"3_changes_spread_cap_0_75","entries":2,"profit":0,"loss":1,"gross_total":-2.2999999999992724,"delta_vs_prev2cap1":0.7000000000007276}
+      ]},
+      {"id":"w3","tests":[
+        {"variant":"2_changes_no_spread_cap","entries":4,"profit":1,"loss":3,"gross_total":-5.200000000002547,"delta_vs_prev2cap1":0.0},
+        {"variant":"2_changes_spread_cap_0_50","entries":0,"profit":0,"loss":0,"gross_total":0,"delta_vs_prev2cap1":5.200000000002547},
+        {"variant":"2_changes_spread_cap_0_75","entries":0,"profit":0,"loss":0,"gross_total":0,"delta_vs_prev2cap1":5.200000000002547},
+        {"variant":"3_changes_spread_cap_0_75","entries":0,"profit":0,"loss":0,"gross_total":0,"delta_vs_prev2cap1":5.200000000002547}
+      ]},
+      {"id":"w4","tests":[
+        {"variant":"2_changes_no_spread_cap","entries":3,"profit":0,"loss":3,"gross_total":-6.3199999999987995,"delta_vs_prev2cap1":0.0},
+        {"variant":"2_changes_spread_cap_0_50","entries":0,"profit":0,"loss":0,"gross_total":0,"delta_vs_prev2cap1":6.3199999999987995},
+        {"variant":"2_changes_spread_cap_0_75","entries":3,"profit":0,"loss":3,"gross_total":-6.3199999999987995,"delta_vs_prev2cap1":0.0},
+        {"variant":"3_changes_spread_cap_0_75","entries":6,"profit":1,"loss":4,"gross_total":-7.140000000000327,"delta_vs_prev2cap1":-0.820000000001528}
+      ]},
+      {"id":"w5","tests":[
+        {"variant":"2_changes_no_spread_cap","entries":5,"profit":2,"loss":2,"gross_total":-1.0199999999986176,"delta_vs_prev2cap1":0.0},
+        {"variant":"2_changes_spread_cap_0_50","entries":0,"profit":0,"loss":0,"gross_total":0,"delta_vs_prev2cap1":1.0199999999986176},
+        {"variant":"2_changes_spread_cap_0_75","entries":5,"profit":1,"loss":4,"gross_total":-6.579999999999018,"delta_vs_prev2cap1":-5.5600000000004},
+        {"variant":"3_changes_spread_cap_0_75","entries":4,"profit":1,"loss":3,"gross_total":-4.259999999999309,"delta_vs_prev2cap1":-3.240000000000691}
+      ]}
+    ]
+  },
+  "raw_data_committed": false,
+  "net_pnl": null,
+  "profitability_proven": false,
+  "note": "Retrospective after prior outcomes; not blind holdout/unbiased optimization. No-entry is not a profitable strategy; equal metrics do not prove identical entries."
+}
