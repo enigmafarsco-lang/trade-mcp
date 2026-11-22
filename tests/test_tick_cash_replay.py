@@ -1,5 +1,6 @@
 """Synthetic scenario tests, never evidence of actual trading profitability."""
 import importlib.util
+import random
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -284,6 +285,63 @@ def test_final_boundary_expires_pending_and_does_not_generate_new_signals(monkey
     assert corrected['final_boundary_management']['pending_entries_expired'] == 1
     assert corrected['counts'].get('simulated_entries', 0) == 0
     assert observations and max(observations) == 239000
+
+
+@pytest.mark.parametrize(('boundary_bid', 'boundary_ask'), [(50, 50.1), (100, 100.1), (200, 200.1)])
+def test_flat_interior_gross_cannot_change_even_with_pending_signal_and_extreme_boundary(
+        monkeypatch, boundary_bid, boundary_ask):
+    class EarlyAndLastSignal:
+        def __init__(self, **kwargs):
+            pass
+
+        def observe(self, tick, *args, **kwargs):
+            return {'action': 'buy' if tick['time_msc'] in (60000, 239000) else 'wait'}
+
+    monkeypatch.setattr(cash, 'TickMomentum', EarlyAndLastSignal)
+    rows = ticks()
+    rows[62]['bid'], rows[62]['ask'] = 103, 103.1  # First position closes before the boundary.
+    for row in rows[240:]:
+        row['bid'], row['ask'] = boundary_bid, boundary_ask
+    legacy = cash.replay_cash_scenario(rows, metadata(), manage_final_boundary=False)
+    managed = cash.replay_cash_scenario(rows, metadata())
+    assert legacy['position_open_at_sample_end'] is False and legacy['pending_entry_at_sample_end'] is True
+    assert managed['position_open_at_sample_end'] is False and managed['pending_entry_at_sample_end'] is False
+    assert legacy['counts']['simulated_entries'] == managed['counts']['simulated_entries'] == 1
+    assert legacy['counts']['cash_profit_exits'] == managed['counts']['cash_profit_exits'] == 1
+    assert legacy['gross_total_mark_usd_model'] == managed['gross_total_mark_usd_model'] == pytest.approx(5.8)
+    assert legacy['simulated_three_consecutive_loss_latch'] is managed['simulated_three_consecutive_loss_latch']
+    assert managed['final_boundary_management']['pending_entries_expired'] == 1
+    assert managed['final_boundary_management']['position_marked_quotes'] == 0
+
+
+def test_flat_interior_invariant_across_synthetic_paths_and_variants():
+    flat = opened = 0
+    for seed in range(25):
+        rng = random.Random(seed)
+        rows, bid = ticks(), 100.0
+        for index, row in enumerate(rows):
+            direction = 1 if (index // (12 + seed % 9) + seed) % 2 == 0 else -1
+            bid += direction * rng.choice([.03, .09, .15, .24])
+            if index == 245 and seed % 4 == 0:
+                bid += 2 if seed % 8 == 0 else -2
+            spread = rng.choice([.05, .1, .2, .4, .6, 1.1])
+            row['bid'], row['ask'] = bid, bid + spread
+        for consecutive in (2, 3):
+            for spread in (None, .5, 1.0):
+                kwargs = {'consecutive_changes': consecutive, 'max_spread_cost_usd': spread}
+                legacy = cash.replay_cash_scenario(rows, metadata(), manage_final_boundary=False, **kwargs)
+                managed = cash.replay_cash_scenario(rows, metadata(), **kwargs)
+                if legacy['position_open_at_sample_end']:
+                    opened += 1  # An open position cannot be inferred from aggregates alone.
+                    continue
+                flat += 1
+                assert managed['position_open_at_sample_end'] is False
+                for name in ('simulated_entries', 'cash_profit_exits', 'cash_loss_exits'):
+                    assert managed['counts'].get(name, 0) == legacy['counts'].get(name, 0)
+                for name in ('gross_realized_usd_model', 'gross_open_mark_usd_model',
+                             'gross_total_mark_usd_model', 'simulated_three_consecutive_loss_latch'):
+                    assert managed[name] == legacy[name]
+    assert flat > 0 and opened > 0
 
 
 def test_final_boundary_managed_default_and_explicit_legacy_mode():

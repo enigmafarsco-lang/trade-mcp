@@ -17,7 +17,9 @@ Five previously open hypothetical positions reached a simulated loss exit in
 the final observed minute; another remained open with a different mark. The
 comparison covered **only two fixed strategies** on six previously examined,
 independent short samples. Other parameter variants in earlier reports have
-not been corrected by that comparison.
+not been corrected by that comparison. A later [aggregate-only review](../reports/research/xauusd-saved-summary-inference.md)
+infers unchanged corrected gross marks for variants already flat at the last
+interior quote; it does not replay ticks or infer outcomes for open positions.
 
 ## Research default and compatibility
 
