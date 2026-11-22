@@ -47,6 +47,25 @@ def test_fill_uses_next_quote_not_signal_quote_and_keeps_open_mark(monkeypatch):
     assert report['execution_authorized'] is False
 
 
+@pytest.mark.parametrize(('bid', 'ask', 'expected', 'exit_kind'), [
+    (103, 103.1, 5.8, 'cash_profit_exits'),
+    (98, 98.1, -4.2, 'cash_loss_exits'),
+])
+def test_m1_is_signal_timeframe_not_a_60_second_position_timeout(monkeypatch, bid, ask, expected, exit_kind):
+    first_buy(monkeypatch)
+    rows = ticks()
+    # Hypothetical entry is at second 61; leave the mark inside +/-$2 until
+    # second 181. A forced close at 60 seconds or the candle end would differ.
+    for row in rows[181:]:
+        row['bid'], row['ask'] = bid, ask
+    report = cash.replay_cash_scenario(rows, metadata())
+    assert report['counts']['simulated_entries'] == 1
+    assert report['counts'][exit_kind] == 1
+    assert report['gross_realized_usd_model'] == pytest.approx(expected)
+    assert report['position_open_at_sample_end'] is False
+    assert report['net_pnl'] is None and report['execution_authorized'] is False
+
+
 def test_threshold_overshoot_is_not_clipped(monkeypatch):
     first_buy(monkeypatch)
     rows = ticks()

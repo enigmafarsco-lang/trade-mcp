@@ -2,6 +2,13 @@
 
 ## 1. User M1 tick momentum — explicit execution path
 
+**M1 is the signal timeframe, not a one-minute maximum holding period.**
+There is no automatic close solely because 60 seconds pass or the entry candle
+ends. The 300-second value below limits the entry-evaluation window, not the
+lifetime of an open position; an owned position must remain protected after the
+window ends. The example is historical documentation, not authorization to
+start a new trading window.
+
 `POST /api/agents/{id}`:
 
 ```json
@@ -39,12 +46,12 @@ not guaranteed HFT or one executed order every second. Three realized losses
 retain the durable review latch. Never auto-reset it. Existing manual/old pending
 proposals are preserved and are not auto-confirmed by this endpoint.
 
-Local operator: deploy/test, freshly verify DEMO/USD flat/no orders/no unresolved
-intents/no latch/fresh v2 cost source and healthy guardian. Only then enable demo
-execution in the console process and invoke ONE 300s tick window. No cloud window.
-Preserve protection for any resulting open position; disable entry flags when
-safely flat. Report actual fills/ownership/exits separately from evaluations.
-No broker execution was performed during source implementation.
+The previous local-operator instructions do not authorize another trading
+window. Any future bounded DEMO execution would require explicit authorization
+and fresh verification of DEMO/USD, exposure, unresolved intents, loss latch,
+cost source and guardian health. Preserve protection while an owned position
+exists. Report actual fills/ownership/exits separately from evaluations; source
+and tests do not establish broker acceptance.
 
 ## 2. Actual Kronos adapter, not an imitation
 

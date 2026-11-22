@@ -26,6 +26,21 @@ def test_sell_and_candle_reset():
     assert strategy.observe(tick(120100, 96), {'time': 120, 'open': 97}, now=120.1)['action'] == 'wait'
 
 
+def test_m1_rollover_discards_partial_streak_and_requires_fresh_changes():
+    strategy = TickMomentum(2)
+    first = {'time': 60, 'open': 100}
+    assert strategy.observe(tick(118900, 101), first, now=118.9)['action'] == 'wait'
+    assert strategy.observe(tick(119000, 102), first, now=119)['action'] == 'wait'
+    assert strategy.count == 1
+
+    next_candle = {'time': 120, 'open': 102}
+    result = strategy.observe(tick(120100, 103), next_candle, now=120.1)
+    assert result == {'action': 'wait', 'reason': 'warming_up'}
+    assert strategy.count == 0
+    assert strategy.observe(tick(120200, 104), next_candle, now=120.2)['action'] == 'wait'
+    assert strategy.observe(tick(120300, 105), next_candle, now=120.3)['action'] == 'buy'
+
+
 def test_spread_only_change_does_not_count():
     strategy = TickMomentum(2)
     candle = {'time': 60, 'open': 100}
