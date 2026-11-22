@@ -1,0 +1,26 @@
+{
+  "schema": "xauusd-research-check-report/v1",
+  "report_id": "20261122T110500Z-xauusd-sparse-screen-v2-5win",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "head_at_execution": "958dafe",
+  "command_executed": ".venv/bin/python scripts/xauusd_sparse_screen_v2.py",
+  "execution_count": 1,
+  "v1_touched": false,
+  "trading_off": true,
+  "cloud_budget_revoked": true,
+  "new_mt5_network_calls_per_window_max": 1,
+  "total_windows": 5,
+  "attempted_history_calls": 5,
+  "status": "completed_5_windows",
+  "stop_reason": null,
+  "windows": [
+    {"id":"w1","start":"2026-11-09T13:00:00","end":"2026-11-09T13:05:00","status":"simulated","returned_rows":647,"replayed_rows":385,"interior_minutes_seen":3,"signal_counts":{"sell":5,"buy":20},"simulated_entries":4,"cash_loss_exits":2,"cash_profit_exits":1,"signals_blocked_by_simulated_loss_latch":null,"gross_realized_usd_model":-1.7199999999993452,"gross_open_mark_usd_model":-0.5400000000008731,"gross_total_mark_usd_model":-2.2600000000002183,"position_open_at_sample_end":true,"simulated_three_consecutive_loss_latch":false,"net_pnl":null},
+    {"id":"w2","start":"2026-11-09T19:00:00","end":"2026-11-09T19:05:00","status":"simulated","returned_rows":738,"replayed_rows":429,"interior_minutes_seen":3,"signal_counts":{"sell":9,"buy":6},"simulated_entries":3,"cash_loss_exits":3,"cash_profit_exits":null,"signals_blocked_by_simulated_loss_latch":5,"gross_realized_usd_model":-6.359999999998763,"gross_open_mark_usd_model":null,"gross_total_mark_usd_model":-6.359999999998763,"position_open_at_sample_end":false,"simulated_three_consecutive_loss_latch":true,"net_pnl":null},
+    {"id":"w3","start":"2026-11-10T09:00:00","end":"2026-11-10T09:05:00","status":"simulated","returned_rows":820,"replayed_rows":498,"interior_minutes_seen":3,"signal_counts":{"buy":16,"sell":10},"simulated_entries":3,"cash_loss_exits":3,"cash_profit_exits":null,"signals_blocked_by_simulated_loss_latch":15,"gross_realized_usd_model":-7.080000000001746,"gross_open_mark_usd_model":null,"gross_total_mark_usd_model":-7.080000000001746,"position_open_at_sample_end":false,"simulated_three_consecutive_loss_latch":true,"net_pnl":null},
+    {"id":"w4","start":"2026-11-10T13:00:00","end":"2026-11-10T13:05:00","status":"simulated","returned_rows":745,"replayed_rows":482,"interior_minutes_seen":3,"signal_counts":{"sell":13,"buy":24},"simulated_entries":6,"cash_loss_exits":4,"cash_profit_exits":1,"signals_blocked_by_simulated_loss_latch":null,"gross_realized_usd_model":-6.380000000000109,"gross_open_mark_usd_model":-0.7600000000002183,"gross_total_mark_usd_model":-7.140000000000327,"position_open_at_sample_end":true,"simulated_three_consecutive_loss_latch":false,"net_pnl":null},
+    {"id":"w5","start":"2026-11-10T19:00:00","end":"2026-11-10T19:05:00","status":"simulated","returned_rows":862,"replayed_rows":518,"interior_minutes_seen":3,"signal_counts":{"buy":25,"sell":12},"simulated_entries":4,"cash_loss_exits":3,"cash_profit_exits":1,"signals_blocked_by_simulated_loss_latch":9,"gross_realized_usd_model":-4.299999999999272,"gross_open_mark_usd_model":null,"gross_total_mark_usd_model":-4.299999999999272,"position_open_at_sample_end":false,"simulated_three_consecutive_loss_latch":true,"net_pnl":null}
+  ],
+  "raw_data_committed": false,
+  "independent_hypothetical_windows_not_continuous": true,
+  "profitability_proven": false
+}
