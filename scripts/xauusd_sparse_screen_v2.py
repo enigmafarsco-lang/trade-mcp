@@ -2,6 +2,7 @@
 
 At most ONE read-only tick-history request per window, sequentially, 2000 rows max.
 No retries, no alternate provider, no pagination. Fixed output dir is a no-repeat marker.
+The five-window run is complete: this historical job is closed and must not run again.
 """
 import contextlib
 import hashlib
@@ -16,7 +17,6 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
-from trade_mcp.bridge.native import records  # noqa: E402
 from trade_mcp.config import Config, load_dotenv  # noqa: E402
 from trade_mcp.mcpclient import McpHttpClient  # noqa: E402
 from trade_mcp.tick_cash_replay import economics, replay_cash_scenario  # noqa: E402
@@ -34,12 +34,17 @@ WINDOWS = [
 ECONOMICS = Path('logs/research-inputs/xauusd-cash-research-20261122T075312Z/symbol-economics.json')
 OUTPUT = Path('logs/research-inputs/xauusd-sparse-screen-20261109-10-v2-5win')
 V1_OUTPUT = Path('logs/research-inputs/xauusd-sparse-screen-20261109-10-v1')
+# This experiment already ran once; keep the guard even in a fresh checkout
+# that lacks the original machine's local output-directory marker.
+V2_RUN_CLOSED = True
 FIELDS = {'trade_contract_size', 'currency_profit', 'trade_calc_mode',
           'volume_min', 'volume_max', 'volume_step'}
 STOP_STATUSES = {
     'transport_or_auth_or_rate_limit_error',
     'malformed_response',
     'explicit_provider_error',
+    'ambiguous_provider_diagnostic',
+    'at_or_above_limit_possible_truncation',
     'history_schema_mismatch',
     'history_tool_missing_or_ambiguous',
     'input_transport_or_replay_error',
@@ -74,24 +79,76 @@ def validate_schema(client):
         raise StopScreen('history_schema_mismatch')
 
 
-def is_explicit_service_error(data, result):
+def has_value(value):
+    """Empty diagnostic values are not evidence of an explicit error."""
+    if value is None or value is False:
+        return False
+    if isinstance(value, (int, float)) and value == 0:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (dict, list)):
+        return bool(value)
+    return True
+
+
+def metadata_fields(data):
+    """Inspect bounded metadata, never quote rows or private error text."""
+    pending = [data]
+    visited = 0
+    while pending:
+        item = pending.pop()
+        visited += 1
+        if visited > 1000:
+            raise StopScreen('malformed_response')
+        if isinstance(item, dict):
+            for key, value in item.items():
+                name = ''.join(c for c in str(key).lower() if c.isalnum())
+                if name in {'history', 'ticks', 'quotes'}:
+                    continue
+                yield name, value
+                if isinstance(value, (dict, list)):
+                    pending.append(value)
+        elif isinstance(item, list):
+            pending.extend(value for value in item if isinstance(value, (dict, list)))
+
+
+def is_explicit_service_error(fields, result):
     if result.get('isError'):
         return True
-    if not isinstance(data, dict):
-        return False
-    # explicit error fields/codes indicate service/provider error
-    for k in ('error', 'errors', 'last_error', 'retcode', 'error_code', 'error_description'):
-        v = data.get(k)
-        if v is None or v is False or v == 0 or v == '':
-            continue
-        if isinstance(v, (str, int, float, dict, list)):
+    error_fields = {'retcode', 'fault', 'faultcode', 'faultstring', 'failure'}
+    error_statuses = {'error', 'failed', 'failure', 'unauthorized', 'forbidden',
+                      'ratelimited', 'timeout', 'unavailable'}
+    service_hints = ('rate limit', 'rate-limit', 'rate_limit', 'too many requests',
+                     'quota', 'unauthorized', 'forbidden', 'permission denied',
+                     'access denied', 'timeout', 'timed out', 'throttl',
+                     'authentication failed', 'service unavailable', 'provider error')
+    for key, value in fields:
+        is_error_field = (key in error_fields or key.startswith(('error', 'lasterror', 'exception'))
+                          or key.endswith('error'))
+        if is_error_field and has_value(value):
             return True
-    # ok false with non-empty history or other payload is ambiguous/malformed for this flow
-    if data.get('ok') is False:
-        rows = records(data, 'ticks', 'quotes', 'history', 'data')
-        if rows:
-            return True
+        if key in {'status', 'message', 'reason', 'detail', 'description'} and isinstance(value, str):
+            text = value.lower().strip()
+            if key == 'status' and ''.join(c for c in text if c.isalnum()) in error_statuses:
+                return True
+            if any(hint in text for hint in service_hints):
+                return True
+        if key in {'status', 'statuscode', 'code'}:
+            number = value if type(value) is int else int(value) if isinstance(value, str) and value.isdigit() else 0
+            if 400 <= number <= 599:
+                return True
     return False
+
+
+def harmless_no_data_diagnostic(key, value):
+    if not has_value(value):
+        return True
+    if key not in {'status', 'message', 'reason', 'detail', 'description'} or not isinstance(value, str):
+        return False
+    words = ' '.join(value.lower().replace('_', ' ').split())
+    return words in {'no data', 'no data available', 'no history', 'empty history',
+                     'history is empty', 'no ticks', 'no ticks available'}
 
 
 def classify_exception(exc):
@@ -112,26 +169,36 @@ def classify_exception(exc):
 def validate_rows(result, start, end):
     if not isinstance(result, dict):
         raise StopScreen('malformed_response')
-    data = McpHttpClient.structured_content(result)
-    # explicit provider/service errors -> STOP
-    if is_explicit_service_error(data, result):
-        # ok=false with empty history and no explicit error fields is handled separately
-        if isinstance(data, dict) and data.get('ok') is False and not result.get('isError'):
-            rows = records(data, 'ticks', 'quotes', 'history', 'data')
-            has_explicit = any(
-                (data.get(k) not in (None, False, 0, ''))
-                for k in ('error', 'errors', 'last_error', 'retcode', 'error_code', 'error_description')
-            )
-            if not rows and not has_explicit:
-                return {'kind': 'no_usable_data_cause_unknown'}
+    if result.get('isError'):
         raise StopScreen('explicit_provider_error')
-    rows = records(data, 'ticks', 'quotes', 'history', 'data')
-    if not rows:
-        if isinstance(data, dict) and data.get('ok') is False:
-            return {'kind': 'no_usable_data_cause_unknown'}
+    try:
+        data = McpHttpClient.structured_content(result)
+        fields = list(metadata_fields(data))
+    except (AttributeError, TypeError, ValueError):
+        raise StopScreen('malformed_response') from None
+    if is_explicit_service_error(fields, result):
+        raise StopScreen('explicit_provider_error')
+    # A missing history field is not proof of an empty array. Only the exact
+    # observed empty-response shape may continue; ambiguous diagnostics stop.
+    if (not isinstance(data, dict) or data.get('symbol') != SYMBOL
+            or data.get('period') != 'tick' or type(data.get('ok')) is not bool
+            or not isinstance(data.get('history'), list)):
+        raise StopScreen('malformed_response')
+    rows = data['history']  # Do not silently filter non-object rows or choose another array.
+    if data['ok'] is False and rows == []:
+        diagnostic_keys = {'status', 'statuscode', 'message', 'reason', 'code', 'detail', 'description'}
+        if any(key in diagnostic_keys and not harmless_no_data_diagnostic(key, value)
+               for key, value in fields):
+            raise StopScreen('ambiguous_provider_diagnostic')
+        if any(has_value(data.get(key)) for key in ('ticks', 'quotes', 'data')):
+            raise StopScreen('malformed_response')
+        return {'kind': 'no_usable_data_cause_unknown'}
+    if data['ok'] is not True or not rows:
         raise StopScreen('malformed_response')
     if len(rows) >= LIMIT:
-        raise StopScreen('explicit_provider_error')
+        raise StopScreen('at_or_above_limit_possible_truncation')
+    if any(not isinstance(row, dict) for row in rows):
+        raise StopScreen('malformed_response')
     a, b = datetime.fromisoformat(start), datetime.fromisoformat(end)
     try:
         for row in rows:
@@ -145,6 +212,9 @@ def validate_rows(result, start, end):
 
 
 def run():
+    if V2_RUN_CLOSED:
+        print('This v2 screen already ran; no history requests will be made.')
+        return 1
     if V1_OUTPUT.resolve() == OUTPUT.resolve():
         raise SystemExit('refusing to use v1 output dir')
     OUTPUT.mkdir(mode=0o700, parents=True, exist_ok=False)
