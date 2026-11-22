@@ -1,123 +1,87 @@
-# دستور OpenCode: بررسی آفلاین فرضیهٔ جهت دقیقهٔ قبل برای سیگنال M1
+# OpenCode handoff: recover saved M1 opportunity counts
 
-## وضعیت و محدوده
+**Language: respond only in English. Do not ask the user to run commands, locate
+files, upload raw data, or provide credentials.**
 
-این سند **دستور برای OpenCode** است؛ کار فنی را به کاربر واگذار نکن.
-آزمایش یک‌باره روی workstation تکمیل و [گزارش پاک‌سازی‌شده](../reports/research/20261122T130500Z-xauusd-m1-previous-direction.md)
-ثبت شده است. فرضیه بخشی از استراتژی زنده نشده است. برنامهٔ
-`scripts/xauusd_m1_previous_direction.py` اکنون با guard بسته شده؛ حتی اگر
-marker در checkout دیگری موجود نباشد، آن را اجرا یا guard را دور نزن.
+## Status and safety
 
-طبق گزارش اپراتور، اجرای پژوهش هیچ درخواست تاریخچه، تماس شبکه، فراخوانی
-مدل استراتژی، سفارش یا تغییر در تنظیمات، latch واقعی و حفاظت بروکر نداشت.
-همگام‌سازی Git، اگر لازم باشد، عملیات شبکهٔ جداگانه‌ای است و جزئی از اجرای
-پژوهش نیست.
+The M1 previous-minute-direction experiment has already run once and is closed.
+Its sanitized report is
+[`reports/research/20261122T130500Z-xauusd-m1-previous-direction.md`](../reports/research/20261122T130500Z-xauusd-m1-previous-direction.md).
+Do not rerun `scripts/xauusd_m1_previous_direction.py`, call its replay
+function on real archives, remove a marker, or bypass its closure guard—even in
+another checkout where the original marker is absent.
 
-پیش از این آزمایش، نمونه‌ها و نتایجشان دیده شده‌اند؛ فرضیه و انتخاب دو مدل
-**پس از مشاهدهٔ نتایج** مطرح شده‌اند. خروجی فقط بررسی بازنگرانه است، نه
-آزمون کور، دادهٔ واقعاً ندیده، سود خالص، اثبات سودآوری یا مجوز معامله.
-سود/زیان فرضی شامل اسپرد bid/ask مدل‌شده است؛ کارمزد، سایر هزینه‌ها، سواپ،
-لغزش و خالص واقعی نامعلوم‌اند. اسپرد را دوباره کسر نکن. علامت موقعیت باز
-در پایان، سود محقق‌شده نیست. پنجره‌ها حساب پیوسته نیستند و هر سناریو از
-موقعیت و latch فرضی مستقل شروع می‌شود.
+The missing information is **per-window and per-model eligibility and raw
+signal counts**. The operator-reported aggregate 360/232 buy/sell totals have
+not been independently verified here and are not a substitute: they combine
+overlapping model runs, are counted before entry filters and are not actual
+trades. The saved summary and original report are retrospective; they are
+neither an unseen/forward test nor proof of net profitability.
 
-## فرضیه و مقایسهٔ منصفانه
+## Do this on the workstation
 
-- سیگنال همچنان بر تغییرات متوالی bid/ask در کندل در حال تشکیل **M1** و
-  مقایسهٔ bid خرید یا ask فروش با اولین bid مشاهده‌شدهٔ همان دقیقه استوار
-  است. این پژوهش دو مدل قبلی را بررسی می‌کند: حالت اصلیِ سه تغییر، و حالت
-  پژوهشیِ دو تغییر با سقف هزینهٔ اسپرد یک دلار؛ سقف دومی لزوماً تنظیم زنده
-  نیست.
-- فقط وقتی ورود فرضی بررسی می‌شود که دقیقهٔ قبلی **بلافاصله مجاور** و
-  داخلی باشد و دست‌کم دو quote مشاهده‌شده داشته باشد. دقیقهٔ اولِ برگشتی
-  و دقیقهٔ آخرِ برگشتی برای ساخت سیگنال استفاده نمی‌شوند؛ بنابراین اولین
-  دقیقهٔ داخلی نمی‌تواند از مرز اول به‌عنوان دقیقهٔ قبلی استفاده کند.
-- جهت دقیقهٔ قبلی با مقایسهٔ **اولین و آخرین bid مشاهده‌شده** در آن دقیقه
-  تعریف می‌شود؛ افزایشی برای خرید و کاهشی برای فروش. دقیقهٔ ثابت برای هر
-  دو جهت مسدود است. دو quote، پوشش کامل یا open/close واقعی کندل را اثبات
-  نمی‌کند؛ UTC و سلامت/کامل بودن feed نیز تأیید نشده‌اند.
-- کنترل فقط وجود دقیقهٔ قبلی را شرط می‌کند؛ فرضیه علاوه بر آن، هم‌جهتی را
-  می‌خواهد. هر دو دقیقاً از یک مجموعهٔ زمانیِ واجدشرایط استفاده می‌کنند و
-  همهٔ محدودیت‌های دیگرشان یکسان است. در هر نمونه و مدل، اختلاف فقط
-  **نشانگر ناخالص فرضیه منهای کنترل هم‌فرصت** است. به‌خاطر تغییر موقعیت‌ها
-  و latch فرضی، مسیر معاملات بعدی می‌تواند متفاوت باشد.
-- برای اعتبارسنجی پیوستگی هر نمونه/مدل، ابتدا یک بازپخشِ مدلِ بدون فیلتر
-  با گزارش اصلاح‌شدهٔ منتشرشده تطبیق داده می‌شود: حداکثر **۱۲ بررسی
-  baseline**، بعد حداکثر **۲۴ سناریوی جدید در ۱۲ مقایسهٔ جفتی**. این
-  تطبیق صرفاً aggregate است و هویت رمزنگاری‌شدهٔ آرشیو را ثابت نمی‌کند؛
-  برنامهٔ یک‌بارهٔ قبلی یا job تکمیل‌شده را دوباره اجرا نکن. baseline
-  منتشرشده از دقیقهٔ داخلی بیشتری استفاده می‌کند و کنترل هم‌فرصت نیست.
-- مدل ثابت قبلی با حجم فرضی ۰٫۰۲ لات، ورود در quote مشاهده‌شدهٔ بعدی،
-  آستانهٔ ناخالص ±۲ دلار و بدون قطع‌کردن overshoot ادامه دارد. این اعداد
-  **صرفاً مفروضات مدل قبلی** هستند، نه مقدار معاملهٔ پیشنهادی. بعد از ورود
-  هیچ بستن اجباری ۶۰ثانیه‌ای یا پایان کندل وجود ندارد. دقیقهٔ آخر فقط
-  موقعیت فرضی باز را علامت‌گذاری/مدیریت می‌کند و ورود جدید ندارد.
-- شمارش raw signal پیش از فیلتر موقعیت، latch، اسپرد و جهت است و تعداد
-  معامله نیست. اگر هیچ ورود فرضی در هر دو مسیر رخ ندهد، اختلاف نشانگر
-  ناخالص مدل گزارش نمی‌شود؛ صفرِ بدون معامله را موفقیت معرفی نکن.
+1. In the workstation's checkout of this repository, confirm the current branch
+   is `arena/f81b6b27-trade-mcp` and inspect Git status. Only if the tree is clean
+   and the update is fast-forward, fetch and fast-forward that same branch to
+   the revision provided in the handoff message. Do not switch branches, stash,
+   reset, delete files, rebase, force-push, or overwrite the user's work. Stop
+   and report a dirty tree or divergence without modifying it.
+2. If `reports/research/xauusd-m1-saved-signal-counts.json` already exists,
+   stop and report only that it exists; do not print its contents, overwrite,
+   delete or commit it. Otherwise run the new aggregate-only extractor once:
 
-## ورودی‌ها و خروجی
+   ```text
+   .venv/bin/python scripts/xauusd_m1_saved_signal_counts.py
+   ```
 
-ورودی‌های ثابت، فقط اگر از قبل موجود باشند:
+   It reads only the existing private local summary from the completed job and
+   the tracked sanitized M1 report. Before publishing it checks all 12 pairs, their
+   baseline matches, model parameters, entries/exits, open positions, latches,
+   gross marks and pair differences. It also checks the six previously
+   published row counts and three-change raw buy/sell counts. A match is an
+   aggregate consistency check, **not** a cryptographic raw-archive identity
+   check. The extractor creates only the new sanitized aggregate JSON,
+   exclusively, with permissions no broader than `0600`; it leaves source files
+   and markers unchanged. It refuses symlinked inputs and output directories.
+3. If it fails, stop and report its fixed, data-free error/status; a write failure
+   may leave an incomplete new output, which must be left unchanged. Do not inspect
+   or print raw quote archives, economics files, account data, private paths,
+   exceptions or credentials; do not fetch new history, substitute data, change
+   settings or rerun a replay.
+4. If successful, report every sample and model separately: eligible minute
+   buckets and previous observed directions; raw buy/sell signals; signals
+   with an available previous minute; and those also aligned. Report simulated
+   entries and entry-decision block counts as separate fields. Raw signals are
+   **before** position/latch/spread/context filters and are not entries. Do not
+   combine overlapping models into a continuous-account result. Preserve
+   `commission`, `fees`, `swap` and `net_pnl` as null.
+5. Review the generated JSON for sanitization; commit only
+   `reports/research/xauusd-m1-saved-signal-counts.json` and push only the same
+   current branch if it remains fast-forward and safe. Git fetch/push is the
+   only network activity allowed here, separate from the extractor. If GitHub
+   authentication fails, do not request or expose credentials; report that the
+   GitHub connection needs attention. If publication is blocked, return the
+   sanitized aggregate results and status in English.
 
-- `logs/research-inputs/xauusd-ticks-corrected-20261122T073154Z/raw-response.json`
-- `logs/research-inputs/xauusd-sparse-screen-20261109-10-v2-5win/w1-raw-response.json`
-  تا `w5-raw-response.json`
-- `logs/research-inputs/xauusd-cash-research-20261122T075312Z/symbol-economics.json`
-- گزارش پاک‌سازی‌شدهٔ ردیابی‌شدهٔ
-  `reports/research/20261122T124500Z-xauusd-final-boundary-replay.json`
+No MT5, order, strategy-model call, new history request, live-guard change,
+service restart or dependency installation is authorized. The earlier
+workstation pytest log was not found; the reported 32-versus-42 test count
+remains unresolved and must not be guessed. No synthetic or aggregate result
+is a trading authorization.
 
-خروجی گزارش‌شده فقط محلی و owner-only است:
-`logs/research-inputs/xauusd-m1-previous-direction-v1/summary.json`. وضعیت
-گزارش‌شده `completed_all_paired_comparisons` است. آن را حذف یا بازنویسی نکن
-و برنامه یا تابع بازپخش را روی آرشیوهای واقعی تکرار نکن. فهرست
-`input_presence_only_not_validation` فقط وجود مسیرها را نشان می‌دهد، نه صحت
-یا خوانایی محتوا. نبودن فایل محلی در checkout دیگر مجوز تکرار آزمایش نیست.
+## M1 and comparison semantics
 
-## پیگیری صرفاً خواندنی برای OpenCode
-
-۱. در `/media/joshua/SATA500/Trade/trade-mcp` وضعیت Git و شاخهٔ فعلی
-   `arena/f81b6b27-trade-mcp` را بررسی کن. فقط در صورت clean بودن و امکان
-   fast-forward، همین شاخه را با origin همگام کن؛ شاخه عوض نکن و reset،
-   stash اجباری یا حذف فایل انجام نده. اگر شاخه متفاوت، وضعیت dirty یا
-   واگرایی وجود دارد، بدون دستکاری متوقف شو و علت را گزارش کن.
-
-۲. کامیت گزارش `f703b32f2415c5b2e91be61ac4f5101c991ea8a1` اکنون روی
-   origin این شاخه دیده شده است؛ دوباره برای آن push لازم نیست. سایر
-   کامیت‌های گزارش محلیِ ادعاشده را فقط به‌صورت خواندنی در graph مشخص کن:
-   SHA کامل، مسیر گزارش پاک‌سازی‌شده و اینکه ancestor شاخهٔ origin هست یا
-   نه. بدون بررسی هویت و محتوا، وجود یا نبودشان روی origin را فرض نکن.
-   فقط اگر کامیت‌های باقی‌مانده روی همین شاخه‌اند و push آن fast-forward و
-   مجاز است، همان شاخه را push کن؛ در صورت واگرایی، conflict یا احراز
-   هویت ناموفق، متوقف شو. هیچ شاخهٔ دیگری را push یا checkout نکن.
-
-۳. گزارش JSON ثبت‌شده تعداد دقیقه‌ها و raw signalهای واجدشرایط را حذف کرده
-   است. اگر همان `summary.json` محلی موجود است، بدون خواندن آرشیو تیک یا
-   snapshot اقتصاد، ابتدا schema/status و ۱۲ جفت آن را با اعداد گزارش
-   پاک‌سازی‌شده تطبیق بده: شناسهٔ پنجره و مدل، تعداد ورود/برد/باخت، open،
-   latch و ناخالص هر دو مسیر و اختلاف `Pda − Pav`؛ اعداد اعشاری با خطای
-   مطلق حداکثر `1e-8`. اگر فایل غایب، symlink، خراب یا ناسازگار است، صرفاً
-   علت ثابت و ایمن را گزارش کن؛ دادهٔ جایگزین نساز و چیزی را بازپخش نکن.
-
-۴. فقط بعد از تطبیق، برای هر پنجره/مدل این aggregateها را از هر دو مسیر
-   بخوان و برابری آنها را بررسی کن: `eligible_current_minute_buckets`،
-   `previous_observed_bid_directions` و
-   `raw_signals_before_all_entry_filters` (به‌ویژه `previous_available` و
-   `previous_available_and_direction_aligned`). اینها سیگنال خام قبل از
-   فیلتر موقعیت، latch و اسپرد هستند، نه تعداد معامله. فقط اعداد aggregate
-   و status را با `commission/fees/swap/net_pnl=null` گزارش کن؛ هیچ bid،
-   ask، quote، زمان خام، حساب، token، اقتصاد نماد یا خطای خام را چاپ/ارسال
-   یا commit نکن. خروجی محلی و marker را تغییر نده.
-
-۵. تعداد تست مصنوعی workstation به‌صورت ۳۲ گزارش شده ولی همان فایل‌ها در
-   نسخهٔ زمان اجرا در Arena، ۴۲ مورد پارامتری جمع‌آوری می‌کنند. اگر لاگ
-   pytest آن اجرای قبلی از قبل وجود دارد، فقط تعداد pass/skip/deselect و
-   نسخهٔ pytest گزارش‌شده را بررسی کن؛ اگر موجود نیست اختلاف را نامعلوم
-   بگذار. بازپخش یا درخواست جدیدی برای رفع این اختلاف انجام نده.
-
-۶. اگر لازم شد گزارش تکمیلی منتشر شود، فقط aggregate پاک‌سازی‌شده را روی
-   همین شاخه ثبت کن. هیچ‌یک از jobهای یک‌باره، درخواست‌های تاریخچه، markerها،
-   تنظیمات زنده یا حفاظت‌ها را تکرار، حذف یا تغییر نده. در صورت خطای
-   احراز هویت GitHub، اعتبارنامه از کاربر نخواه؛ اعلام کن اتصال GitHub نیاز
-   به رسیدگی دارد. تست ندیده/forward و هزینهٔ معتبر قدم‌های جداگانه و مشروط
-   به مجوز هستند.
+Signals use the forming M1 minute. The replay has no mandatory 60-second or
+candle-end position close. Both tested paths require an adjacent previous
+interior minute with at least two observed quotes; the filtered path additionally
+requires the first-to-last observed bid direction to agree with the signal.
+Observed bid endpoints are not verified true candle open/close, and complete
+tick coverage, UTC, historical contract rules and actual fills remain unknown.
+The supplied session date and sandbox clock differed during this review; report
+labels and commit timestamps do not independently establish execution dates.
+Do not change clocks or infer dates from those labels. The two paths have the
+same time-context eligibility but can take different
+trades and develop different simulated latches. A positive Pda-minus-Pav gross
+difference can merely mean a smaller loss; it is not proof of improvement in
+real execution. Spread is already modeled and must not be deducted twice.

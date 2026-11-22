@@ -162,7 +162,7 @@ def test_published_aggregate_deltas_are_filtered_minus_matched_not_reverse(job):
             side = pair[mode]
             assert tuple(map(int, counts.split('/'))) == tuple(side[k] for k in ('entries', 'profit', 'loss'))
             assert math.isclose(float(gross), side['gross_total_mark'], rel_tol=0, abs_tol=.0051)
-            assert opened in ('بله', 'خیر') and (opened == 'بله') is side['open_at_end']
+            assert opened in ('yes', 'no') and (opened == 'yes') is side['open_at_end']
         assert math.isclose(float(delta), pair['aligned_minus_marked'], rel_tol=0, abs_tol=.0051)
     assert shown == seen
 
