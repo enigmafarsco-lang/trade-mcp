@@ -72,7 +72,7 @@ def summarize(result, basis, limit):
             bid, ask = float(bid), float(ask)
             if math.isfinite(bid) and math.isfinite(ask) and 0 < bid <= ask:
                 valid += 1
-                timestamped += any(row.get(k) is not None for k in ('time', 'time_msc', 'datetime', 'timestamp'))
+                timestamped += any(row.get(k) is not None for k in ('time', 'time_ms', 'time_msc', 'datetime', 'timestamp'))
         except (KeyError, ValueError, TypeError, OverflowError):
             pass
     return {'schema': 'xauusd-historical-tick-sample/v1',
