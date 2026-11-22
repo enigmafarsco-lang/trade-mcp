@@ -44,12 +44,16 @@ def economics(info):
     return values['trade_contract_size']*volume
 
 
-def replay_cash_scenario(rows, info, *, consecutive_changes=3, max_spread_cost_usd=None):
+def replay_cash_scenario(rows, info, *, consecutive_changes=3, max_spread_cost_usd=None,
+                         manage_final_boundary=False):
     """Compare offline hypotheses only; defaults reproduce the original scenario.
 
-    An optional cap checks the immediate bid/ask spread cost on both the signal
-    quote and the hypothetical next fill quote. It never changes live trading.
+    The optional boundary mode manages an existing position using the final
+    partial minute, but does not generate signals or enter new positions there.
+    It remains a hypothetical gross model and never changes live trading.
     """
+    if type(manage_final_boundary) is not bool:
+        raise ValueError('Final-boundary mode must be boolean')
     if type(consecutive_changes) is not int or consecutive_changes not in (2, 3):
         raise ValueError('Offline scenario requires two or three consecutive quote changes')
     if (max_spread_cost_usd is not None
@@ -68,6 +72,7 @@ def replay_cash_scenario(rows, info, *, consecutive_changes=3, max_spread_cost_u
     closes, counts = [], Counter()
     equity = peak = drawdown = 0.0
     unrealized = None
+    boundary_ticks = boundary_position_ticks = 0
 
     def pnl(pos, bid, ask):
         # Buy pays ask, liquidates at bid. Sell receives bid, covers at ask.
@@ -78,10 +83,43 @@ def replay_cash_scenario(rows, info, *, consecutive_changes=3, max_spread_cost_u
         return (max_spread_cost_usd is None
                 or (ask-bid)*dollars_per_price <= max_spread_cost_usd+1e-12)
 
+    def mark_position(pos, bid, ask):
+        nonlocal equity, peak, drawdown, streak, latched
+        mark = pnl(pos, bid, ask)
+        equity_mark = equity + mark
+        peak = max(peak, equity_mark)
+        drawdown = max(drawdown, peak - equity_mark)
+        if mark >= 2 or mark <= -2:
+            closes.append(mark)  # Never clip overshoot to +/-2.
+            kind = 'cash_profit_exits' if mark >= 2 else 'cash_loss_exits'
+            counts[kind] += 1
+            equity += mark
+            streak = streak + 1 if mark < 0 else 0
+            latched = latched or streak >= 3
+            return None, None, kind
+        return pos, mark, None
+
     for row in rows:
         dt = datetime.fromisoformat(row['time_ms'])
         start = dt.replace(second=0, microsecond=0)
-        if start in (first, last):
+        if start == first:
+            continue
+        if start == last:
+            if manage_final_boundary:
+                boundary_ticks += 1
+                # An entry signal is only valid in its own interior minute.
+                if pending:
+                    counts['expired_pending_entries'] += 1
+                    counts['final_boundary_expired_pending'] += 1
+                    pending = None
+                # The partial minute cannot safely create new signals, but its
+                # bid/ask can still mark or exit an already-open position.
+                if position:
+                    boundary_position_ticks += 1
+                    bid, ask = float(row['bid']), float(row['ask'])
+                    position, unrealized, exit_kind = mark_position(position, bid, ask)
+                    if exit_kind:
+                        counts['final_boundary_' + exit_kind] += 1
             continue
         bid, ask = float(row['bid']), float(row['ask'])
         if start != minute:
@@ -102,17 +140,7 @@ def replay_cash_scenario(rows, info, *, consecutive_changes=3, max_spread_cost_u
                 counts['expired_pending_entries'] += 1
             pending = None
         if position:
-            unrealized = pnl(position, bid, ask)
-            equity_mark = equity+unrealized
-            peak = max(peak, equity_mark)
-            drawdown = max(drawdown, peak-equity_mark)
-            if unrealized >= 2 or unrealized <= -2:
-                closes.append(unrealized)  # Never clip overshoot to +/-2.
-                counts['cash_profit_exits' if unrealized >= 2 else 'cash_loss_exits'] += 1
-                equity += unrealized
-                streak = streak+1 if unrealized < 0 else 0
-                latched = latched or streak >= 3
-                position, unrealized = None, None
+            position, unrealized, _ = mark_position(position, bid, ask)
             # No same-quote re-entry, including the quote which closes a position.
             continue
         if signal['action'] in ('buy', 'sell'):
@@ -150,4 +178,15 @@ def replay_cash_scenario(rows, info, *, consecutive_changes=3, max_spread_cost_u
         report['research_variant'] = {'consecutive_changes': consecutive_changes,
                                       'max_spread_cost_usd': max_spread_cost_usd,
                                       'spread_checked_at_signal_and_next_quote': max_spread_cost_usd is not None}
+    if manage_final_boundary:
+        report['final_boundary_management'] = {
+            'scope': 'existing_hypothetical_position_only_no_new_signals_or_entries',
+            'boundary_quotes_seen': boundary_ticks,
+            'position_marked_quotes': boundary_position_ticks,
+            'cash_profit_exits': counts.get('final_boundary_cash_profit_exits', 0),
+            'cash_loss_exits': counts.get('final_boundary_cash_loss_exits', 0),
+            'pending_entries_expired': counts.get('final_boundary_expired_pending', 0),
+            'mark_basis': 'last_observed_quote_if_still_open',
+            'complete_tick_coverage_verified': False,
+        }
     return report

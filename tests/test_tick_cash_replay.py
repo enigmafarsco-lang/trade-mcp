@@ -180,6 +180,119 @@ def test_offline_variants_reject_unsupported_consecutive_changes(n):
         cash.replay_cash_scenario(ticks(), metadata(), consecutive_changes=n)
 
 
+@pytest.mark.parametrize(('bid', 'ask', 'expected_pnl', 'exit_key'), [
+    (103, 103.1, 5.8, 'cash_profit_exits'),
+    (98, 98.1, -4.2, 'cash_loss_exits'),
+])
+def test_final_boundary_manages_existing_position_without_new_entries(
+        monkeypatch, bid, ask, expected_pnl, exit_key):
+    first_buy(monkeypatch)
+    rows = ticks()
+    for row in rows[245:]:
+        row['bid'], row['ask'] = bid, ask
+    old = cash.replay_cash_scenario(rows, metadata())
+    corrected = cash.replay_cash_scenario(rows, metadata(), manage_final_boundary=True)
+    assert old['position_open_at_sample_end'] is True
+    assert old['gross_open_mark_usd_model'] == pytest.approx(-.2)
+    assert corrected['position_open_at_sample_end'] is False
+    assert corrected['gross_open_mark_usd_model'] is None
+    assert corrected['gross_realized_usd_model'] == pytest.approx(expected_pnl)
+    assert corrected['counts'][exit_key] == 1
+    assert corrected['counts']['simulated_entries'] == 1
+    assert corrected['final_boundary_management'][exit_key] == 1
+    assert corrected['final_boundary_management']['position_marked_quotes'] == 6
+    assert corrected['final_boundary_management']['boundary_quotes_seen'] == 60
+    assert corrected['commission'] is None and corrected['net_pnl'] is None
+    assert corrected['execution_authorized'] is False
+
+
+def test_final_boundary_closes_short_using_ask_not_bid(monkeypatch):
+    class OneSell:
+        def __init__(self, **kwargs):
+            self.called = False
+
+        def observe(self, *args, **kwargs):
+            if not self.called:
+                self.called = True
+                return {'action': 'sell'}
+            return {'action': 'wait'}
+    monkeypatch.setattr(cash, 'TickMomentum', OneSell)
+    rows = ticks()
+    for row in rows[245:]:
+        row['bid'], row['ask'] = 97, 97.1
+    report = cash.replay_cash_scenario(rows, metadata(), manage_final_boundary=True)
+    assert report['gross_realized_usd_model'] == pytest.approx(5.8)
+    assert report['final_boundary_management']['cash_profit_exits'] == 1
+    assert report['position_open_at_sample_end'] is False
+
+
+def test_final_boundary_marks_open_position_at_last_observed_quote(monkeypatch):
+    first_buy(monkeypatch)
+    rows = ticks()
+    for row in rows[240:]:
+        row['bid'], row['ask'] = 100.4, 100.5
+    rows[-1]['bid'], rows[-1]['ask'] = 100.8, 100.9
+    result = cash.replay_cash_scenario(rows, metadata(), manage_final_boundary=True)
+    assert result['position_open_at_sample_end'] is True
+    assert result['closed_scenarios'] == 0
+    assert result['gross_open_mark_usd_model'] == pytest.approx(1.4)
+    assert result['final_boundary_management']['position_marked_quotes'] == 60
+
+
+def test_final_boundary_closing_third_loss_sets_only_simulated_latch(monkeypatch):
+    class AlwaysBuy:
+        def __init__(self, **kwargs):
+            pass
+
+        def observe(self, *args, **kwargs):
+            return {'action': 'buy'}
+    monkeypatch.setattr(cash, 'TickMomentum', AlwaysBuy)
+    rows = ticks()
+    rows[61]['ask'] = rows[63]['ask'] = 102
+    for row in rows[240:]:
+        row['bid'], row['ask'] = 98, 98.1
+    old = cash.replay_cash_scenario(rows, metadata())
+    corrected = cash.replay_cash_scenario(rows, metadata(), manage_final_boundary=True)
+    assert old['counts']['cash_loss_exits'] == 2
+    assert old['simulated_three_consecutive_loss_latch'] is False
+    assert old['position_open_at_sample_end'] is True
+    assert corrected['counts']['cash_loss_exits'] == 3
+    assert corrected['simulated_three_consecutive_loss_latch'] is True
+    assert corrected['position_open_at_sample_end'] is False
+    assert corrected['counts']['simulated_entries'] == 3
+    assert corrected['final_boundary_management']['cash_loss_exits'] == 1
+
+
+def test_final_boundary_expires_pending_and_does_not_generate_new_signals(monkeypatch):
+    observations = []
+
+    class LastInteriorSignal:
+        def __init__(self, **kwargs):
+            pass
+
+        def observe(self, tick, *args, **kwargs):
+            observations.append(tick['time_msc'])
+            return {'action': 'buy' if tick['time_msc'] == 239000 else 'wait'}
+    monkeypatch.setattr(cash, 'TickMomentum', LastInteriorSignal)
+    rows = ticks()
+    old = cash.replay_cash_scenario(rows, metadata())
+    observations.clear()
+    corrected = cash.replay_cash_scenario(rows, metadata(), manage_final_boundary=True)
+    assert old['pending_entry_at_sample_end'] is True
+    assert corrected['pending_entry_at_sample_end'] is False
+    assert corrected['final_boundary_management']['pending_entries_expired'] == 1
+    assert corrected['counts'].get('simulated_entries', 0) == 0
+    assert observations and max(observations) == 239000
+
+
+def test_final_boundary_opt_in_preserves_old_default():
+    rows = ticks()
+    assert cash.replay_cash_scenario(rows, metadata()) == cash.replay_cash_scenario(
+        rows, metadata(), manage_final_boundary=False)
+    with pytest.raises(ValueError, match='boolean'):
+        cash.replay_cash_scenario(rows, metadata(), manage_final_boundary='yes')
+
+
 def test_local_economics_job_cannot_connect_to_mt5(tmp_path, monkeypatch):
     import json
 
