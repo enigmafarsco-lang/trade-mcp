@@ -75,8 +75,13 @@ def summarize(result, basis, limit):
                 timestamped += any(row.get(k) is not None for k in ('time', 'time_ms', 'time_msc', 'datetime', 'timestamp'))
         except (KeyError, ValueError, TypeError, OverflowError):
             pass
+    # Native MCP can return a successfully transported tools/call with an
+    # application-level failure in its JSON text payload (ok=false). Do not
+    # report that as a successful response merely because isError is false.
+    application_error = isinstance(data, dict) and (data.get('ok') is False or bool(data.get('error')))
     return {'schema': 'xauusd-historical-tick-sample/v1',
-            'status': 'tool_error' if result.get('isError') else 'response_received',
+            'status': 'tool_error' if result.get('isError') or application_error else 'response_received',
+            'application_error_detected': application_error,
             'returned_rows': len(rows), 'valid_two_sided_rows': valid,
             'rows_with_time_field': timestamped, 'at_limit_may_be_truncated': len(rows) >= limit,
             'request_time_basis': basis, 'response_time_semantics_verified': False,

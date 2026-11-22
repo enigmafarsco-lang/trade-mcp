@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -51,3 +52,22 @@ def test_received_prices_do_not_imply_verified_clock_or_coverage():
     assert r['response_time_semantics_verified'] is False
     assert r['complete_tick_coverage_verified'] is False
     assert r['backtest_executed'] is False
+
+
+@pytest.mark.parametrize('payload', [{'ok': False}, {'ok': False, 'error': None},
+                                     {'ok': True, 'error': 'provider-specific failure'}])
+def test_application_failure_in_text_json_is_not_a_success(payload):
+    m = module()
+    result = {'isError': False, 'content': [{'type': 'text', 'text': json.dumps(payload)}]}
+    summary = m.summarize(result, 'broker_wall_clock', 10000)
+    assert summary['status'] == 'tool_error'
+    assert summary['application_error_detected'] is True
+    assert 'provider-specific failure' not in json.dumps(summary)
+
+
+def test_success_and_transport_error_are_distinguished():
+    m = module()
+    assert m.summarize({'isError': False, 'structuredContent': {'ok': True, 'ticks': []}},
+                       'broker_wall_clock', 10000)['status'] == 'response_received'
+    assert m.summarize({'isError': True, 'structuredContent': {'ok': True, 'ticks': []}},
+                       'broker_wall_clock', 10000)['status'] == 'tool_error'
