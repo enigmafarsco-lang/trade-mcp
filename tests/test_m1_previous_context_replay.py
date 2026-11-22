@@ -182,6 +182,32 @@ def test_synthetic_three_interior_buckets_and_entry_opportunity_bounds(interior_
         assert details['eligible_current_minute_buckets'] >= 1
         assert previous['up'] + previous['down'] >= 1
 
+    def outcome(result):
+        counts = result['counts']
+        return (counts.get('simulated_entries', 0), counts.get('cash_profit_exits', 0),
+                counts.get('cash_loss_exits', 0), result['position_open_at_sample_end'],
+                result['simulated_three_consecutive_loss_latch'], result['gross_total_mark_usd_model'])
+
+    if outcome(matched) != outcome(aligned):
+        assert aligned['counts'].get('signals_blocked_by_previous_interior_direction', 0) >= 1
+        assert raw['previous_available'] > raw['previous_available_and_direction_aligned']
+
+
+def test_equal_outcome_does_not_imply_zero_direction_blocks():
+    rows = ticks()
+    previous_direction(rows, -1)
+    for second in range(120, 124):
+        bid = 100 + (second - 120) * .01
+        rows[second]['bid'], rows[second]['ask'] = bid, bid + .1
+    rows[124]['bid'], rows[124]['ask'] = 100.04, 101.04  # Block the pending fill by spread.
+    kwargs = {'consecutive_changes': 3, 'max_spread_cost_usd': 1}
+    matched = cash.replay_cash_scenario(rows, metadata(), m1_context='prior_interior_available', **kwargs)
+    aligned = cash.replay_cash_scenario(rows, metadata(), m1_context='prior_interior_aligned', **kwargs)
+    assert matched['counts'].get('simulated_entries', 0) == aligned['counts'].get('simulated_entries', 0) == 0
+    assert matched['gross_total_mark_usd_model'] == aligned['gross_total_mark_usd_model'] == 0
+    assert matched['counts']['pending_entries_blocked_by_spread'] >= 1
+    assert aligned['counts']['signals_blocked_by_previous_interior_direction'] >= 1
+
 
 @pytest.mark.parametrize('manage', [True, False])
 @pytest.mark.parametrize(('changes', 'cap'), [(3, None), (2, 1)])

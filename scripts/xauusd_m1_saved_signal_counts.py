@@ -2,8 +2,9 @@
 
 This is aggregate-only: it does not import or invoke the replay, inspect tick
 archives or economics, call MT5, open network connections, or place orders.
-It checks all 12 saved scenario pairs against the committed sanitized report
-before publishing any counts. The check does not verify the raw archive hash.
+It checks all 12 saved scenario pairs and baseline copies against committed
+sanitized reports before publishing any counts. The check does not verify the
+raw archive hash or independently reconstruct a baseline replay.
 """
 import json
 import math
@@ -15,6 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SUMMARY = ROOT / 'logs/research-inputs/xauusd-m1-previous-direction-v1/summary.json'
 REFERENCE = ROOT / 'reports/research/20261122T130500Z-xauusd-m1-previous-direction.json'
+BOUNDARY_REFERENCE = ROOT / 'reports/research/20261122T124500Z-xauusd-final-boundary-replay.json'
 OUTPUT = ROOT / 'reports/research/xauusd-m1-saved-signal-counts.json'
 MAX_BYTES = 2_000_000
 SAMPLES = ('additional_sample', 'w1', 'w2', 'w3', 'w4', 'w5')
@@ -143,6 +145,59 @@ def validate_header(summary, reference):
     return recorded
 
 
+def index_boundary(reference):
+    """Validate and index the previously published, unrestricted baselines."""
+    if (not isinstance(reference, dict)
+            or reference.get('schema') != 'xauusd-research-check-report/v1'
+            or reference.get('report_id') != '20261122T124500Z-xauusd-final-boundary-replay'
+            or reference.get('raw_data_committed') is not False
+            or reference.get('net_pnl', object()) is not None
+            or not isinstance(reference.get('result'), dict)):
+        invalid()
+    result = reference['result']
+    if (result.get('schema') != 'xauusd-final-boundary-replay/v1'
+            or result.get('status') != 'completed_all_comparisons'
+            or result.get('all_legacies_reproduced') is not True
+            or count(result.get('history_calls_made')) != 0
+            or count(result.get('failures')) != 0
+            or count(result.get('planned_comparisons')) != 12
+            or count(result.get('completed_comparisons')) != 12):
+        invalid()
+    expected = {(sample, model) for sample in SAMPLES for model in MODELS}
+    comparisons = result.get('comparisons')
+    if not isinstance(comparisons, list) or len(comparisons) != len(expected):
+        invalid()
+    indexed = {}
+    for item in comparisons:
+        if not isinstance(item, dict):
+            invalid()
+        key = (item.get('sample'), item.get('variant'))
+        if key not in expected or key in indexed or not isinstance(item.get('managed'), dict):
+            invalid()
+        indexed[key] = item['managed']
+    if set(indexed) != expected:
+        invalid()
+    return indexed
+
+
+def matched_baseline(saved, published):
+    """Compare the saved baseline copy to the earlier published managed case."""
+    if not isinstance(saved, dict) or not isinstance(published, dict):
+        invalid()
+    for source, reference in (('simulated_entries', 'entries'), ('cash_profit_exits', 'profit'),
+                              ('cash_loss_exits', 'loss')):
+        if count(saved.get(source)) != count(published.get(reference)):
+            invalid()
+    for source, reference in (('position_open_at_last_observed', 'open_at_last_observed'),
+                              ('simulated_three_consecutive_loss_latch', 'latch')):
+        if type(saved.get(source)) is not bool or saved[source] is not published.get(reference):
+            invalid()
+    if (saved['simulated_entries'] != saved['cash_profit_exits'] + saved['cash_loss_exits']
+            + int(saved['position_open_at_last_observed'])
+            or not close(saved.get('gross_total_mark_usd_model'), published.get('gross_total'))):
+        invalid()
+
+
 def matched_side(actual, recorded, model, mode):
     if not isinstance(actual, dict) or not isinstance(recorded, dict):
         invalid()
@@ -202,10 +257,12 @@ def validate_window(sample, saved, published):
             index_exact(published.get('pairs'), 'model', MODELS))
 
 
-def extract_pair(sample, model, pair, prior, rows):
+def extract_pair(sample, model, pair, prior, baseline, rows):
     if (pair.get('status') != 'compared' or pair.get('baseline_aggregate_matched') is not True
             or prior.get('baseline_matched') is not True):
         invalid()
+    checked(f'pair/{sample}/{model}/baseline', matched_baseline,
+            pair.get('published_full_interior_reference'), baseline)
     sides = {}
     for full_mode, short_mode in MODES:
         side, ref = pair.get(full_mode), prior.get(short_mode)
@@ -227,8 +284,12 @@ def extract_pair(sample, model, pair, prior, rows):
     unavailable_pda = count(pda.get('signals_blocked_by_missing_previous_interior_minute'), rows)
     direction_pav = count(pav.get('signals_blocked_by_previous_interior_direction'), rows)
     direction_pda = count(pda.get('signals_blocked_by_previous_interior_direction'), rows)
+    outcome_fields = ('simulated_entries', 'cash_profit_exits', 'cash_loss_exits',
+                      'position_open_at_sample_end', 'simulated_three_consecutive_loss_latch')
+    different_outcome = (any(pav[key] != pda[key] for key in outcome_fields)
+                         or not close(pav['gross_total_mark_usd_model'], pda['gross_total_mark_usd_model']))
     if (unavailable_pav > raw['previous_unavailable'] or unavailable_pda > raw['previous_unavailable']
-            or direction_pav != 0
+            or direction_pav != 0 or (different_outcome and direction_pda == 0)
             or direction_pda > raw['previous_available'] - raw['previous_available_and_direction_aligned']
             or pav['simulated_entries'] > raw['previous_available']
             or pda['simulated_entries'] > raw['previous_available_and_direction_aligned']):
@@ -245,9 +306,10 @@ def extract_pair(sample, model, pair, prior, rows):
     }, context)
 
 
-def extract(summary, reference):
-    """Return only fixed aggregate counts from two already-existing JSON reports."""
+def extract(summary, reference, boundary_reference):
+    """Return fixed aggregate counts after checking both published references."""
     recorded = checked('header', validate_header, summary, reference)
+    baselines = checked('published_baseline_set', index_boundary, boundary_reference)
     saved_windows = checked('saved_window_set', index_exact, summary.get('windows'), 'id', SAMPLES)
     published_windows = checked('published_window_set', index_exact, recorded.get('windows'), 'id', SAMPLES)
     clean_windows = []
@@ -259,7 +321,8 @@ def extract(summary, reference):
         window_context = None
         for model in MODELS:
             clean_model, context = checked(f'pair/{sample}/{model}', extract_pair,
-                                           sample, model, saved_pairs[model], published_pairs[model], rows)
+                                           sample, model, saved_pairs[model], published_pairs[model],
+                                           baselines[(sample, model)], rows)
             if window_context is not None and context != window_context:
                 raise AggregateMismatch(f'window/{sample}/cross_model_context')
             window_context = context
@@ -270,7 +333,8 @@ def extract(summary, reference):
     return {
         'schema': 'xauusd-m1-saved-signal-counts/v1',
         'status': 'completed_aggregate_extraction_no_replay',
-        'source_report': REFERENCE.name, 'matched_scenario_pairs': 12,
+        'source_report': REFERENCE.name, 'source_baseline_report': BOUNDARY_REFERENCE.name,
+        'matched_scenario_pairs': 12, 'saved_baseline_copies_match_published_reference': True,
         'published_row_and_original_raw_signal_counts_matched': True,
         'history_calls_made': 0, 'network_calls_made': 0, 'strategy_models_called': 0, 'orders_sent': 0,
         'tick_replays': 0, 'execution_authorized': False, 'profitability_proven': False,
@@ -321,7 +385,15 @@ def main():
         print('Published M1 reference is unsafe, unreadable, or invalid; no output written.', file=sys.stderr)
         return 1
     try:
-        report = extract(summary, reference)
+        boundary_reference = load_json(BOUNDARY_REFERENCE)
+    except FileNotFoundError:
+        print('Published baseline reference is missing; no output written.', file=sys.stderr)
+        return 1
+    except Exception:
+        print('Published baseline reference is unsafe, unreadable, or invalid; no output written.', file=sys.stderr)
+        return 1
+    try:
+        report = extract(summary, reference, boundary_reference)
         encoded = json.dumps(report, indent=2, allow_nan=False) + '\n'
     except AggregateMismatch as exc:
         # Labels are assembled from fixed constants, never from saved data.

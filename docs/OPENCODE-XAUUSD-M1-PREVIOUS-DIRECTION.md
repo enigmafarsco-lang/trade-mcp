@@ -36,12 +36,14 @@ neither an unseen/forward test nor proof of net profitability.
    ```
 
    It reads only the existing private local summary from the completed job and
-   the tracked sanitized M1 report. Before publishing it checks all 12 pairs, their
-   baseline matches, model parameters, entries/exits, open positions, latches,
-   gross marks and pair differences. It also checks the six previously
-   published row counts and three-change raw buy/sell counts. A match is an
-   aggregate consistency check, **not** a cryptographic raw-archive identity
-   check. The extractor creates only the new sanitized aggregate JSON,
+   the tracked sanitized M1 and final-boundary reports. Before publishing it
+   checks all 12 pairs, both paths, model parameters, entries/exits, open
+   positions, latches, gross marks and pair differences. For every pair it checks
+   the saved baseline copy against the published managed baseline, not merely
+   its match flag. It also checks the six previously published row counts and
+   three-change raw buy/sell counts. These checks compare saved aggregates;
+   they neither independently reproduce a baseline nor verify a raw-archive
+   hash. The extractor creates only the new sanitized aggregate JSON,
    exclusively, with permissions no broader than `0600`; it leaves source files
    and markers unchanged. It refuses symlinked inputs and output directories.
 3. If it fails, stop and report its fixed, data-free error/status; a write failure

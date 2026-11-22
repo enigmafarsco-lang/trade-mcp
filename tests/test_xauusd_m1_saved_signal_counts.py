@@ -89,8 +89,8 @@ def synthetic(extractor, tmp_path, monkeypatch):
     summary_path, published_path = tmp_path / 'summary.json', tmp_path / 'published.json'
     summary_path.write_text(json.dumps(summary, allow_nan=False))
     published_path.write_text(json.dumps(published, allow_nan=False))
-    return SimpleNamespace(summary=summary, published=published, summary_path=summary_path,
-                           published_path=published_path)
+    return SimpleNamespace(summary=summary, published=published, boundary=json.loads(boundary.read_text()),
+                           summary_path=summary_path, published_path=published_path, boundary_path=boundary)
 
 
 def test_published_fixed_counts_match_prior_sanitized_reports(extractor):
@@ -106,6 +106,17 @@ def test_published_fixed_counts_match_prior_sanitized_reports(extractor):
     assert sum(item[0] for item in expected.values()) == 4827
     assert sum(item[1] for item in expected.values()) == 107
     assert sum(item[2] for item in expected.values()) == 66
+
+
+def test_published_boundary_reference_has_all_valid_baseline_shapes(extractor):
+    baselines = extractor.index_boundary(extractor.load_json(extractor.BOUNDARY_REFERENCE))
+    assert len(baselines) == 12
+    for baseline in baselines.values():
+        copied = {'simulated_entries': baseline['entries'], 'cash_profit_exits': baseline['profit'],
+                  'cash_loss_exits': baseline['loss'], 'gross_total_mark_usd_model': baseline['gross_total'],
+                  'position_open_at_last_observed': baseline['open_at_last_observed'],
+                  'simulated_three_consecutive_loss_latch': baseline['latch']}
+        extractor.matched_baseline(copied, baseline)
 
 
 def test_decision_review_totals_match_published_aggregate(extractor):
@@ -124,6 +135,8 @@ def test_decision_review_totals_match_published_aggregate(extractor):
     filtered = [pair['pda']['gross_total_mark'] for pair in pairs]
     assert sum(value < -1e-8 for value in filtered) == 11
     assert sum(value > 1e-8 for value in filtered) == 1
+    assert sum(abs(pair['aligned_minus_marked']) > 1e-8 for pair in pairs) == 10
+    assert '10 pairs with a nonzero gross difference' in review
 
 
 def test_published_bounds_are_labeled_and_follow_existing_reports(extractor):
@@ -152,10 +165,13 @@ def test_published_bounds_are_labeled_and_follow_existing_reports(extractor):
 def test_extracts_per_window_and_model_counts_without_leaking_inputs(extractor, synthetic):
     before_summary = synthetic.summary_path.read_bytes()
     before_reference = synthetic.published_path.read_bytes()
+    before_boundary = synthetic.boundary_path.read_bytes()
     result = extractor.extract(extractor.load_json(synthetic.summary_path),
-                               extractor.load_json(synthetic.published_path))
+                               extractor.load_json(synthetic.published_path),
+                               extractor.load_json(synthetic.boundary_path))
     assert result['status'] == 'completed_aggregate_extraction_no_replay'
     assert result['matched_scenario_pairs'] == 12 and len(result['windows']) == 6
+    assert result['saved_baseline_copies_match_published_reference'] is True
     assert result['tick_replays'] == result['network_calls_made'] == result['orders_sent'] == 0
     assert result['commission'] is result['fees'] is result['swap'] is result['net_pnl'] is None
     assert result['blind_holdout_or_out_of_sample'] is False and result['execution_authorized'] is False
@@ -177,6 +193,7 @@ def test_extracts_per_window_and_model_counts_without_leaking_inputs(extractor, 
                                          'trade_contract_size', 'gross_total_mark'))
     assert synthetic.summary_path.read_bytes() == before_summary
     assert synthetic.published_path.read_bytes() == before_reference
+    assert synthetic.boundary_path.read_bytes() == before_boundary
 
 
 @pytest.mark.parametrize('mutation', [
@@ -187,10 +204,13 @@ def test_extracts_per_window_and_model_counts_without_leaking_inputs(extractor, 
     'wrong_reference_revision', 'nonzero_history', 'unknown_cost',
     'missing_net', 'boolean_count', 'nonfinite', 'unequal_context', 'cross_model_context_mismatch',
     'inconsistent_signal_total', 'too_many_aligned', 'invalid_direction_block', 'raw_signals_exceed_rows',
-    'historical_rows_mismatch', 'historical_raw_signal_mismatch',
+    'historical_rows_mismatch', 'historical_raw_signal_mismatch', 'missing_baseline',
+    'wrong_baseline_entry', 'wrong_baseline_gross', 'wrong_baseline_open', 'wrong_baseline_latch',
+    'wrong_boundary_status', 'duplicate_boundary', 'missing_boundary_pair', 'zero_direction_block_when_outcomes_differ',
 ])
 def test_inconsistent_or_untrusted_reports_are_rejected(extractor, synthetic, mutation):
-    summary, reference = copy.deepcopy(synthetic.summary), copy.deepcopy(synthetic.published)
+    summary, reference, boundary = (copy.deepcopy(synthetic.summary), copy.deepcopy(synthetic.published),
+                                    copy.deepcopy(synthetic.boundary))
     window = summary['windows'][0]
     pair = window['pairs'][0]
     pav, pda = pair['previous_available_only'], pair['previous_direction_aligned']
@@ -262,10 +282,33 @@ def test_inconsistent_or_untrusted_reports_are_rejected(extractor, synthetic, mu
         for side in (pav, pda):
             side['signal_counts']['buy'] += 1
             side['raw_signals_before_all_entry_filters']['previous_unavailable'] += 1
+    elif mutation == 'missing_baseline':
+        del pair['published_full_interior_reference']
+    elif mutation == 'wrong_baseline_entry':
+        pair['published_full_interior_reference']['simulated_entries'] += 1
+    elif mutation == 'wrong_baseline_gross':
+        pair['published_full_interior_reference']['gross_total_mark_usd_model'] += 1
+    elif mutation == 'wrong_baseline_open':
+        base = pair['published_full_interior_reference']
+        base['position_open_at_last_observed'] = not base['position_open_at_last_observed']
+    elif mutation == 'wrong_baseline_latch':
+        base = pair['published_full_interior_reference']
+        base['simulated_three_consecutive_loss_latch'] = not base['simulated_three_consecutive_loss_latch']
+    elif mutation == 'wrong_boundary_status':
+        boundary['result']['status'] = 'completed_partial_comparisons'
+    elif mutation == 'duplicate_boundary':
+        comparisons = boundary['result']['comparisons']
+        comparisons[1]['sample'] = comparisons[0]['sample']
+        comparisons[1]['variant'] = comparisons[0]['variant']
+    elif mutation == 'missing_boundary_pair':
+        boundary['result']['comparisons'].pop()
+    elif mutation == 'zero_direction_block_when_outcomes_differ':
+        assert pav['simulated_entries'] != pda['simulated_entries']
+        pda['signals_blocked_by_previous_interior_direction'] = 0
     else:
         pav['signal_counts']['buy'] = 2000
     with pytest.raises((ValueError, TypeError, KeyError)):
-        extractor.extract(summary, reference)
+        extractor.extract(summary, reference, boundary)
 
 
 @pytest.mark.parametrize('mode', ['available', 'aligned'])
@@ -289,7 +332,7 @@ def test_entries_cannot_exceed_their_raw_opportunities(extractor, synthetic, mod
         reference['result']['windows'][0]['pairs'][0]['pda'].update(
             entries=1, profit=1, loss=0, open_at_end=False)
     with pytest.raises(extractor.AggregateMismatch, match='pair/additional_sample/original_3_changes'):
-        extractor.extract(summary, reference)
+        extractor.extract(summary, reference, synthetic.boundary)
 
 
 def test_input_files_are_bounded_and_refuse_symlinks(extractor, synthetic, tmp_path):
@@ -324,6 +367,7 @@ def set_paths(extractor, synthetic, tmp_path, monkeypatch):
     output = tmp_path / 'published-signal-counts.json'
     monkeypatch.setattr(extractor, 'SUMMARY', synthetic.summary_path)
     monkeypatch.setattr(extractor, 'REFERENCE', synthetic.published_path)
+    monkeypatch.setattr(extractor, 'BOUNDARY_REFERENCE', synthetic.boundary_path)
     monkeypatch.setattr(extractor, 'OUTPUT', output)
     monkeypatch.setattr(extractor.sys, 'argv', ['aggregate-extractor'])
     return output
@@ -333,7 +377,7 @@ def test_main_writes_exclusive_private_aggregate_and_does_not_repeat(extractor, 
                                                                      monkeypatch, capsys):
     output = set_paths(extractor, synthetic, tmp_path, monkeypatch)
     assert extractor.main() == 0
-    assert output.stat().st_mode & 0o777 == 0o600
+    assert (output.stat().st_mode & 0o777) & ~0o600 == 0
     first = output.read_bytes()
     data = json.loads(first)
     assert data['matched_scenario_pairs'] == 12
@@ -363,6 +407,30 @@ def test_missing_reference_has_a_distinct_safe_status(extractor, synthetic, tmp_
     captured = capsys.readouterr()
     assert 'Published M1 reference is missing' in captured.err
     assert str(tmp_path) not in captured.err and not captured.out
+
+
+def test_missing_baseline_reference_has_a_distinct_safe_status(extractor, synthetic, tmp_path, monkeypatch, capsys):
+    output = set_paths(extractor, synthetic, tmp_path, monkeypatch)
+    synthetic.boundary_path.unlink()
+    assert extractor.main() == 1
+    assert not output.exists()
+    captured = capsys.readouterr()
+    assert 'Published baseline reference is missing' in captured.err
+    assert str(tmp_path) not in captured.err and not captured.out
+
+
+def test_baseline_mismatch_reports_only_fixed_scope_and_writes_nothing(extractor, synthetic, tmp_path,
+                                                                       monkeypatch, capsys):
+    output = set_paths(extractor, synthetic, tmp_path, monkeypatch)
+    pair = synthetic.summary['windows'][0]['pairs'][0]
+    pair['published_full_interior_reference']['gross_total_mark_usd_model'] += 1
+    synthetic.summary_path.write_text(json.dumps(synthetic.summary))
+    assert extractor.main() == 1
+    assert not output.exists()
+    captured = capsys.readouterr()
+    assert 'pair/additional_sample/original_3_changes/baseline' in captured.err
+    assert 'no output written' in captured.err
+    assert str(tmp_path) not in captured.err and 'PRIVATE_RAW_VALUE' not in captured.err and not captured.out
 
 
 def test_pair_mismatch_reports_only_fixed_scope_and_writes_nothing(extractor, synthetic, tmp_path,

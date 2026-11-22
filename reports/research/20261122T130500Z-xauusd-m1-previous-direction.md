@@ -82,6 +82,14 @@ entry counts above, not independently measured from the private summary.
 | w4 | ≥3 | ≥2 | ≥3 | ≥2 |
 | w5 | ≥4 | ≥4 | ≥5 | ≥4 |
 
+In each of the **10 pairs with a nonzero gross difference**, the aligned path
+must have blocked at least one signal at the previous-direction entry check.
+The paths are otherwise identical until that check first differs. This is a
+lower bound on entry-decision blocks, not a count of rejected trades or all
+misaligned raw signals; one block can change later position and latch states.
+The two zero-difference pairs may still have had blocks, so zero cannot be
+inferred for them.
+
 The earlier sanitized signal reports recorded **three interior minute buckets
 in each sample**. If the M1 experiment used those same saved quote rows, each
 sample had **one or two eligible current-minute buckets**: at most two of three
