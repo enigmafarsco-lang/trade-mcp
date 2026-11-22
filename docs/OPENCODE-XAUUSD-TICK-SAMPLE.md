@@ -1,5 +1,9 @@
 # Execute corrected local tick-history sample once
 
+**Historical instruction, already completed; do not repeat this history
+request or treat the command below as a new authorization.** See the
+[final-boundary research](XAUUSD-FINAL-BOUNDARY-REPLAY.md) for later offline results.
+
 Use the existing checkout /media/joshua/SATA500/Trade/trade-mcp and branch
 arena/f81b6b27-trade-mcp. Fetch and fast-forward only. The earlier report commit
 275b2d6 is already on origin; do not spend further time repairing its push.

@@ -33,7 +33,7 @@ def rows_for(start):
 
 
 def prior_window(name, start, end, rows):
-    scenario = replay_cash_scenario(rows, info())
+    scenario = replay_cash_scenario(rows, info(), manage_final_boundary=False)
     counts = scenario['counts']
     signal = scenario['signal_replay']
     return {'id': name, 'start': start, 'end': end, 'status': 'simulated',
@@ -98,6 +98,20 @@ def test_all_variants_continue_after_losses_using_only_local_data(job, archives)
     assert report['commission'] is None and report['net_pnl'] is None
     serialized = json.dumps(report)
     assert '"bid"' not in serialized and '"ask"' not in serialized and '"time_ms"' not in serialized
+
+
+def test_archived_v2_comparison_explicitly_reproduces_legacy_horizon(job, archives, monkeypatch):
+    real_replay = job.replay_cash_scenario
+    modes = []
+
+    def record_mode(rows, metadata, **kwargs):
+        modes.append(kwargs.get('manage_final_boundary'))
+        return real_replay(rows, metadata, **kwargs)
+
+    monkeypatch.setattr(job, 'replay_cash_scenario', record_mode)
+    report = job.compare(*archives)
+    assert report['status'] == 'completed_all_simulations'
+    assert len(modes) == 20 and all(mode is False for mode in modes)
 
 
 def test_saved_json_text_content_is_supported_without_changing_archives(job, archives):

@@ -1,12 +1,19 @@
 # Compare hypotheses on the already-saved XAUUSD v2 ticks
 
-This is **not** another MT5 history request. The actual five v2 windows all had
+**Historical comparison, completed once; do not rerun or remove its marker.**
+Its published results use the legacy last-interior-quote horizon, now explicitly
+selected in this fixed job. The later
+[boundary comparison](../reports/research/20261122T124500Z-xauusd-final-boundary-replay.md)
+corrected only the original and two-change/$1-cap variants; other variants here
+have not had that correction applied.
+
+This was **not** another MT5 history request. The actual five v2 windows all had
 negative hypothetical gross total marks; 15 of their 18 closed hypothetical
 entries were losses, and two entries remained open at their respective sample
 ends. These are separate, tiny windows, not a continuous account or net PnL.
 
-Use the already-saved five raw v2 responses and saved symbol economics to compare
-four **fixed offline scenarios**, per window:
+The job compared four **fixed offline scenarios** per window using the saved
+five raw v2 responses and symbol economics:
 
 1. Original: 3 consecutive quote changes, no spread gate.
 2. Same signal with a $0.50 maximum immediate bid/ask spread cost.
@@ -29,16 +36,11 @@ curve or activate a strategy from these results. Costs/net, actual fills,
 account risk, historical symbol specification, tick completeness and UTC remain
 unknown.
 
-## Run only where the saved data already exists
+## Historical execution (already completed)
 
-From this repo root, after fast-forwarding the current branch to the commit with
-this document:
-
-```bash
-.venv/bin/python scripts/compare_xauusd_v2_offline_variants.py
-```
-
-The script does not read config, contact MT5, call a model or place an order.
+The [sanitized report](../reports/research/20261122T120000Z-xauusd-v2-offline-variants.md)
+records the one execution. The script does not read config, contact MT5, call a
+model or place an order.
 It reads only the fixed five `w*-raw-response.json` files, the existing saved
 economics snapshot and the sanitized previous result. Before comparing a
 window, it checks that replay of the original reproduces the published metrics;
@@ -52,7 +54,5 @@ A losing result does not interrupt the next variant or window. A missing or
 invalid local file, a mismatch with its old baseline, or a failed offline
 variant is recorded and the remaining independent tests continue. An unsupported
 input shape is not evidence of no history: do not fabricate or bypass it.
-Return code 0 means all 20 window/scenario simulations completed; return code 1
-means a partial/blocked run or existing output. Report all actual outcomes,
-including zero-entry, open positions, per-window baseline match and failures;
-commit/push only sanitized results on the current branch, never the raw archives.
+The reported execution completed all 20 window/scenario simulations. Never
+commit the raw archives or the saved economics snapshot.

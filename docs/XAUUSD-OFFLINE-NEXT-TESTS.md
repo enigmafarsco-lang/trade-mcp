@@ -1,6 +1,14 @@
 # Continue XAUUSD research on the saved samples, with no new MT5 requests
 
-The latest reported five-window run showed the 2-change/$1-spread-cap variant
+**Historical campaign, completed once; do not rerun or remove its marker.**
+Its 25/25 reported tests use the legacy last-interior-quote horizon, now
+explicitly selected in this fixed campaign. The later
+[boundary comparison](../reports/research/20261122T124500Z-xauusd-final-boundary-replay.md)
+corrected only the original and two-change/$1-cap variants; other variants here
+have not had that correction applied. Earlier positive or open marks must not
+be treated as corrected results.
+
+The five-window legacy run showed the 2-change/$1-spread-cap variant
 had a better gross end mark than the original in all five windows, but four
 end marks were still negative and three entries remained open. This is not a
 continuous account, net result or validated strategy.
@@ -31,17 +39,11 @@ account risk, fills, historical contract specifications, full coverage, UTC,
 commission, swap and net PnL remain unknown. The live strategy, real latch and
 all protections remain unchanged.
 
-## Execute once on the machine with the already-saved files
+## Historical execution (already completed)
 
-After fetching and fast-forwarding the current branch to the commit containing
-this document, run from the repository root:
-
-```bash
-.venv/bin/python scripts/xauusd_offline_next_tests.py
-```
-
-The bounded job performs at most **25 new simulations**, plus six original
-baseline replays solely to verify published metrics. No history request,
+The [sanitized campaign report](../reports/research/20261122T122500Z-xauusd-offline-next-tests.md)
+records the one execution. The bounded job performed **25 new simulations**,
+plus six original baseline replays solely to verify published metrics. No history request,
 network/model call, installation, service restart, settings change or order is
 made. It never modifies the v1/v2 archives or old markers. The additional
 sample's returned labels are checked for overlap with v2 labels, but the old
@@ -52,8 +54,6 @@ Losses, no-entry outcomes, a failed simulation or one missing/invalid sample do
 not stop independent remaining tests. Errors are recorded with fixed labels;
 raw inputs and provider errors are never printed. The only output is the new
 owner-only `logs/research-inputs/xauusd-offline-next-tests-v1/summary.json`.
-It is exclusive and never overwritten. Exit 0 means all 25 tests completed;
-exit 1 means an existing output, partial run or blocker. Report each test's
-actual entries, exits, gross model mark, open state, latch and fixed failure
-labels. Review and commit/push only sanitized results on the current branch;
-never commit raw tick data or the economics snapshot.
+It is exclusive and must not be overwritten. The reported execution completed
+all 25 tests and reproduced six baselines. Raw tick data and the economics
+snapshot must not be committed.

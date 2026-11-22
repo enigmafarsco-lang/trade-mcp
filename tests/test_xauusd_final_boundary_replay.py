@@ -49,7 +49,7 @@ def saved(job, helper, tmp_path, monkeypatch):
     old_rows = boundary_fixture(job.OLD_WINDOW[1])
     old_raw = tmp_path / 'old.json'
     old_raw.write_text(json.dumps(helper.sample(old_rows, text=True)))
-    original = replay_cash_scenario(old_rows, helper.info())
+    original = replay_cash_scenario(old_rows, helper.info(), manage_final_boundary=False)
     old_cash = tmp_path / 'cash.json'
     old_cash.write_text(json.dumps({'result': {'status': 'gross_scenario_executed_net_costs_unknown', **original}}))
     old_signal = tmp_path / 'signals.json'
@@ -65,7 +65,8 @@ def saved(job, helper, tmp_path, monkeypatch):
     prior = tmp_path / 'prior-candidates.json'
     prior.write_text(json.dumps({'result': {'status': 'completed_all_simulations', 'failures': 0,
                                             'windows': candidates}}))
-    candidate = replay_cash_scenario(old_rows, helper.info(), consecutive_changes=2, max_spread_cost_usd=1)
+    candidate = replay_cash_scenario(old_rows, helper.info(), consecutive_changes=2, max_spread_cost_usd=1,
+                                     manage_final_boundary=False)
     counts = candidate['counts']
     next_ref = tmp_path / 'previous-next-report.json'
     next_ref.write_text(json.dumps({'result': {
@@ -110,6 +111,21 @@ def test_six_samples_compare_both_models_and_preserve_inputs(job, saved):
     assert {p.name: p.read_bytes() for p in saved.archive.iterdir()} == before
     result = json.dumps(report, allow_nan=False)
     assert '"bid"' not in result and '"ask"' not in result and '"time_ms"' not in result
+
+
+def test_comparison_explicitly_selects_legacy_and_managed_modes(job, saved, monkeypatch):
+    real_replay = job.replay_cash_scenario
+    modes = []
+
+    def record_mode(rows, metadata, **kwargs):
+        modes.append(kwargs.get('manage_final_boundary'))
+        return real_replay(rows, metadata, **kwargs)
+
+    monkeypatch.setattr(job, 'replay_cash_scenario', record_mode)
+    report = job.run_comparisons(**vars(saved))
+    assert report['status'] == 'completed_all_comparisons'
+    # Per sample: original legacy, original managed, candidate legacy, candidate managed.
+    assert modes == [False, True, False, True] * 6
 
 
 def test_missing_sample_skips_only_its_two_scenarios(job, saved):

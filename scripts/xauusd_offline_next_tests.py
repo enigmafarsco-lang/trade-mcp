@@ -240,7 +240,8 @@ def run_campaign(archive=None, old_raw=None, economics_file=None, v2_reference=N
             continue
         report['baseline_checks_attempted'] += 1
         try:
-            baseline = replay_cash_scenario(rows, info)
+            # Reproduce this finished campaign's published legacy horizon.
+            baseline = replay_cash_scenario(rows, info, manage_final_boundary=False)
             matches = (previous_original_matches(baseline, *old_refs) if is_old
                        else baseline_matches(baseline, v2_refs[name], len(rows)))
             if not matches:
@@ -256,7 +257,7 @@ def run_campaign(archive=None, old_raw=None, economics_file=None, v2_reference=N
             try:
                 _, changes, spread = variant
                 scenario = replay_cash_scenario(rows, info, consecutive_changes=changes,
-                                                max_spread_cost_usd=spread)
+                                                max_spread_cost_usd=spread, manage_final_boundary=False)
                 result = summarize(variant, scenario, baseline)
                 if not is_old:
                     add_prior_comparison(result, candidates.get(name))

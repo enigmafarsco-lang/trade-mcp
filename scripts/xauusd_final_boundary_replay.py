@@ -190,7 +190,8 @@ def run_comparisons(archive=None, old_raw=None, economics_file=None, v2_referenc
             mark_skipped(window, 'saved_tick_archive_invalid_or_out_of_bounds')
             continue
         try:
-            original = replay_cash_scenario(rows, info)
+            # The legacy side deliberately uses the old, truncated horizon.
+            original = replay_cash_scenario(rows, info, manage_final_boundary=False)
             reproduced = (previous_original_matches(original, *old_refs) if is_old
                           else baseline_matches(original, v2_refs[name], len(rows)))
             if not reproduced:
@@ -214,7 +215,7 @@ def run_comparisons(archive=None, old_raw=None, economics_file=None, v2_referenc
                                                    'status': 'not_compared_prior_candidate_reference_unavailable'})
                         continue
                     legacy = replay_cash_scenario(rows, info, consecutive_changes=changes,
-                                                  max_spread_cost_usd=cap)
+                                                  max_spread_cost_usd=cap, manage_final_boundary=False)
                     if not candidate_matches(legacy, prior):
                         window['status'] = 'some_variants_not_compared'
                         window['variants'].append({'variant_id': variant[0],

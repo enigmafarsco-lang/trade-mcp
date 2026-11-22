@@ -112,16 +112,17 @@ def test_broker_cfd_leverage_display_aliases_match_same_linear_model(mode):
     assert cash.economics(info) == 2
 
 
-def test_explicit_baseline_options_preserve_original_scenario():
+def test_explicit_baseline_options_match_managed_default():
     rows = ticks()
     for index, row in enumerate(rows):
         row['bid'] = 100 + index*.01
         row['ask'] = row['bid'] + .1
-    original = cash.replay_cash_scenario(rows, metadata())
+    default = cash.replay_cash_scenario(rows, metadata())
     explicit = cash.replay_cash_scenario(rows, metadata(), consecutive_changes=3,
-                                         max_spread_cost_usd=None)
-    assert explicit == original
-    assert 'research_variant' not in original
+                                         max_spread_cost_usd=None, manage_final_boundary=True)
+    assert explicit == default
+    assert 'research_variant' not in default
+    assert default['schema'] == 'xauusd-next-quote-cash-scenario/v2'
 
 
 def test_offline_spread_filter_blocks_signals_without_resetting_actual_latch(monkeypatch):
@@ -190,8 +191,8 @@ def test_final_boundary_manages_existing_position_without_new_entries(
     rows = ticks()
     for row in rows[245:]:
         row['bid'], row['ask'] = bid, ask
-    old = cash.replay_cash_scenario(rows, metadata())
-    corrected = cash.replay_cash_scenario(rows, metadata(), manage_final_boundary=True)
+    old = cash.replay_cash_scenario(rows, metadata(), manage_final_boundary=False)
+    corrected = cash.replay_cash_scenario(rows, metadata())
     assert old['position_open_at_sample_end'] is True
     assert old['gross_open_mark_usd_model'] == pytest.approx(-.2)
     assert corrected['position_open_at_sample_end'] is False
@@ -251,8 +252,8 @@ def test_final_boundary_closing_third_loss_sets_only_simulated_latch(monkeypatch
     rows[61]['ask'] = rows[63]['ask'] = 102
     for row in rows[240:]:
         row['bid'], row['ask'] = 98, 98.1
-    old = cash.replay_cash_scenario(rows, metadata())
-    corrected = cash.replay_cash_scenario(rows, metadata(), manage_final_boundary=True)
+    old = cash.replay_cash_scenario(rows, metadata(), manage_final_boundary=False)
+    corrected = cash.replay_cash_scenario(rows, metadata())
     assert old['counts']['cash_loss_exits'] == 2
     assert old['simulated_three_consecutive_loss_latch'] is False
     assert old['position_open_at_sample_end'] is True
@@ -275,9 +276,9 @@ def test_final_boundary_expires_pending_and_does_not_generate_new_signals(monkey
             return {'action': 'buy' if tick['time_msc'] == 239000 else 'wait'}
     monkeypatch.setattr(cash, 'TickMomentum', LastInteriorSignal)
     rows = ticks()
-    old = cash.replay_cash_scenario(rows, metadata())
+    old = cash.replay_cash_scenario(rows, metadata(), manage_final_boundary=False)
     observations.clear()
-    corrected = cash.replay_cash_scenario(rows, metadata(), manage_final_boundary=True)
+    corrected = cash.replay_cash_scenario(rows, metadata())
     assert old['pending_entry_at_sample_end'] is True
     assert corrected['pending_entry_at_sample_end'] is False
     assert corrected['final_boundary_management']['pending_entries_expired'] == 1
@@ -285,12 +286,51 @@ def test_final_boundary_expires_pending_and_does_not_generate_new_signals(monkey
     assert observations and max(observations) == 239000
 
 
-def test_final_boundary_opt_in_preserves_old_default():
+def test_final_boundary_managed_default_and_explicit_legacy_mode():
     rows = ticks()
-    assert cash.replay_cash_scenario(rows, metadata()) == cash.replay_cash_scenario(
-        rows, metadata(), manage_final_boundary=False)
+    default = cash.replay_cash_scenario(rows, metadata())
+    assert default == cash.replay_cash_scenario(rows, metadata(), manage_final_boundary=True)
+    assert default['schema'] == 'xauusd-next-quote-cash-scenario/v2'
+    assert default['final_boundary_management']['scope'] == 'existing_hypothetical_position_only_no_new_signals_or_entries'
+    legacy = cash.replay_cash_scenario(rows, metadata(), manage_final_boundary=False)
+    assert legacy['schema'] == 'xauusd-next-quote-cash-scenario/v1'
+    assert 'final_boundary_management' not in legacy
     with pytest.raises(ValueError, match='boolean'):
         cash.replay_cash_scenario(rows, metadata(), manage_final_boundary='yes')
+
+
+def test_local_cash_job_uses_corrected_boundary_default_without_connecting(tmp_path, monkeypatch):
+    import json
+
+    first_buy(monkeypatch)
+    path = Path(__file__).resolve().parents[1]/'scripts/run_xauusd_cash_research.py'
+    spec = importlib.util.spec_from_file_location('cash_job_boundary_default', path)
+    job = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(job)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('Offline mode must not read config or connect to MT5')
+
+    monkeypatch.setattr(job, 'load_dotenv', forbidden)
+    monkeypatch.setattr(job, 'McpHttpClient', type('OfflineClient', (), {
+        'structured_content': staticmethod(lambda result: result['structuredContent']),
+        '__init__': forbidden}))
+    rows = ticks()
+    for row in rows[245:]:
+        row['bid'], row['ask'] = 103, 103.1
+    raw = tmp_path/'raw.json'
+    raw.write_text(json.dumps({'structuredContent': {'ticks': rows}}))
+    economics = tmp_path/'symbol-economics.json'
+    economics.write_text(json.dumps(metadata()))
+    output = tmp_path/'result'
+    monkeypatch.setattr(job.sys, 'argv', ['job', str(raw), str(output), '--economics', str(economics)])
+    assert job.main() == 0
+    scenario = json.loads((output/'summary.json').read_text())['scenario']
+    assert scenario['schema'] == 'xauusd-next-quote-cash-scenario/v2'
+    assert scenario['gross_realized_usd_model'] == pytest.approx(5.8)
+    assert scenario['final_boundary_management']['cash_profit_exits'] == 1
+    assert scenario['execution_authorized'] is False
+    assert scenario['net_pnl'] is None
 
 
 def test_local_economics_job_cannot_connect_to_mt5(tmp_path, monkeypatch):

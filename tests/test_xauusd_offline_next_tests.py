@@ -39,7 +39,7 @@ def sample(rows, *, text=False):
 
 
 def v2_reference_window(name, start, end, rows):
-    model = replay_cash_scenario(rows, info())
+    model = replay_cash_scenario(rows, info(), manage_final_boundary=False)
     signal, counts = model['signal_replay'], model['counts']
     return {'id': name, 'start': start, 'end': end, 'status': 'simulated',
             'returned_rows': len(rows), 'replayed_rows': signal['replayed_rows'],
@@ -58,7 +58,8 @@ def v2_reference_window(name, start, end, rows):
 
 
 def candidate_reference_window(name, rows):
-    candidate = replay_cash_scenario(rows, info(), consecutive_changes=2, max_spread_cost_usd=1)
+    candidate = replay_cash_scenario(rows, info(), consecutive_changes=2, max_spread_cost_usd=1,
+                                     manage_final_boundary=False)
     count = candidate['counts']
     return {'id': name, 'baseline_reproduced': True, 'variants': [{
         'variant_id': '2_changes_spread_cap_1_00',
@@ -77,7 +78,7 @@ def saved(job, tmp_path, monkeypatch):
     old_raw = tmp_path / 'old.json'
     old_rows = rows_for(job.OLD_WINDOW[1])
     old_raw.write_text(json.dumps(sample(old_rows, text=True)))
-    old_model = replay_cash_scenario(old_rows, info())
+    old_model = replay_cash_scenario(old_rows, info(), manage_final_boundary=False)
     cash = tmp_path / 'old-cash-report.json'
     cash.write_text(json.dumps({'result': {'status': 'gross_scenario_executed_net_costs_unknown', **old_model}}))
     signal = tmp_path / 'old-signal-report.json'
@@ -136,6 +137,20 @@ def test_all_new_tests_complete_and_losses_do_not_stop_later_tests(job, saved):
     assert saved.old_raw.read_bytes() == old_before
     serialized = json.dumps(report, allow_nan=False)
     assert '"bid"' not in serialized and '"ask"' not in serialized and '"time_ms"' not in serialized
+
+
+def test_archived_campaign_explicitly_uses_legacy_horizon(job, saved, monkeypatch):
+    real_replay = job.replay_cash_scenario
+    modes = []
+
+    def record_mode(rows, metadata, **kwargs):
+        modes.append(kwargs.get('manage_final_boundary'))
+        return real_replay(rows, metadata, **kwargs)
+
+    monkeypatch.setattr(job, 'replay_cash_scenario', record_mode)
+    report = job.run_campaign(**args(saved))
+    assert report['status'] == 'completed_all_new_tests'
+    assert len(modes) == 31 and all(mode is False for mode in modes)
 
 
 def test_additional_sample_uses_observed_naive_labels_not_invented_utc(job, saved):

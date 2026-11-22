@@ -1,5 +1,10 @@
 # Execute one complete local XAUUSD cash-scenario research job
 
+**Historical instruction, already completed; do not repeat it or make the
+metadata request again.** The command below is a record, not current authority.
+The [final-boundary research](XAUUSD-FINAL-BOUNDARY-REPLAY.md) describes the
+corrected comparison and current offline default.
+
 Do this work now; do not return a plan or ask the owner to run Colab/commands.
 Keep current branch arena/f81b6b27-trade-mcp. Fetch and fast-forward only.
 Commit483d85b already exists on origin; no authentication work for that report.

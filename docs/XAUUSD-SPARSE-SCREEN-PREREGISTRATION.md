@@ -1,5 +1,10 @@
 # Pre-registration: XAUUSD sparse historical screen v1
 
+> Post-execution notice (not part of the original pre-registration): v1 stopped
+> on its first request and is closed. Do not rerun it, even if its workstation
+> marker is absent. The command below is historical, not current authorization.
+> See the [sanitized report](../reports/research/20261122T090500Z-xauusd-sparse-screen-v1.md).
+
 This is a **new, separately bounded screen**, not the earlier assessment's zero-request
 budget. Earlier report's statement that bounded multiple distinct requests necessarily
 constitute retries was incorrect. The earlier observed density is not evidence that

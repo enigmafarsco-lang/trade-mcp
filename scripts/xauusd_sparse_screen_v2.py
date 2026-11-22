@@ -306,7 +306,8 @@ def run():
                 continue
             rows = outcome['rows']
             try:
-                scenario = replay_cash_scenario(rows, info)
+                # Closed, pre-registered historical job: preserve its published horizon.
+                scenario = replay_cash_scenario(rows, info, manage_final_boundary=False)
             except Exception:
                 report['stopped_window'] = name
                 report['stop_reason'] = 'input_transport_or_replay_error'

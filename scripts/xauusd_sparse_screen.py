@@ -2,6 +2,7 @@
 
 Six fixed five-minute history requests at most. The fixed output directory acts
 as a durable no-repeat marker even after interruption. No automatic retries.
+The v1 screen stopped on its first request and is closed; never run it again.
 """
 import contextlib
 import hashlib
@@ -34,6 +35,8 @@ WINDOWS = [
 ]
 ECONOMICS = Path('logs/research-inputs/xauusd-cash-research-20261122T075312Z/symbol-economics.json')
 OUTPUT = Path('logs/research-inputs/xauusd-sparse-screen-20261109-10-v1')
+# v1 has already stopped; fail closed even where its original marker is absent.
+V1_RUN_CLOSED = True
 FIELDS = {'trade_contract_size', 'currency_profit', 'trade_calc_mode',
           'volume_min', 'volume_max', 'volume_step'}
 
@@ -91,6 +94,8 @@ def validate_rows(result, start, end):
 
 
 def run_windows(client, info, out, report):
+    if V1_RUN_CLOSED:
+        raise StopScreen('v1_screen_closed')
     validate_schema(client)
     for name, start, end in WINDOWS:
         report['attempted_history_calls'] += 1
@@ -100,7 +105,8 @@ def run_windows(client, info, out, report):
         result = client.call_tool('get_chart_ticks_history', args)
         private_json(out / (name + '-raw-response.json'), result)
         rows = validate_rows(result, start, end)
-        scenario = replay_cash_scenario(rows, info)
+        # Keep this closed pre-registration's historical scenario semantics.
+        scenario = replay_cash_scenario(rows, info, manage_final_boundary=False)
         private_json(out / (name + '-scenario.json'), scenario)
         report['windows'].append({'id': name, 'start': start, 'end': end,
                                   'returned_rows': len(rows), 'scenario': scenario})
@@ -110,6 +116,9 @@ def run_windows(client, info, out, report):
 
 
 def run():
+    if V1_RUN_CLOSED:
+        print('This v1 screen already stopped; no history requests will be made.')
+        return 1
     # A fixed one-shot directory blocks reruns after success, error or interruption.
     OUTPUT.mkdir(mode=0o700, parents=True, exist_ok=False)
     report = {'schema': 'xauusd-sparse-screen/v1', 'status': 'started',

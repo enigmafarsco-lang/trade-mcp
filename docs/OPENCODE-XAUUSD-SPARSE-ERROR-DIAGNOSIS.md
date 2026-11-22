@@ -1,5 +1,8 @@
 # Diagnose saved sparse-screen failure offline
 
+**Historical instruction, already completed; do not rerun it or alter its
+output or the original screen marker.** The command below is a record only.
+
 Stay on `arena/f81b6b27-trade-mcp`; fetch and fast-forward to the commit containing
 this document. Run exactly once from the repository root:
 

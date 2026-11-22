@@ -1,5 +1,8 @@
 # Execute offline replay on the EXISTING 1015-row sample; no new data request
 
+**Historical instruction, already completed; do not rerun this job.** The
+command below is retained as a record, not a new authorization.
+
 Stay on arena/f81b6b27-trade-mcp in the existing local checkout. Fetch and
 fast-forward only. Commit33dd179 is already on origin; no push repair needed.
 

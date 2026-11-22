@@ -45,12 +45,12 @@ def economics(info):
 
 
 def replay_cash_scenario(rows, info, *, consecutive_changes=3, max_spread_cost_usd=None,
-                         manage_final_boundary=False):
-    """Compare offline hypotheses only; defaults reproduce the original scenario.
+                         manage_final_boundary=True):
+    """Compare offline hypotheses only; final-minute position management is default.
 
-    The optional boundary mode manages an existing position using the final
-    partial minute, but does not generate signals or enter new positions there.
-    It remains a hypothetical gross model and never changes live trading.
+    No signals or new positions are generated in the final partial minute.
+    Use ``manage_final_boundary=False`` only to reproduce a published legacy
+    research result. Neither mode changes live trading or broker protection.
     """
     if type(manage_final_boundary) is not bool:
         raise ValueError('Final-boundary mode must be boolean')
@@ -150,7 +150,8 @@ def replay_cash_scenario(rows, info, *, consecutive_changes=3, max_spread_cost_u
                 counts['signals_blocked_by_spread'] += 1
             else:
                 pending = {'side': signal['action'], 'minute': start, 'time': t}
-    report = {'schema': 'xauusd-next-quote-cash-scenario/v1',
+    report = {'schema': ('xauusd-next-quote-cash-scenario/v2' if manage_final_boundary
+                         else 'xauusd-next-quote-cash-scenario/v1'),
             'signal_replay': signal_report, 'model': 'linear_USD_profit_contract_size_times_0.02_lot',
             'thresholds_gross_usd': {'loss': -2, 'profit': 2}, 'counts': dict(counts),
             'closed_scenarios': len(closes), 'gross_realized_usd_model': sum(closes),

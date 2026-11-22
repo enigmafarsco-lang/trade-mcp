@@ -1,5 +1,10 @@
 # Execute corrected cash scenario using existing files only, ZERO network/MCP calls
 
+**Historical instruction, already completed; do not repeat it.** The command
+below is retained as a record, not a new authorization. Its published result
+used the legacy horizon; see [final-boundary research](XAUUSD-FINAL-BOUNDARY-REPLAY.md)
+for the corrected comparison and current default.
+
 Keep current branch arena/f81b6b27-trade-mcp. Fetch/fast-forward only.
 The previous sanitized result b924bd2 is already on origin; do not repair its push.
 The reported mode "cfd leverage" is now normalized to the existing recognized

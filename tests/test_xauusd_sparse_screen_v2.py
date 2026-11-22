@@ -214,6 +214,8 @@ def test_empty_and_losing_windows_continue_once_each_without_real_latch(fake_job
             scenario = item['scenario']
             assert scenario['counts']['cash_loss_exits'] == 3
             assert scenario['simulated_three_consecutive_loss_latch'] is True
+            assert scenario['schema'] == 'xauusd-next-quote-cash-scenario/v1'
+            assert 'final_boundary_management' not in scenario
             assert scenario['execution_authorized'] is False and scenario['net_pnl'] is None
     assert [(call[1]['datetime_from'], call[1]['datetime_to']) for call in h.calls] == [
         (start, end) for _, start, end in h.job.WINDOWS]

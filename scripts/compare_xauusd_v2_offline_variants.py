@@ -200,7 +200,9 @@ def compare(archive=None, economics_file=None, reference_file=None):
             if outcome['kind'] != 'rows':
                 raise ValueError('no_usable_saved_rows')
             rows = outcome['rows']
-            baseline = replay_cash_scenario(rows, info)
+            # This closed historical experiment must reproduce its published
+            # legacy horizon; new research defaults to final-boundary management.
+            baseline = replay_cash_scenario(rows, info, manage_final_boundary=False)
             if not baseline_matches(baseline, refs[name], len(rows)):
                 window['status'] = 'prior_baseline_mismatch'
                 window['variants'] = skipped_variants('prior_baseline_mismatch')
@@ -217,7 +219,8 @@ def compare(archive=None, economics_file=None, reference_file=None):
             variant_id, consecutive, spread_cap = variant
             try:
                 scenario = baseline if index == 0 else replay_cash_scenario(
-                    rows, info, consecutive_changes=consecutive, max_spread_cost_usd=spread_cap)
+                    rows, info, consecutive_changes=consecutive, max_spread_cost_usd=spread_cap,
+                    manage_final_boundary=False)
                 window['variants'].append(summarize(variant, scenario, baseline))
                 report['completed_simulations'] += 1
             except Exception:

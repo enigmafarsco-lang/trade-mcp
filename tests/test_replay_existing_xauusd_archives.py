@@ -48,6 +48,8 @@ def test_offline_two_days_automatic_replay_and_no_raw_prices(job, tmp_path):
     assert report['history_calls_made'] == 0 and report['new_network_calls'] == 0
     assert report['net_pnl'] is None and report['profitability_proven'] is False
     assert all(w['scenario']['net_pnl'] is None for w in report['windows'])
+    assert all(w['scenario']['schema'] == 'xauusd-next-quote-cash-scenario/v1' for w in report['windows'])
+    assert all('final_boundary_management' not in w['scenario'] for w in report['windows'])
     assert '100.1' not in json.dumps(report)
 
 

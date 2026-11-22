@@ -1,5 +1,9 @@
 # Execute locally: XAUUSD historical research discovery, no trading
 
+**Historical instruction; the discovery and subsequent bounded sampling are
+closed. Do not repeat the calls or treat the steps below as new authorization.**
+See [final-boundary research](XAUUSD-FINAL-BOUNDARY-REPLAY.md) for later offline results.
+
 Perform this work now in the existing user checkout. Do not ask the owner to run
 Colab or relay intermediate planning messages. Arena cannot reach the owner's
 localhost MT5; you must execute the local read-only check and report its real result.

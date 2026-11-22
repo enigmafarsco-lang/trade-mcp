@@ -1,50 +1,64 @@
-# Correct the final-minute position-management blind spot offline
+# XAUUSD final-boundary management in offline research
 
-Earlier research discarded the first and last returned minutes for **entry
-signals**, because those minutes may be partial and their M1 open is unknown.
-However, the old cash model also discarded final-minute ticks for an **already
-open position**. Its open mark and `position_open_at_sample_end` therefore
-refer to the last *interior* quote, not necessarily the final observed sample
-quote. An exit, a different mark, or the simulated three-loss latch may occur
-in the omitted minute. This does not prove that any past result actually changes.
+## Completed comparison — do not repeat
 
-The new opt-in research mode keeps entry signals limited to interior minutes,
-expires an unfilled pending entry at the final-minute boundary, and uses all
-remaining observed bid/ask ticks **only to mark or exit an already open
-hypothetical position**. No new signal or entry is made in that minute; no
-forced end-of-sample close is invented. Threshold overshoot and the simulated
-three-loss latch are preserved. The mode does not touch live strategy code,
-orders, settings, or the real persistent latch. The old default is retained
-solely so published scenarios can be reproduced and compared without silently
-rewriting them.
+The one-shot comparison in `scripts/xauusd_final_boundary_replay.py` was
+reported completed on the workstation: **12/12** comparisons, with all legacy
+baselines reproduced. Do not rerun it, remove its marker, or repeat any history
+request, including on a checkout that lacks the workstation's output marker.
+The owner-only output was reported under
+`logs/research-inputs/xauusd-final-boundary-replay-v1/summary.json`; the
+[sanitized report](../reports/research/20261122T124500Z-xauusd-final-boundary-replay.md)
+contains the results.
 
-## Execute once on the machine with the existing archives
+All 12 corrected hypothetical gross end marks were negative. In particular,
+the two-change / $1 spread-cap mark for w1 changed from +$1.22 to -$0.20.
+Five previously open hypothetical positions reached a simulated loss exit in
+the final observed minute; another remained open with a different mark. The
+comparison covered **only two fixed strategies** on six previously examined,
+independent short samples. Other parameter variants in earlier reports have
+not been corrected by that comparison.
 
-After fetching and fast-forwarding the current branch to the commit containing
-this document, run from the repository root:
+## Research default and compatibility
 
-```bash
-.venv/bin/python scripts/xauusd_final_boundary_replay.py
-```
+Signals continue to exclude the first and last returned minutes, which are
+potentially partial. The old cash model also ignored the last minute for an
+**already open position**: its open mark and `position_open_at_sample_end`
+therefore referred to the last interior quote. That could miss a subsequent
+exit or a simulated three-loss latch.
 
-For each of the six already-saved samples, the job reproduces published
-original and candidate results before comparing the **old** and **final-minute
-managed** model for two fixed strategies: original three changes, and two changes
-with the $1 spread cap. It performs at most 12 corrected-model comparisons;
-losses, missing inputs, baseline mismatch or a failed scenario do not stop
-other independent comparisons. It makes no MT5, network, model or order calls.
-Raw tick archives and the economics snapshot are read-only and never printed.
+`replay_cash_scenario` now defaults to final-boundary management. It expires
+unfilled pending entries at the final-minute boundary and uses subsequent
+observed bid/ask quotes **only** to mark or exit a position already open. It
+creates no signal or entry in that minute, invents no forced end-of-sample
+close, and keeps threshold overshoot and the independent simulated loss latch.
+A position still open is marked at the last observed quote, which may precede
+the requested end. This is research-only: no live strategy, order, real latch,
+settings or broker protection is changed.
 
-Output is the new owner-only `logs/research-inputs/xauusd-final-boundary-replay-v1/summary.json`.
-It is exclusive and never overwrites prior results. Exit 0 means all 12
-comparisons completed; exit 1 means a partial run, blocker or existing output.
-Report the legacy and managed gross results, boundary exits and remaining open
-positions for each variant/window; commit/push only sanitized results. Do not
-modify v1/v2 markers, remove prior archives or repeat any history request.
+New managed scenario outputs identify themselves as
+`xauusd-next-quote-cash-scenario/v2` and include
+`final_boundary_management`. To reproduce the earlier horizon with the same
+inputs, call the offline function explicitly with
+`manage_final_boundary=False`; it returns the legacy scenario schema
+`xauusd-next-quote-cash-scenario/v1` and does not manage that minute. Before
+this schema change, explicitly managed scenarios also used v1: inspect their
+`final_boundary_management` field rather than inferring their mode from the
+old schema string alone. The comparison report's own
+`xauusd-final-boundary-replay/v1` schema is a separate format.
 
-These are six short, separate and previously examined samples, not a continuous
-account or blind holdout. The final observed quote may still be before the
-requested end, and complete tick coverage/UTC are unverified. Fills, spread
-filter execution, slippage, account risk, historic symbol rules and actual
-broker protection are not verified; commission, swap and net PnL remain NULL.
-A positive mark or no-entry case is not evidence of a profitable strategy.
+The completed v1/v2 sparse screens, the earlier archive inventory, v2 variant
+comparison and offline-next-tests campaign are pinned to their historical
+legacy horizon; the boundary comparison explicitly selects both modes. Their
+published reports are not rewritten. Matching summary metrics is not a
+cryptographic verification of the original raw inputs. New uses of the generic
+cash replay, including `run_xauusd_cash_research.py`, get managed mode by
+default; supplying already-saved `--economics` avoids that script's optional
+metadata network request. Do not run a completed fixed-output job again.
+
+These are hypothetical gross marks, not verified executable fills, realized
+broker results, net PnL, account-risk validation or profitability proof.
+Commission, swap and net remain unknown. Historical contract rules, slippage,
+full tick coverage and UTC are unverified; six retrospective windows are not
+a continuous account or blind holdout. Trading state and cloud-budget status
+were reported by the operator, not independently verified by this offline work.

@@ -127,7 +127,9 @@ def evaluate(root, econ_path):
         return report
     try:
         for i, (_, _, rows) in enumerate(selected, 1):
-            report['windows'].append({'window_number': i, 'scenario': replay_cash_scenario(rows, info)})
+            # Preserve the already-published inventory's legacy horizon.
+            scenario = replay_cash_scenario(rows, info, manage_final_boundary=False)
+            report['windows'].append({'window_number': i, 'scenario': scenario})
         report['status'] = 'existing_samples_replayed'
     except Exception:
         report['status'] = 'blocked_offline_replay_error'
