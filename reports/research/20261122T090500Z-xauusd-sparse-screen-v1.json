@@ -1,0 +1,27 @@
+{
+  "schema": "xauusd-research-check-report/v1",
+  "report_id": "20261122T090500Z-xauusd-sparse-screen-v1",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "head_at_execution": "b044aa1",
+  "command_executed": ".venv/bin/python scripts/xauusd_sparse_screen.py",
+  "execution_count": 1,
+  "trading_off": true,
+  "cloud_budget_revoked": true,
+  "result": {
+    "schema": "xauusd-sparse-screen/v1",
+    "status": "stopped_history_provider_error",
+    "symbol": "XAUUSD_i",
+    "time_basis": "broker_wall_clock_labels_utc_unverified",
+    "request_limit": 2000,
+    "max_history_calls": 6,
+    "attempted_history_calls": 1,
+    "in_progress_window": "eval-1",
+    "completed_windows": [],
+    "complete_tick_coverage_verified": false,
+    "net_pnl": null,
+    "execution_authorized": false,
+    "profitability_proven": false,
+    "window_independence": "each window starts flat with a fresh hypothetical latch; not continuous"
+  },
+  "raw_data_committed": false
+}
