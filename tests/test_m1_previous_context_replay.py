@@ -153,6 +153,36 @@ def test_real_momentum_uses_prior_direction_and_reports_unfiltered_opportunities
     assert matched['net_pnl'] is aligned['net_pnl'] is None
 
 
+@pytest.mark.parametrize('interior_minutes', [(1, 2, 3), (1, 2, 4), (1, 3, 4), (2, 3, 4)])
+@pytest.mark.parametrize('directions', [(1, 1, 1), (-1, -1, -1), (1, -1, 1), (0, 1, -1)])
+@pytest.mark.parametrize(('changes', 'cap'), [(3, None), (2, 1)])
+def test_synthetic_three_interior_buckets_and_entry_opportunity_bounds(interior_minutes, directions, changes, cap):
+    # Entirely synthetic quotes; vary missing minutes, flat contexts and direction.
+    start = datetime(2026, 1, 1)
+    rows = [{'time_ms': start.isoformat(), 'bid': 100., 'ask': 100.1}]
+    for minute, direction in zip(interior_minutes, directions, strict=True):
+        for second in range(60):
+            bid = 100 + direction * second * .02
+            rows.append({'time_ms': (start + timedelta(minutes=minute, seconds=second)).isoformat(),
+                         'bid': bid, 'ask': bid + .1})
+    rows.append({'time_ms': (start + timedelta(minutes=5)).isoformat(), 'bid': 100., 'ask': 100.1})
+    results = [cash.replay_cash_scenario(rows, metadata(), consecutive_changes=changes,
+                                        max_spread_cost_usd=cap, m1_context=mode)
+               for mode in ('prior_interior_available', 'prior_interior_aligned')]
+    matched, aligned = results
+    details = matched['research_variant']
+    raw = details['raw_signals_before_position_latch_spread_or_context_filters']
+    assert raw == aligned['research_variant']['raw_signals_before_position_latch_spread_or_context_filters']
+    assert details['eligible_current_minute_buckets'] <= 2
+    assert matched['counts'].get('simulated_entries', 0) <= raw['previous_available']
+    aligned_entries = aligned['counts'].get('simulated_entries', 0)
+    assert aligned_entries <= raw['previous_available_and_direction_aligned']
+    if aligned_entries:
+        previous = details['previous_observed_bid_directions']
+        assert details['eligible_current_minute_buckets'] >= 1
+        assert previous['up'] + previous['down'] >= 1
+
+
 @pytest.mark.parametrize('manage', [True, False])
 @pytest.mark.parametrize(('changes', 'cap'), [(3, None), (2, 1)])
 def test_explicit_no_context_preserves_existing_scenario_shape(manage, changes, cap):

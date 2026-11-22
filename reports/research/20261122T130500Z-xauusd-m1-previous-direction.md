@@ -65,6 +65,31 @@ All 12 Pda cases had at least one simulated entry. The zero Pav mark in the
 three-change w1 case had four entries; it was not a no-trade case. In both w4
 Pda cases the reported gross mark includes an open hypothetical position.
 
+## Bounds recoverable from published reports
+
+These are **lower bounds, not recovered raw signal counts**. In this replay,
+each simulated Pav entry requires a distinct raw signal with a previous minute
+available; each simulated Pda entry requires a distinct direction-aligned raw
+signal. Counts before entry filters can be higher. The bounds are read from the
+entry counts above, not independently measured from the private summary.
+
+| Sample | Three-change available ≥ | Three-change aligned ≥ | Two-change available ≥ | Two-change aligned ≥ |
+|---|---:|---:|---:|---:|
+| additional_sample | ≥5 | ≥5 | ≥10 | ≥6 |
+| w1 | ≥4 | ≥3 | ≥3 | ≥2 |
+| w2 | ≥3 | ≥1 | ≥2 | ≥1 |
+| w3 | ≥6 | ≥2 | ≥6 | ≥2 |
+| w4 | ≥3 | ≥2 | ≥3 | ≥2 |
+| w5 | ≥4 | ≥4 | ≥5 | ≥4 |
+
+The earlier sanitized signal reports recorded **three interior minute buckets
+in each sample**. If the M1 experiment used those same saved quote rows, each
+sample had **one or two eligible current-minute buckets**: at most two of three
+interior buckets can have an earlier interior predecessor, and at least one
+was needed for the observed Pda entries. At least one eligible bucket had a
+nonflat prior observed bid direction. This is a conditional bound, not the exact
+count; aggregate baseline matching did not verify the raw-archive identity.
+
 ## Coverage, costs and verification
 
 - The six older published row counts sum to **4,827**. The earlier three-change

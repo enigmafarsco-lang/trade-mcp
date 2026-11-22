@@ -126,6 +126,29 @@ def test_decision_review_totals_match_published_aggregate(extractor):
     assert sum(value > 1e-8 for value in filtered) == 1
 
 
+def test_published_bounds_are_labeled_and_follow_existing_reports(extractor):
+    reports = extractor.ROOT / 'reports/research'
+    m1 = json.loads(extractor.REFERENCE.read_text())['result']
+    extra = json.loads((reports / '20261122T073857Z-xauusd-signal-replay.json').read_text())['result']
+    prior_windows = json.loads((reports / '20261122T110500Z-xauusd-sparse-screen-v2-5win.json').read_text())['windows']
+    prior = {'additional_sample': extra, **{window['id']: window for window in prior_windows}}
+    review = extractor.REFERENCE.with_suffix('.md').read_text()
+    assert 'lower bounds, not recovered raw signal counts' in review
+    assert 'If the M1 experiment used those same saved quote rows' in review
+    for window in m1['windows']:
+        model = {pair['model']: pair for pair in window['pairs']}
+        three = model['original_3_changes']
+        two = model['2_changes_spread_cap_1_00']
+        assert prior[window['id']]['interior_minutes_seen'] == 3
+        raw_total = sum(prior[window['id']]['signal_counts'].values())
+        assert 0 < three['pda']['entries'] <= raw_total
+        assert two['pda']['entries'] > 0
+        assert three['pav']['entries'] <= raw_total
+        row = (f"| {window['id']} | ≥{three['pav']['entries']} | ≥{three['pda']['entries']} | "
+               f"≥{two['pav']['entries']} | ≥{two['pda']['entries']} |")
+        assert row in review
+
+
 def test_extracts_per_window_and_model_counts_without_leaking_inputs(extractor, synthetic):
     before_summary = synthetic.summary_path.read_bytes()
     before_reference = synthetic.published_path.read_bytes()
