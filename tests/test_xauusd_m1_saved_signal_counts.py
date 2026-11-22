@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import socket
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -139,27 +140,105 @@ def test_decision_review_totals_match_published_aggregate(extractor):
     assert '10 pairs with a nonzero gross difference' in review
 
 
-def test_published_bounds_are_labeled_and_follow_existing_reports(extractor):
-    reports = extractor.ROOT / 'reports/research'
-    m1 = json.loads(extractor.REFERENCE.read_text())['result']
-    extra = json.loads((reports / '20261122T073857Z-xauusd-signal-replay.json').read_text())['result']
-    prior_windows = json.loads((reports / '20261122T110500Z-xauusd-sparse-screen-v2-5win.json').read_text())['windows']
-    prior = {'additional_sample': extra, **{window['id']: window for window in prior_windows}}
+def test_published_signal_counts_are_sanitized_and_match_prior_reports(extractor):
+    # The committed aggregate is safe to read; no private summary or ticks are opened.
+    data = extractor.load_json(extractor.OUTPUT)
+    assert set(data) == {
+        'schema', 'status', 'source_report', 'source_baseline_report', 'matched_scenario_pairs',
+        'saved_baseline_copies_match_published_reference', 'published_row_and_original_raw_signal_counts_matched',
+        'history_calls_made', 'network_calls_made', 'strategy_models_called', 'orders_sent', 'tick_replays',
+        'execution_authorized', 'profitability_proven', 'commission', 'fees', 'swap', 'net_pnl',
+        'blind_holdout_or_out_of_sample', 'aggregate_comparison_does_not_verify_raw_archive_hash',
+        'raw_signals_are_not_entries_and_precede_position_latch_spread_and_direction_filters', 'windows', 'limitations',
+    }
+    assert data['schema'] == 'xauusd-m1-saved-signal-counts/v1'
+    assert data['status'] == 'completed_aggregate_extraction_no_replay'
+    assert data['source_report'] == extractor.REFERENCE.name
+    assert data['source_baseline_report'] == extractor.BOUNDARY_REFERENCE.name
+    assert type(data['matched_scenario_pairs']) is int and data['matched_scenario_pairs'] == 12
+    for key in ('saved_baseline_copies_match_published_reference', 'published_row_and_original_raw_signal_counts_matched',
+                'aggregate_comparison_does_not_verify_raw_archive_hash',
+                'raw_signals_are_not_entries_and_precede_position_latch_spread_and_direction_filters'):
+        assert data[key] is True
+    for key in ('execution_authorized', 'profitability_proven', 'blind_holdout_or_out_of_sample'):
+        assert data[key] is False
+    for key in ('history_calls_made', 'network_calls_made', 'strategy_models_called', 'orders_sent', 'tick_replays'):
+        assert type(data[key]) is int and data[key] == 0
+    assert all(data[key] is None for key in ('commission', 'fees', 'swap', 'net_pnl'))
+    assert data['limitations'] == [
+        'Only existing saved aggregates were read; no quotes, fills, account records or costs were checked',
+        'The six sparse samples and two overlapping models are not a continuous account or unseen test',
+        'Directions use observed previous-minute first and last bid; complete feed and true candles are unverified',
+        'Broker-label time and the actual research execution dates are not independently verified',
+        'A matching aggregate is not a cryptographic identity check on raw archives',
+        'Commission, fees, swap, slippage and net remain unknown; no trading is authorized',
+    ]
+    reference = json.loads(extractor.REFERENCE.read_text())['result']
+    ref_windows = extractor.index_exact(reference['windows'], 'id', extractor.SAMPLES)
+    windows = extractor.index_exact(data['windows'], 'id', extractor.SAMPLES)
     review = extractor.REFERENCE.with_suffix('.md').read_text()
-    assert 'lower bounds, not recovered raw signal counts' in review
-    assert 'If the M1 experiment used those same saved quote rows' in review
-    for window in m1['windows']:
-        model = {pair['model']: pair for pair in window['pairs']}
-        three = model['original_3_changes']
-        two = model['2_changes_spread_cap_1_00']
-        assert prior[window['id']]['interior_minutes_seen'] == 3
-        raw_total = sum(prior[window['id']]['signal_counts'].values())
-        assert 0 < three['pda']['entries'] <= raw_total
-        assert two['pda']['entries'] > 0
-        assert three['pav']['entries'] <= raw_total
-        row = (f"| {window['id']} | ≥{three['pav']['entries']} | ≥{three['pda']['entries']} | "
-               f"≥{two['pav']['entries']} | ≥{two['pda']['entries']} |")
-        assert row in review
+    expected_directions = {'additional_sample': (2, 0, 0), 'w1': (2, 0, 0), 'w2': (1, 1, 0),
+                           'w3': (0, 2, 0), 'w4': (1, 1, 0), 'w5': (2, 0, 0)}
+    totals = {model: Counter() for model in extractor.MODELS}
+    for sample, window in windows.items():
+        assert set(window) == {'id', 'returned_rows', 'eligible_current_minute_buckets',
+                               'previous_observed_bid_directions', 'models'}
+        rows = window['returned_rows']
+        assert type(rows) is int and rows == extractor.PUBLISHED_WINDOW_COUNTS[sample][0]
+        assert window['eligible_current_minute_buckets'] == 2
+        directions = window['previous_observed_bid_directions']
+        assert set(directions) == {'up', 'down', 'flat'}
+        assert tuple(directions[k] for k in ('up', 'down', 'flat')) == expected_directions[sample]
+        models = extractor.index_exact(window['models'], 'model_id', extractor.MODELS)
+        pairs = extractor.index_exact(ref_windows[sample]['pairs'], 'model', extractor.MODELS)
+        for model, item in models.items():
+            assert set(item) == {'model_id', 'raw_signals_before_all_entry_filters',
+                                 'simulated_entries', 'signals_blocked_at_entry_decision'}
+            raw = item['raw_signals_before_all_entry_filters']
+            assert set(raw) == {'buy', 'sell', 'previous_unavailable', 'previous_available',
+                                'previous_available_and_direction_aligned'}
+            side = {'eligible_current_minute_buckets': 2, 'previous_observed_bid_directions': directions,
+                    'signal_counts': {'buy': raw['buy'], 'sell': raw['sell']},
+                    'raw_signals_before_all_entry_filters': raw}
+            assert extractor.opportunities(side, rows)['raw_signal_counts'] == raw
+            if model == 'original_3_changes':
+                assert (raw['buy'], raw['sell']) == extractor.PUBLISHED_WINDOW_COUNTS[sample][1:]
+            entries = item['simulated_entries']
+            assert set(entries) == {'previous_available_only', 'previous_direction_aligned'}
+            pav = extractor.count(entries['previous_available_only'], rows)
+            pda = extractor.count(entries['previous_direction_aligned'], rows)
+            pair = pairs[model]
+            assert (pav, pda) == (pair['pav']['entries'], pair['pda']['entries'])
+            assert pav <= raw['previous_available'] and pda <= raw['previous_available_and_direction_aligned']
+            blocks = item['signals_blocked_at_entry_decision']
+            assert set(blocks) == {'previous_unavailable_control', 'previous_unavailable_aligned',
+                                   'previous_direction_aligned_mode'}
+            for value in blocks.values():
+                extractor.count(value, rows)
+            assert blocks['previous_unavailable_control'] <= raw['previous_unavailable']
+            assert blocks['previous_unavailable_aligned'] <= raw['previous_unavailable']
+            direction_blocks = blocks['previous_direction_aligned_mode']
+            assert direction_blocks <= raw['previous_available'] - raw['previous_available_and_direction_aligned']
+            if abs(pair['aligned_minus_marked']) > 1e-8:
+                assert direction_blocks >= 1
+            row = (f"| {sample} | 2 | {directions['up']}/{directions['down']}/{directions['flat']} | {model} | "
+                   f"{raw['buy']}/{raw['sell']} | {raw['previous_unavailable']} | {raw['previous_available']} | "
+                   f"{raw['previous_available_and_direction_aligned']} | {pav}/{pda} | {direction_blocks} |")
+            assert row in review
+            totals[model].update(raw)
+            totals[model]['direction_blocks'] += direction_blocks
+            totals[model]['entries_pav'] += pav
+            totals[model]['entries_pda'] += pda
+    assert dict(totals['original_3_changes']) == {
+        'buy': 107, 'sell': 66, 'previous_unavailable': 59, 'previous_available': 114,
+        'previous_available_and_direction_aligned': 59, 'direction_blocks': 25, 'entries_pav': 25, 'entries_pda': 17,
+    }
+    assert dict(totals['2_changes_spread_cap_1_00']) == {
+        'buy': 253, 'sell': 166, 'previous_unavailable': 154, 'previous_available': 265,
+        'previous_available_and_direction_aligned': 127, 'direction_blocks': 105, 'entries_pav': 29, 'entries_pda': 17,
+    }
+    assert sum(item['buy'] for item in totals.values()) == 360
+    assert sum(item['sell'] for item in totals.values()) == 232
 
 
 def test_extracts_per_window_and_model_counts_without_leaking_inputs(extractor, synthetic):

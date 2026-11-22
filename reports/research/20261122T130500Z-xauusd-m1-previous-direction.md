@@ -5,8 +5,8 @@
 OpenCode reported **12/12 paired comparisons** and **12/12 aggregate baseline
 matches** on six previously examined samples. The private source summary and
 raw tick archives are not available in this environment; the results below are
-read from the [sanitized report](20261122T130500Z-xauusd-m1-previous-direction.json),
-not from a new replay.
+read from the [sanitized comparison](20261122T130500Z-xauusd-m1-previous-direction.json)
+and [saved-count aggregate](xauusd-m1-saved-signal-counts.json), not a new replay.
 
 The direction filter produced **six higher, four lower and two unchanged gross
 marks** than its matched-availability control. The filtered mark itself was
@@ -19,6 +19,47 @@ whether it is profitable out of sample.
 numbers are actually **Pda − Pav**. For example, the two-change additional
 sample is `−4.02 − (−8.54) = +4.52`. The legacy JSON field name
 `aligned_minus_marked` is retained, with its definition documented in the JSON.
+
+## Extracted per-window opportunity counts
+
+OpenCode reported extracting these counts from the existing private summary
+without replaying the experiment. The [sanitized aggregate](xauusd-m1-saved-signal-counts.json)
+was published in commit `1b94f493fe10af6128decb4cad116c5aa075c3a3`.
+This environment checked its fixed whitelist, all 12 published entry counts,
+the six previously published row and three-change raw-signal counts, and its
+internal accounting. The private summary and raw archives remain unavailable
+here; these aggregate checks do not independently verify archive identity.
+
+An **eligible minute** has an adjacent previous interior minute with at least
+two observed quotes. `up/down/flat` describes the previous minute's first-to-last
+observed bid direction, counted once per eligible current-minute bucket.
+`Previous available` and `Aligned` are subsets of raw buy and sell signals
+**before** position, latch, spread and context filters; they are not entries.
+`Pda direction blocks` counts the aligned path's entry-decision blocks, after
+position/latch checks, not all unaligned raw signals or rejected trades.
+
+| Sample | Eligible minutes | Previous up/down/flat | Model | Raw buy/sell | Previous unavailable | Previous available | Aligned | Entries Pav/Pda | Pda direction blocks |
+|---|---:|---:|---|---:|---:|---:|---:|---:|---:|
+| additional_sample | 2 | 2/0/0 | original_3_changes | 16/17 | 6 | 27 | 13 | 5/5 | 0 |
+| additional_sample | 2 | 2/0/0 | 2_changes_spread_cap_1_00 | 45/44 | 27 | 62 | 29 | 10/6 | 32 |
+| w1 | 2 | 2/0/0 | original_3_changes | 20/5 | 10 | 15 | 12 | 4/3 | 3 |
+| w1 | 2 | 2/0/0 | 2_changes_spread_cap_1_00 | 48/12 | 21 | 39 | 29 | 3/2 | 10 |
+| w2 | 2 | 1/1/0 | original_3_changes | 6/9 | 9 | 6 | 1 | 3/1 | 5 |
+| w2 | 2 | 1/1/0 | 2_changes_spread_cap_1_00 | 12/28 | 22 | 18 | 1 | 2/1 | 17 |
+| w3 | 2 | 0/2/0 | original_3_changes | 16/10 | 8 | 18 | 10 | 6/2 | 3 |
+| w3 | 2 | 0/2/0 | 2_changes_spread_cap_1_00 | 43/27 | 24 | 46 | 26 | 6/2 | 10 |
+| w4 | 2 | 1/1/0 | original_3_changes | 24/13 | 16 | 21 | 7 | 3/2 | 14 |
+| w4 | 2 | 1/1/0 | 2_changes_spread_cap_1_00 | 53/31 | 34 | 50 | 15 | 3/2 | 35 |
+| w5 | 2 | 2/0/0 | original_3_changes | 25/12 | 10 | 27 | 16 | 4/4 | 0 |
+| w5 | 2 | 2/0/0 | 2_changes_spread_cap_1_00 | 52/24 | 26 | 50 | 27 | 5/4 | 1 |
+
+Across the six separate samples there are 12 eligible buckets: eight previous
+up, four down and none flat. Within the three-change model, 59 of 114 raw
+signals with a previous minute available were aligned; within the two-change
+model, 127 of 265 were aligned. These are descriptive raw-signal proportions,
+not win rates or a continuous-account result. The models overlap and must not
+be treated as independent samples. The user-reported combined raw buy/sell
+counts of 360/232 match this sanitized aggregate.
 
 ## Counts by model
 
@@ -65,38 +106,16 @@ All 12 Pda cases had at least one simulated entry. The zero Pav mark in the
 three-change w1 case had four entries; it was not a no-trade case. In both w4
 Pda cases the reported gross mark includes an open hypothetical position.
 
-## Bounds recoverable from published reports
+## Interpretation of direction blocks
 
-These are **lower bounds, not recovered raw signal counts**. In this replay,
-each simulated Pav entry requires a distinct raw signal with a previous minute
-available; each simulated Pda entry requires a distinct direction-aligned raw
-signal. Counts before entry filters can be higher. The bounds are read from the
-entry counts above, not independently measured from the private summary.
-
-| Sample | Three-change available ≥ | Three-change aligned ≥ | Two-change available ≥ | Two-change aligned ≥ |
-|---|---:|---:|---:|---:|
-| additional_sample | ≥5 | ≥5 | ≥10 | ≥6 |
-| w1 | ≥4 | ≥3 | ≥3 | ≥2 |
-| w2 | ≥3 | ≥1 | ≥2 | ≥1 |
-| w3 | ≥6 | ≥2 | ≥6 | ≥2 |
-| w4 | ≥3 | ≥2 | ≥3 | ≥2 |
-| w5 | ≥4 | ≥4 | ≥5 | ≥4 |
-
-In each of the **10 pairs with a nonzero gross difference**, the aligned path
-must have blocked at least one signal at the previous-direction entry check.
-The paths are otherwise identical until that check first differs. This is a
-lower bound on entry-decision blocks, not a count of rejected trades or all
-misaligned raw signals; one block can change later position and latch states.
-The two zero-difference pairs may still have had blocks, so zero cannot be
-inferred for them.
-
-The earlier sanitized signal reports recorded **three interior minute buckets
-in each sample**. If the M1 experiment used those same saved quote rows, each
-sample had **one or two eligible current-minute buckets**: at most two of three
-interior buckets can have an earlier interior predecessor, and at least one
-was needed for the observed Pda entries. At least one eligible bucket had a
-nonflat prior observed bid direction. This is a conditional bound, not the exact
-count; aggregate baseline matching did not verify the raw-archive identity.
+The sanitized extraction reports at least one direction entry-decision block in
+each of the 10 pairs with a nonzero gross difference. The other two pairs,
+three-change additional and w5, have zero such blocks. Zero direction blocks
+does **not** mean all raw signals were aligned: in the three-change additional
+sample, 27 raw signals had prior context but only 13 were aligned, while none
+of the 14 unaligned signals was counted as a direction entry-decision block.
+Earlier position/latch handling can prevent a raw signal from reaching that
+check; different simulated entries also change later state.
 
 ## Coverage, costs and verification
 
@@ -104,11 +123,11 @@ count; aggregate baseline matching did not verify the raw-archive identity.
   signal reports list 107 raw buys and 66 raw sells before entry filters across
   those windows. These are prior reports, not newly replayed data, and matching
   summary metrics does not prove raw-archive identity.
-- The committed M1 report does not include per-window eligible-minute or
-  direction-aligned raw-signal counts. A separate read-only extractor is
-  prepared in `scripts/xauusd_m1_saved_signal_counts.py`; it can use the existing
-  private summary without replaying ticks. Until that extraction is reported,
-  those counts are unknown here.
+- The separate published aggregate now supplies per-window eligible-minute,
+  previous-direction and raw-signal counts. It reports checking both saved
+  paths and baseline copies; Arena checked the published fields and accounting
+  against prior sanitized reports but could not independently inspect the
+  private source or verify raw-archive identity.
 - The observed first/last bid of a prior minute is not proof of the true candle
   open/close or complete feed. UTC, historical contract rules, actual fills,
   slippage, account risk and continuous performance remain unverified.
