@@ -4,7 +4,7 @@
 
 # # بک‌تست واقعی Strategy001 با موتور Freqtrade
 # **آمادهٔ اجرا در Google Colab؛ هنوز اجرا نشده است.** این آزمایش مستقل BTC/USDT در Binance spot است؛ نه XAUUSD، نه مومنتوم M1 و نه سفارش MT5.
-# نیازی به فایل یا کلید حساب ندارید. Runtime تازهٔ Colab باز کنید و سلول‌ها را به‌ترتیب اجرا کنید. نصب فقط در محیط مجازی داخل Colab است؛ هیچ بسته‌ای روی سیستم MT5 نصب نمی‌شود.
+# نیازی به فایل یا کلید حساب ندارید. در همان runtime فعال و سازگار Colab اجرا کنید؛ نصب موجود دوباره انجام نمی‌شود. نصب فقط در محیط مجازی داخل Colab است؛ هیچ بسته‌ای روی سیستم MT5 نصب نمی‌شود.
 # داده عمومی با اینترنت دریافت می‌شود؛ در صورت محدودیت صرافی/شبکه توقف کنید، VPN، retry یا صرافی جایگزین خودکار نداریم.
 # بازه‌ها از قبل ثابت: ارزیابی ژانویه–فوریه ۲۰۲۶، تست نهایی مارس ۲۰۲۶. پارامترها براساس نتیجه تغییر نکنند.
 
@@ -25,18 +25,23 @@ def run_visible(args, **kwargs):
     if result.returncode:
         raise RuntimeError('Command failed; read the complete output above. Do not continue.')
     return result
-BOOTSTRAP=WORK/'virtualenv-bootstrap'
-run_visible([sys.executable,'-m','pip','install','--target',BOOTSTRAP,'virtualenv==20.28.0'])
 ENV=WORK/'isolated-env'
 PY=ENV/'bin/python'
-bootstrap_env=os.environ.copy()
-bootstrap_env['PYTHONPATH']=str(BOOTSTRAP)
-run_visible([sys.executable,'-m','virtualenv','--no-download','--python',sys.executable,ENV],
-            env=bootstrap_env)
-run_visible([PY,'-c',
-    'import sys,pip; assert sys.prefix!=sys.base_prefix; print("Isolated Python ready:",sys.version)'])
 FREQTRADE_VERSION='2025.10'
-run_visible([PY,'-m','pip','install','freqtrade=='+FREQTRADE_VERSION])
+probe_code='import sys,importlib.metadata as m; assert sys.prefix!=sys.base_prefix; assert m.version("freqtrade")=="2025.10"'
+ready=PY.is_file() and subprocess.run([str(PY),'-c',probe_code],capture_output=True).returncode==0
+if ready:
+    print('Reusing installed isolated Freqtrade 2025.10; no reinstall or session restart.')
+else:
+    BOOTSTRAP=WORK/'virtualenv-bootstrap'
+    run_visible([sys.executable,'-m','pip','install','--target',BOOTSTRAP,'virtualenv==20.28.0'])
+    bootstrap_env=os.environ.copy()
+    bootstrap_env['PYTHONPATH']=str(BOOTSTRAP)
+    run_visible([sys.executable,'-m','virtualenv','--no-download','--python',sys.executable,ENV],
+                env=bootstrap_env)
+    run_visible([PY,'-c',
+        'import sys,pip; assert sys.prefix!=sys.base_prefix; print("Isolated Python ready:",sys.version)'])
+    run_visible([PY,'-m','pip','install','freqtrade=='+FREQTRADE_VERSION])
 run_visible([PY,'-m','freqtrade','--version'])
 subprocess.check_call([str(PY),'-m','pip','freeze'],stdout=open(WORK/'dependencies.txt','w'))
 
@@ -75,9 +80,24 @@ config={
  'exchange':{'name':'binance','key':'','secret':'','pair_whitelist':['BTC/USDT'],
              'pair_blacklist':[],'ccxt_config':{'enableRateLimit':True,'options':{'maxRetriesOnFailure':0}}},
  'pairlists':[{'method':'StaticPairList'}],
- 'telegram':{'enabled':False},'api_server':{'enabled':False},'bot_name':'research_only'
+ 'telegram':{'enabled':False,'token':'','chat_id':''},'bot_name':'research_only',
+ 'dataformat_ohlcv':'feather','dataformat_trades':'feather'
 }
 CONFIG.write_text(json.dumps(config,indent=2))
+# Offline schema validation BEFORE exchange/data access; no network in this subprocess.
+preflight_code = """
+import json,sys
+from freqtrade.configuration.config_validation import validate_config_schema
+from freqtrade.enums import RunMode
+cfg=json.load(open(sys.argv[1]))
+cfg['runmode']=RunMode.BACKTEST
+validate_config_schema(cfg,preliminary=True)
+assert cfg['dry_run'] is True
+assert cfg['telegram']['enabled'] is False and not cfg['telegram']['token']
+assert not cfg.get('api_server',{}).get('enabled',False)
+print('Offline Freqtrade configuration schema passed; Telegram/API disabled.')
+"""
+run_visible([PY,'-c',preflight_code,CONFIG])
 COVERAGE_VERIFIED=False
 PLAN={'evaluation':'20260101-20260301','final_test':'20260301-20260401'}
 print('Fixed test plan:',PLAN)

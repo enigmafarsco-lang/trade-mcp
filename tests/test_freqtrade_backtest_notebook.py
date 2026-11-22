@@ -125,3 +125,30 @@ def test_onecell_is_full_script_and_stops_on_first_failure():
     assert script.index('COVERAGE_VERIFIED=False') < script.index("ft('download-data'")
     assert script.index('COVERAGE_VERIFIED=True') < script.index("ft('backtesting'")
     assert 'Data checks did not pass; do not backtest' in script
+
+
+def test_disabled_services_have_valid_shape_and_preflight_precedes_network():
+    import ast
+
+    text = next(c for c in codes() if 'config={' in c)
+    tree = ast.parse(text)
+    assign = next(n for n in tree.body if isinstance(n, ast.Assign)
+                  and any(isinstance(t, ast.Name) and t.id == 'config' for t in n.targets))
+    cfg = ast.literal_eval(assign.value)
+    assert cfg['telegram'] == {'enabled': False, 'token': '', 'chat_id': ''}
+    assert not cfg.get('api_server', {}).get('enabled', False)
+    assert cfg['dataformat_ohlcv'] == 'feather'
+    assert "validate_config_schema(cfg,preliminary=True)" in text
+    assert text.index("run_visible([PY,'-c',preflight_code,CONFIG])") < text.index("ft('download-data'")
+
+
+def test_setup_reuses_successful_install_without_package_commands():
+    import ast
+
+    setup = ast.parse(codes()[0])
+    branch = next(n for n in setup.body if isinstance(n, ast.If)
+                  and isinstance(n.test, ast.Name) and n.test.id == 'ready')
+    calls = []
+    env = {'ready': True, 'run_visible': calls.append}
+    exec(compile(ast.Module(body=[branch], type_ignores=[]), '<reuse-install>', 'exec'), env)
+    assert calls == []
