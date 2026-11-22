@@ -1,6 +1,7 @@
 """Offline M1 comparison on six synthetic archives; no real or broker data."""
 import importlib.util
 import json
+import math
 import socket
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -78,6 +79,8 @@ def reference_comparison(name, model, rows):
 
 @pytest.fixture
 def saved(job, tmp_path, monkeypatch):
+    # Only the synthetic fixture opens the completed job's in-memory guard.
+    monkeypatch.setattr(job, 'M1_RESEARCH_RUN_CLOSED', False)
     archive = tmp_path / 'five'
     archive.mkdir()
     econ = tmp_path / 'economics.json'
@@ -115,6 +118,53 @@ def test_real_published_reference_shape_only(job):
     assert len(refs) == 12
     assert refs[('w1', job.CANDIDATE)]['gross_total_usd_model'] == pytest.approx(-.20)
     assert refs[('additional_sample', job.ORIGINAL)]['gross_total_usd_model'] == pytest.approx(-6.24)
+
+
+def test_published_aggregate_deltas_are_filtered_minus_matched_not_reverse(job):
+    # Validate the sanitized report only; this never reads or replays archived quotes.
+    path = job.ROOT / 'reports/research/20261122T130500Z-xauusd-m1-previous-direction.json'
+    data = json.loads(path.read_text())
+    result = data['result']
+    assert 'pda.gross_total_mark minus pav.gross_total_mark' in data['delta_definition']
+    assert result['status'] == 'completed_all_paired_comparisons'
+    assert result['planned_paired_comparisons'] == result['completed_paired_comparisons'] == 12
+    assert result['baseline_checks_attempted'] == result['baseline_checks_matched'] == 12
+    assert all(result[key] is None for key in ('commission', 'fees', 'swap', 'net_pnl'))
+    seen, pairs = set(), {}
+    for window in result['windows']:
+        for pair in window['pairs']:
+            key = (window['id'], pair['model'])
+            assert key not in seen and pair['baseline_matched'] is True
+            seen.add(key)
+            pairs[key] = pair
+            for mode in ('pav', 'pda'):
+                side = pair[mode]
+                assert type(side['open_at_end']) is bool
+                assert side['entries'] == side['profit'] + side['loss'] + int(side['open_at_end'])
+                assert math.isfinite(side['gross_total_mark'])
+            delta = pair['pda']['gross_total_mark'] - pair['pav']['gross_total_mark']
+            assert math.isclose(delta, pair['aligned_minus_marked'], rel_tol=0, abs_tol=1e-8)
+    assert seen == {(sample, model[0]) for sample in job.SAMPLES for model in job.MODELS}
+    md = path.with_suffix('.md').read_text()
+    assert '| Pda − Pav |' in md
+    shown = set()
+    for line in md.splitlines():
+        columns = [part.strip() for part in line.strip('|').split('|')]
+        if len(columns) != 9 or columns[0] not in job.SAMPLES:
+            continue
+        sample, model, pav_counts, pav_gross, pav_open, pda_counts, pda_gross, pda_open, delta = columns
+        key = sample, model
+        assert key in pairs and key not in shown
+        shown.add(key)
+        pair = pairs[key]
+        for mode, counts, gross, opened in (('pav', pav_counts, pav_gross, pav_open),
+                                             ('pda', pda_counts, pda_gross, pda_open)):
+            side = pair[mode]
+            assert tuple(map(int, counts.split('/'))) == tuple(side[k] for k in ('entries', 'profit', 'loss'))
+            assert math.isclose(float(gross), side['gross_total_mark'], rel_tol=0, abs_tol=.0051)
+            assert opened in ('بله', 'خیر') and (opened == 'بله') is side['open_at_end']
+        assert math.isclose(float(delta), pair['aligned_minus_marked'], rel_tol=0, abs_tol=.0051)
+    assert shown == seen
 
 
 def test_six_synthetic_samples_run_matched_pairs_and_leave_inputs_unchanged(job, saved):
@@ -293,6 +343,26 @@ def test_context_failure_is_sanitized_and_independent_pairs_continue(job, saved,
     assert 'PRIVATE_TICK_OR_ACCOUNT_CONTENT' not in json.dumps(report, allow_nan=False)
 
 
+@pytest.mark.parametrize('existing_marker', [False, True])
+def test_completed_job_refuses_even_without_workstation_marker(job, tmp_path, monkeypatch, capsys, existing_marker):
+    assert job.M1_RESEARCH_RUN_CLOSED is True
+    output = tmp_path / 'fixed-output'
+    if existing_marker:
+        output.mkdir()
+        (output / 'summary.json').write_text('saved result')
+    monkeypatch.setattr(job, 'OUTPUT', output)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('Completed job must stop before inspecting inputs or replaying')
+
+    monkeypatch.setattr(job, 'run_experiment', forbidden)
+    assert job.main() == 1
+    assert output.exists() is existing_marker
+    if existing_marker:
+        assert (output / 'summary.json').read_text() == 'saved result'
+    assert 'already completed' in capsys.readouterr().out
+
+
 def test_main_writes_private_exclusive_output_and_does_not_repeat(job, saved, tmp_path, monkeypatch, capsys):
     for key, name in [('archive', 'ARCHIVE'), ('old_raw', 'OLD_RAW'), ('economics_file', 'ECONOMICS'),
                       ('boundary_reference', 'BOUNDARY_PATH')]:
@@ -316,6 +386,7 @@ def test_main_writes_private_exclusive_output_and_does_not_repeat(job, saved, tm
 
 
 def test_main_rejects_symlink_marker_before_any_replay(job, tmp_path, monkeypatch):
+    monkeypatch.setattr(job, 'M1_RESEARCH_RUN_CLOSED', False)  # Synthetic no-overwrite test only.
     output = tmp_path / 'output-link'
     target = tmp_path / 'existing'
     target.mkdir()

@@ -1,11 +1,11 @@
 """Compare two fixed M1-context hypotheses on existing archives, entirely offline.
 
-This is a new exploratory comparison, not a rerun of a completed fixed-output
-job. For each sample and model, a single unrestricted managed replay checks
-published aggregate metrics only. The two new paths share the same adjacent
-previous-interior-minute availability rule; one additionally requires the
-previous observed bid direction to match the signal. Nothing here connects to
-MT5, places orders, or changes the live strategy or its protections.
+This exploratory fixed-output job was reported completed once and is closed.
+For each sample and model, an unrestricted managed replay checked published
+aggregate metrics only. Two new paths shared the same adjacent previous-interior
+minute availability rule; one also required the prior observed bid direction to
+match the signal. Nothing here connects to MT5, places orders, or changes the
+live strategy or its protections. Never rerun this job on real archives.
 """
 import json
 import math
@@ -45,6 +45,10 @@ from xauusd_sparse_screen_v2 import validate_rows  # noqa: E402
 from trade_mcp.tick_cash_replay import economics, replay_cash_scenario  # noqa: E402
 
 OUTPUT = ROOT / 'logs/research-inputs/xauusd-m1-previous-direction-v1'
+# The one-shot job completed on the workstation. Refuse it even when a fresh
+# checkout cannot see the original local output marker. Do not disable this
+# guard to repeat the job; synthetic unit tests alone override it in memory.
+M1_RESEARCH_RUN_CLOSED = True
 BOUNDARY_REPORT_ID = BOUNDARY_PATH.stem
 # These are the two corrected historical models, not live strategy changes.
 MODELS = ((ORIGINAL, 3, None), (CANDIDATE, 2, 1.0))
@@ -323,8 +327,10 @@ def run_experiment(archive=None, old_raw=None, economics_file=None, boundary_ref
 
 
 def main():
-    # Never repeat if any output/marker already exists. In particular, a fresh
-    # checkout without the old jobs' markers must not rerun the old jobs.
+    if M1_RESEARCH_RUN_CLOSED:
+        print('This M1 comparison already completed; no replay or network calls will be made.')
+        return 1
+    # Preserve the no-overwrite logic for synthetic unit tests of the historical job.
     if OUTPUT.exists() or OUTPUT.is_symlink():
         print('New M1 comparison output already exists; not overwriting or repeating.')
         return 1
