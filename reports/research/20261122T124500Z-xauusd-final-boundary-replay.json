@@ -1,0 +1,42 @@
+{
+  "schema": "xauusd-research-check-report/v1",
+  "report_id": "20261122T124500Z-xauusd-final-boundary-replay",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "head_at_execution": "60c9cb1",
+  "command_executed": ".venv/bin/python scripts/xauusd_final_boundary_replay.py",
+  "execution_count": 1,
+  "new_mt5_history_requests": 0,
+  "network_calls": 0,
+  "models_called": 0,
+  "orders_sent": 0,
+  "trading_off": true,
+  "cloud_budget_revoked": true,
+  "output_exists_prior": false,
+  "result": {
+    "schema": "xauusd-final-boundary-replay/v1",
+    "status": "completed_all_comparisons",
+    "history_calls_made": 0,
+    "planned_comparisons": 12,
+    "completed_comparisons": 12,
+    "failures": 0,
+    "all_legacies_reproduced": true,
+    "comparisons": [
+      {"sample":"additional_sample","variant":"original_3_changes","legacy":{"entries":5,"profit":1,"loss":4,"gross_total":-6.239999999999782,"open_at_interior":false,"latch":true},"managed":{"entries":5,"profit":1,"loss":4,"gross_total":-6.239999999999782,"open_at_last_observed":false,"latch":true},"delta_vs_legacy":0.0},
+      {"sample":"additional_sample","variant":"2_changes_spread_cap_1_00","legacy":{"entries":14,"profit":4,"loss":9,"gross_total":-10.780000000002474,"open_at_interior":true,"latch":false},"managed":{"entries":14,"profit":4,"loss":10,"gross_total":-12.400000000002365,"open_at_last_observed":false,"latch":true},"delta_vs_legacy":-1.6199999999998909},
+      {"sample":"w1","variant":"original_3_changes","legacy":{"entries":4,"profit":1,"loss":2,"gross_total":-2.2600000000002183,"open_at_interior":true,"latch":false},"managed":{"entries":4,"profit":1,"loss":3,"gross_total":-4.039999999999054,"open_at_last_observed":false,"latch":false},"delta_vs_legacy":-1.7799999999988358},
+      {"sample":"w1","variant":"2_changes_spread_cap_1_00","legacy":{"entries":2,"profit":1,"loss":0,"gross_total":1.2199999999993452,"open_at_interior":true,"latch":false},"managed":{"entries":2,"profit":1,"loss":1,"gross_total":-0.2000000000007276,"open_at_last_observed":false,"latch":false},"delta_vs_legacy":-1.4200000000000728},
+      {"sample":"w2","variant":"original_3_changes","legacy":{"entries":3,"profit":0,"loss":3,"gross_total":-6.359999999998763,"open_at_interior":false,"latch":true},"managed":{"entries":3,"profit":0,"loss":3,"gross_total":-6.359999999998763,"open_at_last_observed":false,"latch":true},"delta_vs_legacy":0.0},
+      {"sample":"w2","variant":"2_changes_spread_cap_1_00","legacy":{"entries":2,"profit":0,"loss":1,"gross_total":-3.0,"open_at_interior":true,"latch":false},"managed":{"entries":2,"profit":0,"loss":2,"gross_total":-4.1599999999998545,"open_at_last_observed":false,"latch":false},"delta_vs_legacy":-1.1599999999998545},
+      {"sample":"w3","variant":"original_3_changes","legacy":{"entries":3,"profit":0,"loss":3,"gross_total":-7.080000000001746,"open_at_interior":false,"latch":true},"managed":{"entries":3,"profit":0,"loss":3,"gross_total":-7.080000000001746,"open_at_last_observed":false,"latch":true},"delta_vs_legacy":0.0},
+      {"sample":"w3","variant":"2_changes_spread_cap_1_00","legacy":{"entries":4,"profit":1,"loss":3,"gross_total":-5.200000000002547,"open_at_interior":false,"latch":true},"managed":{"entries":4,"profit":1,"loss":3,"gross_total":-5.200000000002547,"open_at_last_observed":false,"latch":true},"delta_vs_legacy":0.0},
+      {"sample":"w4","variant":"original_3_changes","legacy":{"entries":6,"profit":1,"loss":4,"gross_total":-7.140000000000327,"open_at_interior":true,"latch":false},"managed":{"entries":6,"profit":1,"loss":4,"gross_total":-7.260000000000218,"open_at_last_observed":true,"latch":false},"delta_vs_legacy":-0.11999999999989086},
+      {"sample":"w4","variant":"2_changes_spread_cap_1_00","legacy":{"entries":3,"profit":0,"loss":3,"gross_total":-6.3199999999987995,"open_at_interior":false,"latch":true},"managed":{"entries":3,"profit":0,"loss":3,"gross_total":-6.3199999999987995,"open_at_last_observed":false,"latch":true},"delta_vs_legacy":0.0},
+      {"sample":"w5","variant":"original_3_changes","legacy":{"entries":4,"profit":1,"loss":3,"gross_total":-4.299999999999272,"open_at_interior":false,"latch":true},"managed":{"entries":4,"profit":1,"loss":3,"gross_total":-4.299999999999272,"open_at_last_observed":false,"latch":true},"delta_vs_legacy":0.0},
+      {"sample":"w5","variant":"2_changes_spread_cap_1_00","legacy":{"entries":5,"profit":2,"loss":2,"gross_total":-1.0199999999986176,"open_at_interior":true,"latch":false},"managed":{"entries":5,"profit":2,"loss":3,"gross_total":-2.099999999998545,"open_at_last_observed":false,"latch":false},"delta_vs_legacy":-1.0799999999999272}
+    ]
+  },
+  "raw_data_committed": false,
+  "net_pnl": null,
+  "profitability_proven": false,
+  "note": "Corrected final-minute position management only marks/exits existing position in final partial minute; no new entry signals. Open marks are not realized profit. Not profitability proof."
+}
