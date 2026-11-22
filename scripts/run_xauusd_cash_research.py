@@ -58,6 +58,7 @@ def main():
     p.add_argument('raw_ticks', type=Path)
     p.add_argument('output_dir', type=Path)
     p.add_argument('--symbol', default='XAUUSD_i')
+    p.add_argument('--economics', type=Path, help='Existing owner-only symbol-economics.json; ZERO network calls')
     a = p.parse_args()
     a.output_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
     report = {'schema': 'xauusd-cash-research-job/v1', 'execution_authorized': False,
@@ -72,16 +73,27 @@ def main():
         rows = records(McpHttpClient.structured_content(result), 'ticks', 'quotes', 'history', 'data')
         replay_signals(rows)  # Validate existing ticks BEFORE any metadata request.
         report['input_sha256'] = hashlib.sha256(raw).hexdigest()
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            load_dotenv()
-            cfg = Config.from_env()
-            if cfg.backend != 'native':
-                raise ValueError('Native backend required')
-            client = McpHttpClient(cfg.mcp_url, cfg.mcp_token, timeout=min(30, cfg.timeout))
-            client.connect()
-            report['metadata_tool_calls'] = 'at_most_one_attempt'
-            metadata = read_metadata_once(client, a.symbol)
-            report['metadata_tool_calls'] = 1
+        if a.economics:
+            if not 0 < a.economics.stat().st_size <= 100_000:
+                raise ValueError('Existing economics file size invalid')
+            metadata_bytes = a.economics.read_bytes()
+            metadata = json.loads(metadata_bytes)
+            if not isinstance(metadata, dict) or set(metadata) != set(ALIASES):
+                raise ValueError('Use original symbol-economics.json, not a report or invented defaults')
+            report['economics_source'] = 'existing_local_reported_symbol_snapshot'
+            report['economics_sha256'] = hashlib.sha256(metadata_bytes).hexdigest()
+            report['economics_symbol_binding_independently_verified'] = False
+        else:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                load_dotenv()
+                cfg = Config.from_env()
+                if cfg.backend != 'native':
+                    raise ValueError('Native backend required')
+                client = McpHttpClient(cfg.mcp_url, cfg.mcp_token, timeout=min(30, cfg.timeout))
+                client.connect()
+                report['metadata_tool_calls'] = 'at_most_one_attempt'
+                metadata = read_metadata_once(client, a.symbol)
+                report['metadata_tool_calls'] = 1
         write_private(a.output_dir/'symbol-economics.json', metadata)
         # Report fixed field names only; never replace missing values by defaults.
         missing = [key for key in ALIASES if metadata.get(key) is None or metadata.get(key) == '']

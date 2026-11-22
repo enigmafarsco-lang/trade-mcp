@@ -101,3 +101,43 @@ def test_metadata_only_one_read_tool_with_no_account_or_orders():
             return {'structuredContent': {'symbols': [dict(metadata(), name='XAUUSD_i')]}}
     assert m.read_metadata_once(Client(), 'XAUUSD_i') == metadata()
     assert calls == [('get_marketwatch_symbols', {'symbol': 'XAUUSD_i', 'limit': 10, 'include_hidden': True})]
+
+
+@pytest.mark.parametrize('mode', ['cfd leverage', 'CFD LEVERAGE', ' cfd   leverage ',
+                                 'cfd_leverage', 'cfdleverage', 6, 6.0,
+                                 'SYMBOL_CALC_MODE_CFDLEVERAGE'])
+def test_broker_cfd_leverage_display_aliases_match_same_linear_model(mode):
+    info = metadata()
+    info['trade_calc_mode'] = mode
+    assert cash.economics(info) == 2
+
+
+def test_local_economics_job_cannot_connect_to_mt5(tmp_path, monkeypatch):
+    import json
+
+    path = Path(__file__).resolve().parents[1]/'scripts/run_xauusd_cash_research.py'
+    spec = importlib.util.spec_from_file_location('cash_local_job', path)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('Offline mode must not connect, load .env or request metadata')
+
+    monkeypatch.setattr(m, 'load_dotenv', forbidden)
+    monkeypatch.setattr(m, 'McpHttpClient', type('OfflineClient', (), {
+        'structured_content': staticmethod(lambda result: result['structuredContent']),
+        '__init__': forbidden}))
+    raw = tmp_path/'raw.json'
+    raw.write_text(json.dumps({'structuredContent': {'ticks': ticks()}}))
+    meta = tmp_path/'symbol-economics.json'
+    info = metadata()
+    info['trade_calc_mode'] = 'cfd leverage'
+    meta.write_text(json.dumps(info))
+    out = tmp_path/'output'
+    monkeypatch.setattr(m.sys, 'argv', ['job', str(raw), str(out), '--economics', str(meta)])
+    assert m.main() == 0
+    report = json.loads((out/'summary.json').read_text())
+    assert report['metadata_tool_calls'] == 0
+    assert report['status'] == 'gross_scenario_executed_net_costs_unknown'
+    assert report['scenario']['net_pnl'] is None
+    assert report['scenario']['execution_authorized'] is False

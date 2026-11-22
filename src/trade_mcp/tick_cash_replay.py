@@ -24,7 +24,7 @@ def economics(info):
         raise ValueError('Invalid profit calculation mode')
     if isinstance(raw_mode, float) and math.isfinite(raw_mode) and raw_mode.is_integer():
         raw_mode = int(raw_mode)
-    mode = str(raw_mode).lower().removeprefix('symbol_calc_mode_')
+    mode = '_'.join(str(raw_mode).strip().lower().split()).removeprefix('symbol_calc_mode_')
     if mode not in LINEAR_MODES:
         raise ValueError('Unsupported profit calculation mode; no invented PnL formula')
     values = {}
