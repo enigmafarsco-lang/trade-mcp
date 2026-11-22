@@ -1,7 +1,7 @@
 """Research-only next-quote cash-exit scenario. Not broker execution validation."""
 import math
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .tick_momentum import TickMomentum
 from .tick_replay import replay_signals
@@ -45,15 +45,20 @@ def economics(info):
 
 
 def replay_cash_scenario(rows, info, *, consecutive_changes=3, max_spread_cost_usd=None,
-                         manage_final_boundary=True):
+                         manage_final_boundary=True, m1_context='none'):
     """Compare offline hypotheses only; final-minute position management is default.
 
-    No signals or new positions are generated in the final partial minute.
-    Use ``manage_final_boundary=False`` only to reproduce a published legacy
-    research result. Neither mode changes live trading or broker protection.
+    Optional M1 context modes use only already-observed ticks from the adjacent
+    previous interior minute. They never change live trading or broker protection.
+    No signals or entries are generated in the final partial minute. Use
+    ``manage_final_boundary=False`` only to reproduce a published legacy result.
     """
     if type(manage_final_boundary) is not bool:
         raise ValueError('Final-boundary mode must be boolean')
+    if m1_context not in ('none', 'prior_interior_available', 'prior_interior_aligned'):
+        raise ValueError('Invalid offline M1 context')
+    if m1_context != 'none' and not manage_final_boundary:
+        raise ValueError('M1 context research requires final-boundary management')
     if type(consecutive_changes) is not int or consecutive_changes not in (2, 3):
         raise ValueError('Offline scenario requires two or three consecutive quote changes')
     if (max_spread_cost_usd is not None
@@ -73,6 +78,12 @@ def replay_cash_scenario(rows, info, *, consecutive_changes=3, max_spread_cost_u
     equity = peak = drawdown = 0.0
     unrealized = None
     boundary_ticks = boundary_position_ticks = 0
+    previous_available = False
+    previous_direction = 0
+    interior_quote_count = 0
+    last_interior_bid = None
+    eligible_context_minutes = directional_context_minutes = 0
+    context_directions, context_signals = Counter(), Counter()
 
     def pnl(pos, bid, ask):
         # Buy pays ask, liquidates at bid. Sell receives bid, covers at ask.
@@ -123,11 +134,34 @@ def replay_cash_scenario(rows, info, *, consecutive_changes=3, max_spread_cost_u
             continue
         bid, ask = float(row['bid']), float(row['ask'])
         if start != minute:
+            if m1_context != 'none':
+                # Only a completed adjacent interior minute with at least two
+                # observed quotes may supply context. Its true open and full
+                # tick coverage are unknown; the first boundary minute is not used.
+                previous_available = (minute is not None and start-minute == timedelta(minutes=1)
+                                      and interior_quote_count >= 2)
+                previous_direction = 0
+                if previous_available:
+                    previous_direction = 1 if last_interior_bid > opened else -1 if last_interior_bid < opened else 0
+                    eligible_context_minutes += 1
+                    directional_context_minutes += int(previous_direction != 0)
+                    context_directions[previous_direction] += 1
+                interior_quote_count = 0
             minute, opened = start, bid
+        if m1_context != 'none':
+            interior_quote_count += 1
+            last_interior_bid = bid
         t = (dt-first).total_seconds()
         bar = (start-first).total_seconds()
         signal = strategy.observe({'time_msc': t*1000, 'bid': bid, 'ask': ask},
                                   {'time': bar, 'time_utc': bar, 'open': opened}, now=t)
+        if m1_context != 'none' and signal['action'] in ('buy', 'sell'):
+            if previous_available:
+                context_signals['eligible'] += 1
+                if previous_direction == (1 if signal['action'] == 'buy' else -1):
+                    context_signals['aligned'] += 1
+            else:
+                context_signals['previous_unavailable'] += 1
         # Fill only on a subsequent observed quote, at that quote's opposite side.
         if pending:
             if start == pending['minute'] and 0 < t-pending['time'] <= 2 and not latched:
@@ -146,6 +180,11 @@ def replay_cash_scenario(rows, info, *, consecutive_changes=3, max_spread_cost_u
         if signal['action'] in ('buy', 'sell'):
             if latched:
                 counts['signals_blocked_by_simulated_loss_latch'] += 1
+            elif m1_context != 'none' and not previous_available:
+                counts['signals_blocked_by_missing_previous_interior_minute'] += 1
+            elif (m1_context == 'prior_interior_aligned'
+                  and previous_direction != (1 if signal['action'] == 'buy' else -1)):
+                counts['signals_blocked_by_previous_interior_direction'] += 1
             elif not spread_allowed(bid, ask):
                 counts['signals_blocked_by_spread'] += 1
             else:
@@ -175,10 +214,26 @@ def replay_cash_scenario(rows, info, *, consecutive_changes=3, max_spread_cost_u
                             'No account equity/margin or 0.5 percent risk sizing modeled',
                             'No forced close at sample end; mark is last replayed quote',
                             'UTC/feed completeness and true minute open remain unverified']}
-    if consecutive_changes != 3 or max_spread_cost_usd is not None:
+    if consecutive_changes != 3 or max_spread_cost_usd is not None or m1_context != 'none':
         report['research_variant'] = {'consecutive_changes': consecutive_changes,
                                       'max_spread_cost_usd': max_spread_cost_usd,
                                       'spread_checked_at_signal_and_next_quote': max_spread_cost_usd is not None}
+        if m1_context != 'none':
+            report['research_variant'].update({
+                'm1_entry_context': m1_context,
+                'previous_minute_basis': 'adjacent_interior_first_and_last_observed_bid_at_least_two_quotes',
+                'eligible_current_minute_buckets': eligible_context_minutes,
+                'nonflat_previous_interior_minute_buckets': directional_context_minutes,
+                'previous_observed_bid_directions': {
+                    'up': context_directions[1], 'down': context_directions[-1], 'flat': context_directions[0],
+                },
+                'raw_signals_before_position_latch_spread_or_context_filters': {
+                    'previous_unavailable': context_signals['previous_unavailable'],
+                    'previous_available': context_signals['eligible'],
+                    'previous_available_and_direction_aligned': context_signals['aligned'],
+                },
+                'signal_replay_counts_before_entry_context_filter': True,
+            })
     if manage_final_boundary:
         report['final_boundary_management'] = {
             'scope': 'existing_hypothetical_position_only_no_new_signals_or_entries',

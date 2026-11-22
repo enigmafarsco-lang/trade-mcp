@@ -20,6 +20,8 @@ independent short samples. Other parameter variants in earlier reports have
 not been corrected by that comparison. A later [aggregate-only review](../reports/research/xauusd-saved-summary-inference.md)
 infers unchanged corrected gross marks for variants already flat at the last
 interior quote; it does not replay ticks or infer outcomes for open positions.
+A separately prepared [M1 previous-direction hypothesis](OPENCODE-XAUUSD-M1-PREVIOUS-DIRECTION.md)
+has not produced a real-archive result in this environment and changes no live strategy.
 
 ## Research default and compatibility
 
