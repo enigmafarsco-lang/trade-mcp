@@ -112,6 +112,74 @@ def test_broker_cfd_leverage_display_aliases_match_same_linear_model(mode):
     assert cash.economics(info) == 2
 
 
+def test_explicit_baseline_options_preserve_original_scenario():
+    rows = ticks()
+    for index, row in enumerate(rows):
+        row['bid'] = 100 + index*.01
+        row['ask'] = row['bid'] + .1
+    original = cash.replay_cash_scenario(rows, metadata())
+    explicit = cash.replay_cash_scenario(rows, metadata(), consecutive_changes=3,
+                                         max_spread_cost_usd=None)
+    assert explicit == original
+    assert 'research_variant' not in original
+
+
+def test_offline_spread_filter_blocks_signals_without_resetting_actual_latch(monkeypatch):
+    class AlwaysBuy:
+        def __init__(self, **kwargs):
+            pass
+
+        def observe(self, *args, **kwargs):
+            return {'action': 'buy'}
+    monkeypatch.setattr(cash, 'TickMomentum', AlwaysBuy)
+    rows = ticks()
+    for row in rows:
+        row['ask'] = 102
+    report = cash.replay_cash_scenario(rows, metadata(), max_spread_cost_usd=1)
+    assert report['counts']['signals_blocked_by_spread'] > 0
+    assert report['counts'].get('simulated_entries', 0) == 0
+    assert report['simulated_three_consecutive_loss_latch'] is False
+    assert report['execution_authorized'] is False
+    assert report['net_pnl'] is None
+
+
+def test_offline_spread_filter_rechecks_next_quote_before_hypothetical_fill(monkeypatch):
+    first_buy(monkeypatch)
+    rows = ticks()
+    rows[61]['ask'] = 101  # Wide on next quote only, not on the signal quote.
+    report = cash.replay_cash_scenario(rows, metadata(), max_spread_cost_usd=1)
+    assert report['counts']['pending_entries_blocked_by_spread'] == 1
+    assert report['counts'].get('simulated_entries', 0) == 0
+    assert report['position_open_at_sample_end'] is False
+
+
+def test_offline_two_changes_is_distinct_from_original_three():
+    rows = ticks()
+    for index, row in enumerate(rows):
+        row['bid'] = 100 + index*.01
+        row['ask'] = row['bid'] + .1
+    baseline = cash.replay_cash_scenario(rows, metadata())
+    alternate = cash.replay_cash_scenario(rows, metadata(), consecutive_changes=2,
+                                          max_spread_cost_usd=1)
+    assert alternate['research_variant']['consecutive_changes'] == 2
+    assert alternate['research_variant']['spread_checked_at_signal_and_next_quote'] is True
+    assert (alternate['signal_replay']['signal_counts']['buy']
+            > baseline['signal_replay']['signal_counts']['buy'])
+    assert alternate['thresholds_gross_usd'] == baseline['thresholds_gross_usd'] == {'loss': -2, 'profit': 2}
+
+
+@pytest.mark.parametrize('cap', [True, -1, float('nan'), float('inf'), '1'])
+def test_offline_filter_fails_closed_on_invalid_cap(cap):
+    with pytest.raises(ValueError):
+        cash.replay_cash_scenario(ticks(), metadata(), max_spread_cost_usd=cap)
+
+
+@pytest.mark.parametrize('n', [True, 0, 1, 4, 2.0])
+def test_offline_variants_reject_unsupported_consecutive_changes(n):
+    with pytest.raises(ValueError):
+        cash.replay_cash_scenario(ticks(), metadata(), consecutive_changes=n)
+
+
 def test_local_economics_job_cannot_connect_to_mt5(tmp_path, monkeypatch):
     import json
 

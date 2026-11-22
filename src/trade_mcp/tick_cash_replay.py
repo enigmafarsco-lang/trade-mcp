@@ -44,12 +44,24 @@ def economics(info):
     return values['trade_contract_size']*volume
 
 
-def replay_cash_scenario(rows, info):
+def replay_cash_scenario(rows, info, *, consecutive_changes=3, max_spread_cost_usd=None):
+    """Compare offline hypotheses only; defaults reproduce the original scenario.
+
+    An optional cap checks the immediate bid/ask spread cost on both the signal
+    quote and the hypothetical next fill quote. It never changes live trading.
+    """
+    if type(consecutive_changes) is not int or consecutive_changes not in (2, 3):
+        raise ValueError('Offline scenario requires two or three consecutive quote changes')
+    if (max_spread_cost_usd is not None
+            and (isinstance(max_spread_cost_usd, bool)
+                 or not isinstance(max_spread_cost_usd, (int, float))
+                 or not math.isfinite(max_spread_cost_usd) or max_spread_cost_usd < 0)):
+        raise ValueError('Invalid offline spread cap')
     dollars_per_price = economics(info)
-    signal_report = replay_signals(rows)  # Strict original sample validation.
+    signal_report = replay_signals(rows, consecutive=consecutive_changes)
     first = datetime.fromisoformat(rows[0]['time_ms']).replace(second=0, microsecond=0)
     last = datetime.fromisoformat(rows[-1]['time_ms']).replace(second=0, microsecond=0)
-    strategy = TickMomentum(consecutive=3)
+    strategy = TickMomentum(consecutive=consecutive_changes)
     opened = minute = position = pending = None
     streak = 0
     latched = False
@@ -61,6 +73,10 @@ def replay_cash_scenario(rows, info):
         # Buy pays ask, liquidates at bid. Sell receives bid, covers at ask.
         mark = bid if pos['side'] == 'buy' else ask
         return (mark-pos['entry'])*dollars_per_price*(1 if pos['side'] == 'buy' else -1)
+
+    def spread_allowed(bid, ask):
+        return (max_spread_cost_usd is None
+                or (ask-bid)*dollars_per_price <= max_spread_cost_usd+1e-12)
 
     for row in rows:
         dt = datetime.fromisoformat(row['time_ms'])
@@ -77,8 +93,11 @@ def replay_cash_scenario(rows, info):
         # Fill only on a subsequent observed quote, at that quote's opposite side.
         if pending:
             if start == pending['minute'] and 0 < t-pending['time'] <= 2 and not latched:
-                position = {'side': pending['side'], 'entry': ask if pending['side'] == 'buy' else bid}
-                counts['simulated_entries'] += 1
+                if spread_allowed(bid, ask):
+                    position = {'side': pending['side'], 'entry': ask if pending['side'] == 'buy' else bid}
+                    counts['simulated_entries'] += 1
+                else:
+                    counts['pending_entries_blocked_by_spread'] += 1
             else:
                 counts['expired_pending_entries'] += 1
             pending = None
@@ -99,9 +118,11 @@ def replay_cash_scenario(rows, info):
         if signal['action'] in ('buy', 'sell'):
             if latched:
                 counts['signals_blocked_by_simulated_loss_latch'] += 1
+            elif not spread_allowed(bid, ask):
+                counts['signals_blocked_by_spread'] += 1
             else:
                 pending = {'side': signal['action'], 'minute': start, 'time': t}
-    return {'schema': 'xauusd-next-quote-cash-scenario/v1',
+    report = {'schema': 'xauusd-next-quote-cash-scenario/v1',
             'signal_replay': signal_report, 'model': 'linear_USD_profit_contract_size_times_0.02_lot',
             'thresholds_gross_usd': {'loss': -2, 'profit': 2}, 'counts': dict(counts),
             'closed_scenarios': len(closes), 'gross_realized_usd_model': sum(closes),
@@ -125,3 +146,8 @@ def replay_cash_scenario(rows, info):
                             'No account equity/margin or 0.5 percent risk sizing modeled',
                             'No forced close at sample end; mark is last replayed quote',
                             'UTC/feed completeness and true minute open remain unverified']}
+    if consecutive_changes != 3 or max_spread_cost_usd is not None:
+        report['research_variant'] = {'consecutive_changes': consecutive_changes,
+                                      'max_spread_cost_usd': max_spread_cost_usd,
+                                      'spread_checked_at_signal_and_next_quote': max_spread_cost_usd is not None}
+    return report
