@@ -6,6 +6,14 @@ sandbox. Do the work yourself; do not ask the user to run individual tests.
 Record measured outcomes even when a check is blocked or fails. A weekday is not
 evidence that the broker's gold session is open.
 
+For separate OpenCode configuration troubleshooting, run
+`python3 -B scripts/inspect_opencode_mt5.py` from the project directory. It reads
+candidate project/ancestor, global, managed configuration files and the project
+`.env`, but prints only fixed categories, not credentials, values, URLs or
+paths. It neither launches OpenCode nor contacts MT5. Custom config paths or
+inline config are only reported as present; they are not read. This is not the
+resolved configuration of an existing process and does not prove a connection.
+
 ## Scope and hard boundaries
 
 - Work in `/media/joshua/SATA500/Trade/trade-mcp` on the existing branch
@@ -90,11 +98,17 @@ Its stdout is status/count categories only; `"$OUT"/report-input.json` and all
 raw native responses, advisory inputs/outputs, diagnostics and call counts are
 private local evidence. The script does **not** publish or push anything. A
 successful process exit means it completed logging, not that every check passed.
-Its handshake and `connected` flag do not cryptographically establish that the
-endpoint is the real terminal rather than a mock. Independently verify that the
-configured loopback endpoint is the running MT5 terminal before publishing any
-MT5-input passes. If the source cannot be verified, mark terminal and all
-broker-dependent results blocked, not live; retain the raw evidence privately.
+The terminal check accepts an explicit connection flag or the observed
+`terminal.connection.state="synchronized"` shape. It treats contradictory,
+missing, or unrecognized connection evidence as unknown; MQL5 Community
+connectivity and the last connection-loss timestamp are not broker flags.
+This is the endpoint's self-reported snapshot. Neither its handshake nor its
+reported state cryptographically establishes that the endpoint is the real
+terminal rather than a mock, identifies the account, proves quote freshness,
+or verifies a running OpenCode session. Independently verify that the configured
+loopback endpoint is the running MT5 terminal before publishing any MT5-input
+passes. If the source cannot be verified, mark terminal and all broker-dependent
+results blocked, not live; retain the raw evidence privately.
 If it aborts, retain its partial evidence, do not retry, and use only results
 actually verifiable from that attempt; record remaining checks blocked/not_run.
 

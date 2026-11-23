@@ -218,6 +218,34 @@ def test_unchanged_quotes_and_naive_times_never_prove_freshness_or_market_sessio
     assert report['checks']['daytrade_mt5_session'] == 'blocked'
 
 
+@pytest.mark.parametrize(('payload', 'expected', 'reason'), [
+    ({'ok': True, 'terminal': {'connection': {'state': 'synchronized',
+                                               'last_connection_lost_at': None},
+                               'mql5_community_connected': True}}, True, None),
+    ({'terminal': {'connected': True}}, True, None),
+    ({'terminal': {'connection': {'state': 'disconnected'}}}, False, 'terminal_disconnected'),
+    ({'terminal': {'connection': {'state': 'synchronized'}, 'connected': False}}, False, 'invalid_data'),
+    ({'terminal': {'connection': {'state': 'unrecognized'}}}, False, 'invalid_data'),
+    ({'terminal': {'mql5_community_connected': True,
+                   'connection': {'last_connection_lost_at': None}}}, False, 'invalid_data'),
+])
+def test_connect_reads_native_connection_state_without_extra_calls(tmp_path, payload, expected, reason):
+    class TerminalClient(FakeClient):
+        def call_tool(self, name, args):
+            assert name == 'terminal_get_info' and args == {}
+            self.calls.append((name, args))
+            return {'isError': False, 'content': [{'type': 'text', 'text': json.dumps(payload)}]}
+
+    client = TerminalClient()
+    runner = probe.Runner(tmp_path, 'a' * 40, 'XAUUSD_i')
+    cfg = probe.Config(backend='native', mcp_url='http://127.0.0.1:22346/mcp', mcp_token='synthetic-token')
+    assert runner.connect(cfg, lambda *args, **kwargs: client) is expected
+    assert runner.report['checks']['daytrade_mt5_terminal'] == ('pass' if expected else 'blocked')
+    assert runner.report['reasons'].get('daytrade_mt5_terminal') == reason
+    assert client.calls == [('terminal_get_info', {})]
+    assert runner.calls == {**{name: 0 for name in probe.RAW_LIMITS}, 'terminal_get_info': 1}
+
+
 def test_native_application_error_is_not_success_or_exposed(tmp_path):
     client = FakeClient(application_error=True)
     report, _ = run(tmp_path, client)

@@ -134,6 +134,13 @@ unset K
 `src/trade_mcp/bridge/native.py` همان قرارداد `Bridge.request(cmd, **params)` را روی
 ابزارهای MCP ترمینال پیاده می‌کند؛ نه اکسپرتی لازم است، نه کامپایلی، نه فایل اکسپورت‌شده:
 
+`ea_connected` در وضعیت این بک‌اند فقط یعنی درخواست MCP پاسخ داده است، نه اینکه
+اکسپرت یا بروکر مستقل تأیید شده باشد. `terminal_connected` و `terminal_info.connected`
+وضعیت گزارش‌شدهٔ ترمینال را می‌خوانند: مقدار صریح یا حالت مشاهده‌شدهٔ
+`terminal.connection.state="synchronized"`. مقدار ناشناخته، غایب یا متناقض `null`
+می‌ماند؛ `mql5_community_connected` نشانهٔ اتصال بروکر نیست. این وضعیت یک snapshot
+است و هویت endpoint، حساب، تازگی قیمت یا اتصال OpenCode را ثابت نمی‌کند.
+
 | دستور داخلی | ابزار MCP |
 |---|---|
 | `ping` | `get_time_information` |

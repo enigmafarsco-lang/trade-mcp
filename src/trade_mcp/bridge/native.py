@@ -10,9 +10,9 @@ unchanged - and without compiling anything in MetaEditor.
 Design notes
 ------------
 * The tool *input* schemas are documented, but their *output* shapes are not
-  published, so every field is read through :func:`find`, which looks a key up
-  recursively and ignoring case/underscores.  Anything missing falls back to a
-  sane default instead of raising.
+  published. Most fields use the tolerant :func:`find` lookup. Terminal
+  connectivity is instead read explicitly and remains unknown when missing,
+  unrecognized or contradictory; a reachable MCP server is not a broker proof.
 * Tickets are strings on the MCP side and integers in our contract, volumes are
   floats on both sides.  Conversions happen here, in one place.
 * ``trade_close`` cannot partially close: the native server only offers
@@ -64,6 +64,55 @@ def find(payload: Any, *names: str, depth: int = 6) -> Any:
                 if isinstance(value, (dict, list)):
                     queue.append((value, level + 1))
     return None
+
+
+def terminal_connection(payload: Any) -> bool | None:
+    """Interpret explicit terminal connection evidence, or return unknown.
+
+    This is a self-reported snapshot, not proof of endpoint identity, the
+    selected account, quote freshness, or a currently running OpenCode session.
+    Only known direct flags and the observed ``terminal.connection.state``
+    shape are considered; unrelated community connectivity is never evidence
+    of a broker connection. Conflicting or unrecognized values stay unknown.
+    """
+    if not isinstance(payload, dict) or payload.get("ok") is False or payload.get("error"):
+        return None
+
+    signals: list[bool | None] = []
+
+    def flag(value: Any) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        if type(value) is int and value in (0, 1):
+            return bool(value)
+        if isinstance(value, str) and value.strip().lower() in {"true", "false", "1", "0"}:
+            return value.strip().lower() in {"true", "1"}
+        return None
+
+    def collect(obj: dict[str, Any]) -> None:
+        for key, value in obj.items():
+            if _key(key) in {"connected", "connectionestablished"}:
+                signals.append(flag(value))
+
+    collect(payload)
+    if "terminal" in payload:
+        terminal = payload["terminal"]
+        if not isinstance(terminal, dict):
+            return None
+        collect(terminal)
+        if "connection" in terminal:
+            connection = terminal["connection"]
+            if not isinstance(connection, dict):
+                return None
+            collect(connection)
+            if "state" in connection:
+                state = connection["state"]
+                state = state.strip().lower() if isinstance(state, str) else None
+                signals.append({"synchronized": True, "disconnected": False}.get(state))
+
+    if not signals or None in signals or len(set(signals)) != 1:
+        return None
+    return signals[0]
 
 
 def as_float(value: Any, default: float = 0.0) -> float:
@@ -359,7 +408,7 @@ class NativeBridge:
             "build": as_int(find(raw, "build"), 0),
             "company": as_text(find(raw, "company", "name")),
             "data_path": as_text(find(raw, "data_path", "data_folder")),
-            "terminal_connected": as_bool(find(raw, "connected", "connection_established"), True),
+            "terminal_connected": terminal_connection(raw),
             "trade_allowed": as_bool(find(raw, "mcp_trade_allowed", "trade_allowed"), True),
             "mcp_trade_allowed": (as_bool(find(raw, "mcp_trade_allowed"))
                                   if find(raw, "mcp_trade_allowed") is not None else None),
@@ -403,7 +452,7 @@ class NativeBridge:
         raw = self.call("terminal_get_info")
         self.last_raw["terminal_get_info"] = raw
         return {
-            "connected": as_bool(find(raw, "connected", "connection"), True),
+            "connected": terminal_connection(raw),
             "trade_allowed": as_bool(find(raw, "mcp_trade_allowed", "trade_allowed"), True),
             "mcp_trade_allowed": (as_bool(find(raw, "mcp_trade_allowed"))
                                   if find(raw, "mcp_trade_allowed") is not None else None),

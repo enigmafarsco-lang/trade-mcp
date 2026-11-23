@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from trade_mcp.bridge.client import MT5
-from trade_mcp.bridge.native import NativeBridge, find, records, to_epoch
+from trade_mcp.bridge.native import NativeBridge, find, records, terminal_connection, to_epoch
 
 TOKEN = "terminal-key"
 SESSION = "sess-native-1"
@@ -407,6 +407,55 @@ def test_status_explains_an_unreachable_server():
     status = native.status()
     assert status["ea_connected"] is False
     assert "failed" in status["reason"]
+
+
+@pytest.mark.parametrize(('payload', 'expected'), [
+    ({'ok': True, 'terminal': {'connection': {'state': 'synchronized',
+                                               'last_connection_lost_at': None},
+                               'mql5_community_connected': True}}, True),
+    ({'terminal': {'connection': {'state': ' SYNCHRONIZED '}}}, True),
+    ({'terminal': {'connection': {'state': 'disconnected'},
+                   'mql5_community_connected': True}}, False),
+    ({'terminal': {'connected': True}}, True),
+    ({'terminal': {'connection_established': 'false'}}, False),
+    ({'connected': 1, 'terminal': {'connection': {'state': 'synchronized'}}}, True),
+    ({'connected': False, 'terminal': {'connection': {'state': 'synchronized'}}}, None),
+    ({'terminal': {'connected': True, 'connection': {'state': 'disconnected'}}}, None),
+    ({'terminal': {'connected': True, 'connection_established': False}}, None),
+    ({'terminal': {'connected': True, 'connection': {'state': 'unknown'}}}, None),
+    ({'terminal': {'connected': 'unknown', 'connection': {'state': 'synchronized'}}}, None),
+    ({'terminal': {'connection': {'state': 'not synchronized'}}}, None),
+    ({'terminal': {'connection': {'state': 'authorized'}}}, None),
+    ({'terminal': {'connection': {'state': None}}}, None),
+    ({'terminal': {'connection': None, 'connected': True}}, None),
+    ({'terminal': {'mql5_community_connected': True,
+                   'connection': {'last_connection_lost_at': None}}}, None),
+    ({'terminal': {'connected': 2}}, None),
+    ({'terminal': {'connected': 1.0}}, None),
+    ({'terminal': {'connected': None}}, None),
+    ({'ok': False, 'terminal': {'connection': {'state': 'synchronized'}}}, None),
+    ({'error': 'failed', 'terminal': {'connection': {'state': 'synchronized'}}}, None),
+    ({}, None),
+    ([], None),
+])
+def test_terminal_connection_requires_known_unambiguous_evidence(payload, expected):
+    assert terminal_connection(payload) is expected
+
+
+@pytest.mark.parametrize(('payload', 'expected'), [
+    ({'terminal': {'connection': {'state': 'synchronized'}}}, True),
+    ({'terminal': {'connection': {'state': 'disconnected'}}}, False),
+    ({'terminal': {'mql5_community_connected': True}}, None),
+    ({'terminal': {'connected': False, 'connection': {'state': 'synchronized'}}}, None),
+])
+def test_status_and_terminal_info_share_the_reported_connection_state(monkeypatch, payload, expected):
+    native = NativeBridge('http://unused', 'synthetic-token')
+    monkeypatch.setattr(native, 'call', lambda *args: payload)
+    status = native.status()
+    # This legacy flag means the MCP call returned, not that an EA or broker is connected.
+    assert status['ea_connected'] is True
+    assert status['ea_hello']['terminal_connected'] is expected
+    assert native.request('terminal_info')['connected'] is expected
 
 
 def test_unknown_command_is_explicit(stub):

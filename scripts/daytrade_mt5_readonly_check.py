@@ -40,7 +40,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from publish_runtime_report import sanitize  # noqa: E402
 
-from trade_mcp.bridge.native import find, records, to_epoch  # noqa: E402
+from trade_mcp.bridge.native import find, records, terminal_connection, to_epoch  # noqa: E402
 from trade_mcp.config import Config, load_dotenv  # noqa: E402
 from trade_mcp.daytrade import m1_rows  # noqa: E402
 from trade_mcp.mcpclient import McpError, McpHttpClient  # noqa: E402
@@ -463,7 +463,7 @@ class Runner:
                 if len(matches) == 1:
                     self.tools[name] = matches[0]
             info = self.native("terminal_get_info", {}, "terminal")
-            connected = explicit_bool(find(info, "connected", "connection_established"))
+            connected = terminal_connection(info)
             if connected is not True:
                 raise Blocked("terminal_disconnected" if connected is False else "invalid_data")
             self.state("daytrade_mt5_terminal", "pass")
