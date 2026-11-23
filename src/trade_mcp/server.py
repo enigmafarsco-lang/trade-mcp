@@ -10,7 +10,7 @@ from collections.abc import Callable
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
-from pydantic import StrictFloat, StrictInt
+from pydantic import StrictBool, StrictFloat, StrictInt
 
 from . import analysis, execution
 from .app import get_app, get_app_config
@@ -645,7 +645,8 @@ def _daytrade_result(operation: str, payload: dict[str, Any]) -> dict[str, Any]:
     from .daytrade import run_request
 
     try:
-        cfg = get_app_config() if operation == "plan" and payload.get("sizing") is not None else None
+        needs_cfg = operation == "review" or (operation == "plan" and payload.get("sizing") is not None)
+        cfg = get_app_config() if needs_cfg else None
         return run_request(operation, payload, cfg)
     except (ValueError, TypeError, OverflowError) as exc:
         return {"ok": False, "error": "invalid_input", "message": str(exc),
@@ -738,6 +739,94 @@ def daytrade_check_alert(
     freshness, broker-side stop, fill, position change or order is implied.
     """
     return _daytrade_result("alerts", locals())
+
+
+@mcp.tool()
+@_safe
+def daytrade_scan(
+    markets: list[dict[str, Any]], mode: str = "patterns", side: str = "buy",
+    start_time: StrictInt | None = None, opening_range_bars: StrictInt = 5,
+    cutoff_time: StrictInt | None = None, min_tick_volume_ratio: StrictFloat | None = None,
+) -> dict[str, Any]:
+    """Offline multi-symbol M1 pattern or caller-defined range-breakout scan.
+
+    Each market has symbol and ohlcv. Final bars are excluded. The five upstream
+    daily patterns are adapted to M1 bars, not days. No freshness or trade approval.
+    """
+    return _daytrade_result("scan", locals())
+
+
+@mcp.tool()
+@_safe
+def daytrade_alert_rules(
+    rules: list[dict[str, Any]], quotes: dict[str, Any], now: StrictInt,
+    state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Evaluate multiple supplied rules once; return caller-owned once/rearm state.
+
+    Supports bid/ask above, below, stop, target, percentage moves and explicit
+    clock instants. No polling, NYSE calendar, notifications, execution or
+    freshness verification. Feed back state to the next manual evaluation.
+    """
+    return _daytrade_result("alert-rules", locals())
+
+
+@mcp.tool()
+@_safe
+def daytrade_review_limits(
+    side: str, entry: StrictFloat, stop: StrictFloat, target: StrictFloat,
+    sizing: dict[str, Any], limits: dict[str, Any],
+) -> dict[str, Any]:
+    """Review hypothetical MT5 sizing and supplied daily limits; not a risk gate.
+
+    Uses the same cost-aware sizing preview and active caps as daytrade_exit_plan.
+    Missing limits and costs remain unknown. No live account, broker or approval.
+    """
+    return _daytrade_result("review", locals())
+
+
+@mcp.tool()
+@_safe
+def daytrade_parse_news(
+    feeds: list[dict[str, Any]], watch: dict[str, Any], now: str,
+    hours: StrictInt = 48, seen_ids: list[str] | None = None,
+    show_all: StrictBool = False, market: str = "macro", moves: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Parse supplied RSS or US-stock SEC Atom; tag, deduplicate and track seen ids.
+
+    No URL, file access, fetching, scheduler or notifications. Caller supplies
+    timestamp and any price comparisons. SEC filings are not gold fundamentals.
+    """
+    return _daytrade_result("news", locals())
+
+
+@mcp.tool()
+@_safe
+def daytrade_stock_facts(
+    companyfacts: dict[str, Any], quarters: StrictInt = 6, as_of: str | None = None,
+) -> dict[str, Any]:
+    """Analyze supplied US-company SEC XBRL facts, not XAUUSD fundamentals.
+
+    Quarterly, margins, growth and trailing totals use the upstream formulas.
+    Optional as_of filters by filing date, not an exact intraday publication time.
+    Offline only; no latest-filings, source authenticity or freshness checks.
+    """
+    return _daytrade_result("stock-facts", locals())
+
+
+@mcp.tool()
+@_safe
+def daytrade_stock_disclosures(
+    kind: str, text: str, year: StrictInt | None = None, as_of: str | None = None,
+    members: list[str] | None = None, since: str | None = None,
+    seen_ids: list[str] | None = None, filed: str | None = None, new_only: StrictBool = False,
+) -> dict[str, Any]:
+    """Parse a supplied US House XML index or pre-extracted PTR report text.
+
+    Index requires year and as_of. It can filter member names and return seen ids.
+    No PDF conversion, network, scheduler or claims about gold CFD direction.
+    """
+    return _daytrade_result("stock-disclosures", locals())
 
 
 # ---------------------------------------------------------------------- prompts

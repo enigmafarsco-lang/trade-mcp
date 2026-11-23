@@ -385,10 +385,15 @@ def run_request(operation: str, payload: Any, cfg: Any = None) -> dict[str, Any]
     """Shared whitelisted dispatcher for the console and MCP adapters."""
     if not isinstance(payload, dict):
         raise ValueError("A JSON object is required")
+    from .daytrade_extra import evaluate_alerts, review_limits, scan_setups
     from .daytrade_sim import historical_replay, time_machine
+    from .daytrade_sources import parse_news, stock_disclosures, stock_facts
 
     handlers = {"entry": entry_signal, "plan": exit_plan, "history": historical_replay,
-                "time-machine": time_machine, "alerts": check_alert}
+                "time-machine": time_machine, "alerts": check_alert, "scan": scan_setups,
+                "alert-rules": evaluate_alerts, "review": review_limits,
+                "news": parse_news, "stock-facts": stock_facts,
+                "stock-disclosures": stock_disclosures}
     fields = {
         "entry": {"ohlcv", "side", "start_time", "setup", "opening_range_bars", "level",
                   "cutoff_time", "min_tick_volume_ratio"},
@@ -399,6 +404,14 @@ def run_request(operation: str, payload: Any, cfg: Any = None) -> dict[str, Any]
         "time-machine": {"sessions", "decision_time", "side", "entry", "stop", "target",
                          "entry_slot", "horizon_bars", "replays", "seed", "window"},
         "alerts": {"side", "stop", "target", "bid", "ask"},
+        "scan": {"markets", "mode", "side", "start_time", "opening_range_bars", "cutoff_time",
+                 "min_tick_volume_ratio"},
+        "alert-rules": {"rules", "quotes", "now", "state"},
+        "review": {"side", "entry", "stop", "target", "sizing", "limits"},
+        "news": {"feeds", "watch", "now", "hours", "seen_ids", "show_all", "market", "moves"},
+        "stock-facts": {"companyfacts", "quarters", "as_of"},
+        "stock-disclosures": {"kind", "text", "year", "as_of", "members", "since", "seen_ids",
+                              "filed", "new_only"},
     }
     required = {
         "entry": {"ohlcv", "side", "start_time"},
@@ -407,12 +420,18 @@ def run_request(operation: str, payload: Any, cfg: Any = None) -> dict[str, Any]
         "time-machine": {"sessions", "decision_time", "side", "entry", "stop", "target",
                          "entry_slot", "horizon_bars"},
         "alerts": {"side", "stop", "target", "bid", "ask"},
+        "scan": {"markets"},
+        "alert-rules": {"rules", "quotes", "now"},
+        "review": {"side", "entry", "stop", "target", "sizing", "limits"},
+        "news": {"feeds", "watch", "now"},
+        "stock-facts": {"companyfacts"},
+        "stock-disclosures": {"kind", "text"},
     }
     if operation not in handlers:
         raise ValueError("Unknown day-trader operation")
     if set(payload) - fields[operation] or required[operation] - set(payload):
         raise ValueError("Missing or unknown day-trader fields")
     arguments = dict(payload)
-    if operation == "plan":
+    if operation in ("plan", "review"):
         arguments["cfg"] = cfg
     return handlers[operation](**arguments)

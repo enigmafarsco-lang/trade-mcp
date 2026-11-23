@@ -1,0 +1,4 @@
+# Preserve the pinned upstream bytes on every platform; do not normalize EOLs.
+upstream/** -text
+# These two original symbol-list fixtures intentionally have CRLF line endings.
+upstream/tests/fixtures/trader-scanner/symdir/*.txt whitespace=cr-at-eol

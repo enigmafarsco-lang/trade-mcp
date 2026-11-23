@@ -426,7 +426,9 @@ class Handler(BaseHTTPRequestHandler):
         if origin and urlparse(origin).netloc != self.headers.get('Host'):
             return self._json({"ok": False, "error": "cross_origin_write_denied"}, 403)
         daytrade_paths = {"/api/daytrade/entry", "/api/daytrade/plan", "/api/daytrade/history",
-                          "/api/daytrade/time-machine", "/api/daytrade/alerts"}
+                          "/api/daytrade/time-machine", "/api/daytrade/alerts", "/api/daytrade/scan",
+                          "/api/daytrade/alert-rules", "/api/daytrade/review", "/api/daytrade/news",
+                          "/api/daytrade/stock-facts", "/api/daytrade/stock-disclosures"}
         if path in daytrade_paths:
             try:
                 length = int(self.headers.get("Content-Length") or 0)
@@ -439,7 +441,8 @@ class Handler(BaseHTTPRequestHandler):
             if path in daytrade_paths:
                 from .daytrade import run_request
                 operation = path.rsplit("/", 1)[-1]
-                cfg = self.state.cfg if operation == "plan" and payload.get("sizing") is not None else None
+                needs_cfg = operation == "review" or (operation == "plan" and payload.get("sizing") is not None)
+                cfg = self.state.cfg if needs_cfg else None
                 return self._json(run_request(operation, payload, cfg))
             if path == "/api/engines/broker":
                 from .engines.live import analyze_broker

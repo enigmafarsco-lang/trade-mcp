@@ -372,6 +372,82 @@ function dayPlanPayload(withSizing){
  }
  return p;
 }
+/* Explicit, visible-page-only quote monitoring; it never changes a position. */
+let dayMonitor=null,dayMonitorStarting=false,dayMonitorGeneration=0;
+function stopDayMonitor(message){
+ const wasActive=!!dayMonitor||dayMonitorStarting;
+ dayMonitorGeneration++;
+ if(dayMonitor){if(dayMonitor.timer)clearTimeout(dayMonitor.timer);if(dayMonitor.controller)dayMonitor.controller.abort();}
+ dayMonitor=null;dayMonitorStarting=false;
+ node('daytrade-monitor-start').disabled=false;node('daytrade-monitor-stop').disabled=true;
+ if(wasActive)node('daytrade-monitor-status').textContent=message||'پایش متوقف شد؛ هیچ سفارش یا تغییری در بروکر انجام نشد.';
+}
+async function pollDayMonitor(generation){
+ const mon=dayMonitor;if(!mon||generation!==dayMonitorGeneration)return;
+ if(document.hidden){stopDayMonitor('صفحه پنهان شد؛ پایش متوقف است و هشدار تضمین نمی‌شود.');return;}
+ const controller=new AbortController();mon.controller=controller;
+ const timeout=setTimeout(()=>controller.abort(),8000);
+ try{
+  const quoteResponse=await fetch('/api/quotes?'+new URLSearchParams({symbols:mon.symbol}),{signal:controller.signal});
+  const data=await quoteResponse.json();
+  if(generation!==dayMonitorGeneration)return;
+  const tick=data&&data.quotes&&data.quotes[mon.symbol];
+  if(!quoteResponse.ok||!data.ok||!tick)throw new Error('قیمت در دسترس نیست.');
+  const bid=Number(tick.bid),ask=Number(tick.ask);
+  if(!Number.isFinite(bid)||!Number.isFinite(ask)||bid<=0||ask<bid)throw new Error('Bid/Ask نامعتبر است.');
+  const check=await fetch('/api/daytrade/alert-rules',{method:'POST',headers:{'Content-Type':'application/json'},signal:controller.signal,
+   body:JSON.stringify({rules:mon.rules,quotes:{[mon.symbol]:{bid,ask}},now:Math.floor(Date.now()/1000),state:mon.state})});
+  const result=await check.json();
+  if(generation!==dayMonitorGeneration)return;
+  if(!check.ok||!result.ok)throw new Error(result.message||result.error||'بررسی هشدار ناموفق بود.');
+  mon.state=result.state;
+  for(const event of result.events||[]){
+   const line=`${new Date().toLocaleTimeString('fa-IR')} • ${mon.symbol} ${event.type}: ${event.quote_side} ${event.observed_price}`;
+   mon.events.unshift(line);mon.events=mon.events.slice(0,20);
+   if(typeof Notification!=='undefined'&&Notification.permission==='granted'){
+    try{new Notification('هشدار مشورتی Day Trader',{body:line+' — تازگی و پرشدن تأیید نشده است.'});}catch(_){}
+   }
+  }
+  node('daytrade-monitor-events').textContent=mon.events.join('\n');
+  node('daytrade-monitor-status').textContent=`پایش فعال: ${mon.symbol} / ${mon.side} • SL ${mon.stop} • TP ${mon.target} • Bid ${bid} / Ask ${ask}. تازگی بروکر تأیید نشده است.`;
+ }catch(e){
+  if(generation===dayMonitorGeneration)stopDayMonitor('پایش متوقف شد: '+((e&&e.message)||'ارتباط یا زمان پاسخ نامعتبر بود.')+' هشدار و سفارش تضمین نمی‌شوند.');
+  return;
+ }finally{clearTimeout(timeout);if(generation===dayMonitorGeneration&&dayMonitor)dayMonitor.controller=null;}
+ if(generation===dayMonitorGeneration&&dayMonitor)dayMonitor.timer=setTimeout(()=>{void pollDayMonitor(generation);},5000);
+}
+node('daytrade-monitor-start').onclick=async()=>{
+ if(dayMonitor||dayMonitorStarting||document.hidden)return;
+ const symbol=node('daytrade-monitor-symbol').value.trim();
+ if(!/^[\w.#+/!&() -]{1,64}$/.test(symbol)){node('daytrade-monitor-status').textContent='نماد دقیق بروکر معتبر نیست.';return;}
+ const generation=++dayMonitorGeneration;dayMonitorStarting=true;
+ node('daytrade-monitor-start').disabled=true;node('daytrade-monitor-stop').disabled=false;
+ node('daytrade-monitor-status').textContent='در حال آماده‌سازی طرح و شروع خواندن قیمت MT5…';
+ try{
+  const plan=await request('/api/daytrade/plan',dayPlanPayload(false));
+  if(generation!==dayMonitorGeneration||document.hidden)return;
+  if(!plan.ok)throw new Error(plan.message||plan.error||'طرح نامعتبر است.');
+  const rearm=!!node('daytrade-monitor-rearm').checked;
+  dayMonitor={symbol,side:plan.side,stop:plan.stop,target:plan.target,state:null,events:[],timer:null,controller:null,
+   rules:[{id:'stop',type:'stop',symbol,side:plan.side,price:plan.stop,rearm},
+          {id:'target',type:'target',symbol,side:plan.side,price:plan.target,rearm}]};
+  dayMonitorStarting=false;node('daytrade-monitor-events').textContent='';
+  await pollDayMonitor(generation);
+ }catch(e){if(generation===dayMonitorGeneration)stopDayMonitor('پایش شروع نشد: '+((e&&e.message)||'طرح نامعتبر است.'));}
+};
+node('daytrade-monitor-stop').onclick=()=>stopDayMonitor();
+node('daytrade-notifications').onclick=async()=>{
+ if(typeof Notification==='undefined'){node('daytrade-monitor-status').textContent='اعلان مرورگر در این محیط در دسترس نیست؛ نمایش صفحه جداست.';return;}
+ try{const permission=await Notification.requestPermission();
+  node('daytrade-monitor-status').textContent='اجازهٔ اعلان: '+permission+'؛ هشدار تنها هنگام باز بودن و پایش فعال قابل تلاش است.';
+ }catch(_){node('daytrade-monitor-status').textContent='درخواست اجازهٔ اعلان ناموفق بود.';}
+};
+for(const id of ['daytrade-side','daytrade-price','daytrade-stop-rule','daytrade-stop-value','daytrade-target-r',
+ 'daytrade-target-price','daytrade-tick-size','daytrade-high','daytrade-low','daytrade-atr','daytrade-monitor-symbol','daytrade-monitor-rearm'])
+ node(id).addEventListener('input',()=>stopDayMonitor('طرح یا نماد تغییر کرد؛ پایش متوقف شد.'));
+document.addEventListener('visibilitychange',()=>{if(document.hidden)stopDayMonitor('صفحه پنهان شد؛ پایش متوقف است.');});
+window.addEventListener('pagehide',()=>stopDayMonitor());
+
 async function dayRun(buttonId,resultId,task){
  const button=node(buttonId),out=node(resultId);button.disabled=true;out.textContent='در حال محاسبهٔ آفلاین…';
  try{const result=await task();out.textContent=JSON.stringify(result,null,2);}
@@ -379,6 +455,7 @@ async function dayRun(buttonId,resultId,task){
  finally{button.disabled=false;}
 }
 node('daytrade-sample').onclick=()=>{
+ stopDayMonitor('نمونهٔ جدید بارگذاری شد؛ پایش قبلی متوقف شد.');
  const base=Math.floor(1700000000/60)*60,round=x=>Math.round(x*1000)/1000,sessions=[];
  for(let day=0;day<20;day++){
   let p=2600+day*.2;const rows=[];
@@ -410,6 +487,7 @@ node('daytrade-sample').onclick=()=>{
  node('daytrade-entry-result').textContent='نمونهٔ ساختگی بارگذاری شد؛ ابتدا بررسی سیگنال را بزنید.';
 };
 node('daytrade-entry-run').onclick=()=>dayRun('daytrade-entry-run','daytrade-entry-result',async()=>{
+ stopDayMonitor('سیگنال دوباره محاسبه شد؛ پایش طرح قبلی متوقف شد.');
  for(const id of ['daytrade-price','daytrade-high','daytrade-low','daytrade-decision'])node(id).value='';
  node('daytrade-plan-result').textContent='';
  const setup=node('daytrade-setup').value;
@@ -477,6 +555,28 @@ node('daytrade-alert-run').onclick=()=>dayRun('daytrade-alert-run','daytrade-ale
  node('daytrade-plan-result').textContent=JSON.stringify(plan,null,2);
  return request('/api/daytrade/alerts',{side:plan.side,stop:plan.stop,target:plan.target,
   bid:dayNumber('daytrade-bid',true),ask:dayNumber('daytrade-ask',true)});
+});
+const dayExtraOperations=new Set(['scan','alert-rules','review','news','stock-facts','stock-disclosures']);
+node('daytrade-extra-example').onclick=()=>{
+ const kind=node('daytrade-extra-kind').value,base=Math.floor(1700000000/60)*60;
+ const rows=Array.from({length:32},(_,i)=>{const p=Math.round((100+i*.02)*100)/100;return [base+i*60,p,p+.1,p-.1,p,100];});
+ const spec={trade_tick_size:.01,trade_tick_value:1,volume_step:.01,volume_min:.01,volume_max:100,point:.01,trade_stops_level:0};
+ const samples={
+  scan:{markets:[{symbol:'XAUUSD',ohlcv:rows}],mode:'patterns'},
+  'alert-rules':{rules:[{id:'above',type:'above',symbol:'XAUUSD',price:101,quote_side:'bid',rearm:true}],quotes:{XAUUSD:{bid:101,ask:101.2}},now:1700000000},
+  review:{side:'buy',entry:100,stop:99,target:102,sizing:{spec,budget:10000,risk_percent:1,commission_per_lot:0,slippage_price:0},limits:{max_loss_per_trade:5,daily_risk_cap:20,risk_used_today:0,trades_today:0,max_trades_per_day:3,min_net_reward_risk:1}},
+  news:{market:'macro',now:'2024-01-02T12:00:00Z',watch:{XAUUSD:'gold'},feeds:[{kind:'rss',symbol:'XAUUSD',source:'نمونه ساختگی',xml:'<rss><channel><item><title>Fed inflation example</title><link>https://example.test/1</link><guid>1</guid><pubDate>Tue, 02 Jan 2024 11:00:00 GMT</pubDate></item></channel></rss>'}]},
+  'stock-facts':{companyfacts:{cik:123,entityName:'Synthetic Company',facts:{'us-gaap':{Revenues:{units:{USD:[{start:'2024-01-01',end:'2024-03-31',filed:'2024-05-01',val:1000000,form:'10-Q',fy:2024,fp:'Q1',accn:'example'}]}}}}},as_of:'2024-06-01'},
+  'stock-disclosures':{kind:'index',year:2024,as_of:'2024-06-01',members:['Example'],text:'<FinancialDisclosure><Member><First>Alex</First><Last>Example</Last><Year>2024</Year><DocID>123</DocID><FilingType>P</FilingType><FilingDate>05/01/2024</FilingDate></Member></FinancialDisclosure>'}
+ };
+ if(!dayExtraOperations.has(kind))return;
+ node('daytrade-extra-json').value=JSON.stringify(samples[kind],null,2);
+ node('daytrade-extra-result').textContent='نمونهٔ کاملاً ساختگی؛ دادهٔ بازار، شرکت یا افشای واقعی نیست.';
+};
+node('daytrade-extra-run').onclick=()=>dayRun('daytrade-extra-run','daytrade-extra-result',()=>{
+ const kind=node('daytrade-extra-kind').value;
+ if(!dayExtraOperations.has(kind))throw new Error('ابزار انتخاب‌شده معتبر نیست.');
+ return request('/api/daytrade/'+kind,dayJson('daytrade-extra-json'));
 });
 node('cost-health-check').onclick=async()=>{
  const button=node('cost-health-check'),out=node('cost-health-result');
