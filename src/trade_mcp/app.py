@@ -91,6 +91,14 @@ def get_app() -> App:
     return _APP
 
 
+def get_app_config() -> Config:
+    """Read the active limits without starting a bridge or opening a journal."""
+    if _APP is not None:
+        return _APP.cfg
+    load_dotenv()
+    return Config.from_env()
+
+
 def reset_app() -> None:
     global _APP
     if _APP is not None:

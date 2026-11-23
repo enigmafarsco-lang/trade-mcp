@@ -10,9 +10,10 @@ from collections.abc import Callable
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import StrictFloat, StrictInt
 
 from . import analysis, execution
-from .app import get_app
+from .app import get_app, get_app_config
 from .bridge.base import BridgeError
 from .config import VALID_TIMEFRAMES, sizing_balance
 from .risk import loss_per_lot, lots_for_risk
@@ -636,6 +637,107 @@ def run_web_agent(agent_id: str) -> dict[str, Any]:
         return {"ok": False, "error": "unknown_agent"}
     report = AgentEngine(cfg=app.cfg, mt5=app.mt5, store=app.store).run({**agent, "mode": "advisory"})
     return {"ok": True, "report": report}
+
+
+# ----------------------------------------------------------- offline day-trader
+
+def _daytrade_result(operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+    from .daytrade import run_request
+
+    try:
+        cfg = get_app_config() if operation == "plan" and payload.get("sizing") is not None else None
+        return run_request(operation, payload, cfg)
+    except (ValueError, TypeError, OverflowError) as exc:
+        return {"ok": False, "error": "invalid_input", "message": str(exc),
+                "executable": False, "execution_authorized": False}
+
+
+@mcp.tool()
+@_safe
+def daytrade_entry_signal(
+    ohlcv: list[list[Any]], side: str, start_time: StrictInt,
+    setup: str = "opening_range", opening_range_bars: StrictInt = 5,
+    level: StrictFloat | None = None, cutoff_time: StrictInt | None = None,
+    min_tick_volume_ratio: StrictFloat | None = None,
+) -> dict[str, Any]:
+    """Offline first closed-M1 breakout of a caller-defined range or level, buy or sell.
+
+    Rows: [broker_time, open, high, low, close, tick_volume, optional_spread].
+    Times are same-basis minute labels, not assumed UTC. The final row is always
+    excluded as possibly forming; gaps in the searched interval are rejected.
+    start_time defines the range/search start, not an assumed exchange open.
+    No broker/model/order calls; signal freshness and execution are not verified.
+    """
+    return _daytrade_result("entry", locals())
+
+
+@mcp.tool()
+@_safe
+def daytrade_exit_plan(
+    side: str, entry: StrictFloat, stop_rule: str = "price", stop_value: StrictFloat | None = None,
+    target_r: StrictFloat | None = 1.5, target_price: StrictFloat | None = None,
+    tick_size: StrictFloat | None = None, range_high: StrictFloat | None = None,
+    range_low: StrictFloat | None = None, atr_value: StrictFloat | None = None,
+    sizing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Offline buy/sell stop and target plan; never an order or execution approval.
+
+    stop_rule: price, distance, percent, atr, range_edge, or range_mid. For an
+    explicit target_price pass target_r=null. Optional sizing contains spec,
+    budget, risk_percent, commission_per_lot, slippage_price; missing costs give
+    no volume. Caps are applied but broker/account/margin are not checked.
+    """
+    return _daytrade_result("plan", locals())
+
+
+@mcp.tool()
+@_safe
+def daytrade_historical_replay(
+    sessions: list[list[list[Any]]], decision_time: StrictInt, side: str,
+    opening_range_bars: StrictInt = 5, stop_rule: str = "range_edge",
+    stop_value: StrictFloat | None = None, target_r: StrictFloat = 1.5,
+    tick_size: StrictFloat | None = None, horizon_bars: StrictInt = 30,
+    cutoff_slot: StrictInt | None = None,
+) -> dict[str, Any]:
+    """Replay a closed-M1 range breakout on earlier caller-supplied segments.
+
+    Each segment is an equal-length, ordered, contiguous list of compact M1 rows;
+    all bars must end by decision_time in the same broker-label basis. Uses next
+    open as a hypothetical fill, gap-aware stop and stop-first ambiguous bars.
+    Open positions are marked at the horizon, never forcibly closed. Gross only.
+    """
+    return _daytrade_result("history", locals())
+
+
+@mcp.tool()
+@_safe
+def daytrade_time_machine(
+    sessions: list[list[list[Any]]], decision_time: StrictInt, side: str,
+    entry: StrictFloat, stop: StrictFloat, target: StrictFloat,
+    entry_slot: StrictInt, horizon_bars: StrictInt, replays: StrictInt = 1000,
+    seed: StrictInt = 19, window: StrictInt = 2,
+) -> dict[str, Any]:
+    """Seeded, offline M1 OHLC resampling of a hypothetical plan, not prediction.
+
+    Requires >=20 equal-length, contiguous, earlier supplied M1 segments. Slot
+    zero is the segment start; entry_slot is the completed signal bar. Prices
+    are sampled from prior same-slot OHLC ratios. No spreads, costs or actual
+    fills; open trades are marked at the horizon, not automatically closed.
+    """
+    return _daytrade_result("time-machine", locals())
+
+
+@mcp.tool()
+@_safe
+def daytrade_check_alert(
+    side: str, stop: StrictFloat, target: StrictFloat, bid: StrictFloat, ask: StrictFloat,
+) -> dict[str, Any]:
+    """Check supplied bid/ask once against stop and target; no polling or notification.
+
+    Long exits are checked against bid and short exits against ask. No quote
+    freshness, broker-side stop, fill, position change or order is implied.
+    """
+    return _daytrade_result("alerts", locals())
 
 
 # ---------------------------------------------------------------------- prompts

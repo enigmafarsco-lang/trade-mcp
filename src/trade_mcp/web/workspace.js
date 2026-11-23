@@ -344,6 +344,140 @@ node('engine-analyze').onclick=async()=>{
  }catch(e){out.textContent='ورودی یا محاسبه نامعتبر است؛ سفارشی ارسال نشد.';}
  finally{button.disabled=false;}
 };
+/* Offline M1 workbench: supplied data only, never an order or an automatic alert. */
+function dayNumber(id,required=false){
+ const raw=node(id).value.trim();
+ if(!raw){if(required)throw new Error('یک عدد ضروری وارد نشده است.');return null;}
+ const value=Number(raw);if(!Number.isFinite(value))throw new Error('عدد واردشده معتبر نیست.');
+ return value;
+}
+function dayJson(id){try{return JSON.parse(node(id).value);}catch(_){throw new Error('JSON ورودی معتبر نیست.');}}
+function dayBars(){
+ const value=dayJson('daytrade-bars');const rows=Array.isArray(value)?value:value&&value.data;
+ if(!Array.isArray(rows))throw new Error('آرایهٔ کندل‌ها یا خروجی get_candles را وارد کنید.');
+ return rows;
+}
+function dayPlanPayload(withSizing){
+ const targetPrice=dayNumber('daytrade-target-price');
+ const p={side:node('daytrade-side').value,entry:dayNumber('daytrade-price',true),
+  stop_rule:node('daytrade-stop-rule').value,stop_value:dayNumber('daytrade-stop-value'),
+  target_r:targetPrice===null?dayNumber('daytrade-target-r',true):null,target_price:targetPrice,
+  tick_size:dayNumber('daytrade-tick-size'),range_high:dayNumber('daytrade-high'),
+  range_low:dayNumber('daytrade-low'),atr_value:dayNumber('daytrade-atr')};
+ if(withSizing&&node('daytrade-sizing-enabled').checked){
+  const raw=dayJson('daytrade-spec');
+  p.sizing={spec:raw&&raw.info?raw.info:raw,budget:dayNumber('daytrade-budget',true),
+   risk_percent:dayNumber('daytrade-risk',true),commission_per_lot:dayNumber('daytrade-commission'),
+   slippage_price:dayNumber('daytrade-slippage')};
+ }
+ return p;
+}
+async function dayRun(buttonId,resultId,task){
+ const button=node(buttonId),out=node(resultId);button.disabled=true;out.textContent='در حال محاسبهٔ آفلاین…';
+ try{const result=await task();out.textContent=JSON.stringify(result,null,2);}
+ catch(e){out.textContent=(e&&e.message)||'ورودی نامعتبر است؛ هیچ سفارشی ارسال نشد.';}
+ finally{button.disabled=false;}
+}
+node('daytrade-sample').onclick=()=>{
+ const base=Math.floor(1700000000/60)*60,round=x=>Math.round(x*1000)/1000,sessions=[];
+ for(let day=0;day<20;day++){
+  let p=2600+day*.2;const rows=[];
+  for(let i=0;i<45;i++){
+   const open=p,close=open+(i%15<8?.16:-.12)+(day%5-2)*.01;
+   rows.push([base+day*3600+i*60,round(open),round(Math.max(open,close)+.18),round(Math.min(open,close)-.18),round(close),100+i]);p=close;
+  }
+  sessions.push(rows);
+ }
+ const start=base+20*3600,current=[];
+ for(let i=0;i<20;i++){
+  const open=2700+i*.02,close=i<5?open+.01:2701+(i-5)*.05;
+  current.push([start+i*60,round(open),round(Math.max(open,close)+.18),round(Math.min(open,close)-.18),round(close),120+i]);
+ }
+ node('daytrade-bars').value=JSON.stringify(current);node('daytrade-sessions').value=JSON.stringify(sessions);
+ node('daytrade-start').value=start;node('daytrade-decision').value=start+6*60;
+ node('daytrade-side').value='buy';node('daytrade-setup').value='opening_range';node('daytrade-range').value='5';
+ node('daytrade-level').value='';node('daytrade-cutoff').value='';node('daytrade-volume').value='';
+ node('daytrade-price').value='';node('daytrade-high').value='';node('daytrade-low').value='';
+ node('daytrade-stop-rule').value='range_edge';node('daytrade-stop-value').value='';node('daytrade-atr').value='';
+ node('daytrade-target-r').value='1.5';node('daytrade-target-price').value='';node('daytrade-tick-size').value='.01';
+ node('daytrade-slot').value='5';node('daytrade-horizon').value='20';node('daytrade-history-cutoff').value='';
+ node('daytrade-segment-length').value='45';node('daytrade-split-status').textContent='۲۰ بخش کاملاً ساختگی بارگذاری شد.';
+ node('daytrade-replays').value='1000';node('daytrade-seed').value='19';node('daytrade-window').value='2';
+ node('daytrade-sizing-enabled').checked=false;node('daytrade-commission').value='';node('daytrade-slippage').value='';
+ node('daytrade-spec').value=JSON.stringify({trade_tick_size:.01,trade_tick_value:1,volume_step:.01,volume_min:.01,volume_max:100,point:.01,trade_stops_level:0});
+ node('daytrade-bid').value='2701';node('daytrade-ask').value='2701.2';
+ for(const id of ['daytrade-entry-result','daytrade-plan-result','daytrade-sim-result','daytrade-alert-result'])node(id).textContent='';
+ node('daytrade-entry-result').textContent='نمونهٔ ساختگی بارگذاری شد؛ ابتدا بررسی سیگنال را بزنید.';
+};
+node('daytrade-entry-run').onclick=()=>dayRun('daytrade-entry-run','daytrade-entry-result',async()=>{
+ for(const id of ['daytrade-price','daytrade-high','daytrade-low','daytrade-decision'])node(id).value='';
+ node('daytrade-plan-result').textContent='';
+ const setup=node('daytrade-setup').value;
+ const d=await request('/api/daytrade/entry',{ohlcv:dayBars(),side:node('daytrade-side').value,
+  start_time:dayNumber('daytrade-start',true),setup,opening_range_bars:dayNumber('daytrade-range',true),
+  level:setup==='level'?dayNumber('daytrade-level',true):null,cutoff_time:dayNumber('daytrade-cutoff'),
+  min_tick_volume_ratio:dayNumber('daytrade-volume')});
+ if(d.trigger){
+  node('daytrade-price').value=d.trigger.close;node('daytrade-decision').value=d.trigger.bar_close_time;
+  node('daytrade-slot').value=d.trigger.slot;
+ }
+ if(d.opening_range&&d.opening_range.complete){
+  node('daytrade-high').value=d.opening_range.high;node('daytrade-low').value=d.opening_range.low;
+ }
+ return d;
+});
+node('daytrade-plan-run').onclick=()=>dayRun('daytrade-plan-run','daytrade-plan-result',
+ ()=>request('/api/daytrade/plan',dayPlanPayload(true)));
+node('daytrade-split').onclick=()=>{
+ const status=node('daytrade-split-status');
+ try{
+  const rows=dayBars(),size=dayNumber('daytrade-segment-length',true),decision=dayNumber('daytrade-decision',true);
+  if(!Number.isInteger(size)||size<2||size>1000||!Number.isSafeInteger(decision)||decision%60)
+   throw new Error('طول بخش یا زمان تصمیم معتبر نیست.');
+  if(rows.length<2||rows.length>10000)throw new Error('۲ تا ۱۰۰۰۰ ردیف مرتب لازم است.');
+  let previous=-1;
+  for(const row of rows){
+   if(!Array.isArray(row)||(row.length!==6&&row.length!==7)||!Number.isSafeInteger(row[0])||row[0]<0||row[0]%60||row[0]<=previous)
+    throw new Error('زمان کندل‌ها باید عدد صحیح، صعودی و روی شبکهٔ M1 باشد.');
+   previous=row[0];
+  }
+  // Exclude the final bar even if the caller says it has already closed.
+  const prior=rows.slice(0,-1).filter(row=>row[0]+60<=decision),runs=[];
+  for(const row of prior){
+   const run=runs[runs.length-1];
+   if(!run||row[0]!==run[run.length-1][0]+60)runs.push([row]);else run.push(row);
+  }
+  let blocks=[];
+  for(const run of runs){const offset=run.length%size;for(let i=offset;i+size<=run.length;i+=size)blocks.push(run.slice(i,i+size));}
+  if(!blocks.length)throw new Error('بخش پیوستهٔ کامل قبل از زمان تصمیم پیدا نشد.');
+  if(blocks.length>100)blocks=blocks.slice(-100);
+  node('daytrade-sessions').value=JSON.stringify(blocks);
+  status.textContent=`${blocks.length} بلوک پیوسته ساخته شد؛ ${prior.length-blocks.length*size} ردیف قبلی و آخرین ردیف ورودی کنار گذاشته شد. این بلوک‌ها نشست یا ساعت یکسان روز را اثبات نمی‌کنند.`;
+ }catch(e){status.textContent=(e&&e.message||'تقسیم ناموفق بود.')+' دادهٔ قبلی بخش‌ها تغییر نکرد.';}
+};
+node('daytrade-history-run').onclick=()=>dayRun('daytrade-history-run','daytrade-sim-result',async()=>{
+ if(node('daytrade-setup').value!=='opening_range')throw new Error('بازپخش تاریخی فعلاً فقط شکست رنج را پشتیبانی می‌کند.');
+ if(dayNumber('daytrade-target-price')!==null)throw new Error('برای بازپخش تاریخی قیمت هدف ثابت را خالی کنید و هدف R بدهید.');
+ return request('/api/daytrade/history',{sessions:dayJson('daytrade-sessions'),decision_time:dayNumber('daytrade-decision',true),
+  side:node('daytrade-side').value,opening_range_bars:dayNumber('daytrade-range',true),
+  stop_rule:node('daytrade-stop-rule').value,stop_value:dayNumber('daytrade-stop-value'),
+  target_r:dayNumber('daytrade-target-r',true),tick_size:dayNumber('daytrade-tick-size'),
+  horizon_bars:dayNumber('daytrade-horizon',true),cutoff_slot:dayNumber('daytrade-history-cutoff')});
+});
+node('daytrade-machine-run').onclick=()=>dayRun('daytrade-machine-run','daytrade-sim-result',async()=>{
+ const plan=await request('/api/daytrade/plan',dayPlanPayload(false));
+ node('daytrade-plan-result').textContent=JSON.stringify(plan,null,2);
+ return request('/api/daytrade/time-machine',{sessions:dayJson('daytrade-sessions'),decision_time:dayNumber('daytrade-decision',true),
+  side:plan.side,entry:plan.entry,stop:plan.stop,target:plan.target,entry_slot:dayNumber('daytrade-slot',true),
+  horizon_bars:dayNumber('daytrade-horizon',true),replays:dayNumber('daytrade-replays',true),
+  seed:dayNumber('daytrade-seed',true),window:dayNumber('daytrade-window',true)});
+});
+node('daytrade-alert-run').onclick=()=>dayRun('daytrade-alert-run','daytrade-alert-result',async()=>{
+ const plan=await request('/api/daytrade/plan',dayPlanPayload(false));
+ node('daytrade-plan-result').textContent=JSON.stringify(plan,null,2);
+ return request('/api/daytrade/alerts',{side:plan.side,stop:plan.stop,target:plan.target,
+  bid:dayNumber('daytrade-bid',true),ask:dayNumber('daytrade-ask',true)});
+});
 node('cost-health-check').onclick=async()=>{
  const button=node('cost-health-check'),out=node('cost-health-result');
  button.disabled=true;out.textContent='بررسی فقط‌خواندنی هزینه‌ها…';
