@@ -1,0 +1,43 @@
+{
+  "schema": "xauusd-research-check-report/v1",
+  "report_id": "20261122T102500Z-xauusd-existing-archives-offline",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "head_at_execution": "b628e02",
+  "command_executed": ".venv/bin/python scripts/replay_existing_xauusd_archives.py",
+  "execution_count": 1,
+  "new_mt5_network_calls": 0,
+  "history_calls_made": 0,
+  "result": {
+    "status": "existing_samples_replayed",
+    "archive_files_inspected": 2,
+    "excluded_by_reason": {"unverified_symbol_period_or_success": 1},
+    "unique_usable_nonoverlapping_samples": 1,
+    "distinct_broker_label_dates": 1,
+    "window_1": {
+      "input_rows": 1015,
+      "replayed_rows": 614,
+      "interior_minutes_seen": 3,
+      "signal_counts": {"sell": 17, "buy": 16},
+      "simulated_entries": 5,
+      "cash_loss_exits": 4,
+      "cash_profit_exits": 1,
+      "closed_wins": 1,
+      "closed_losses": 4,
+      "gross_realized_usd_model": -6.239999999999782,
+      "gross_open_mark_usd_model": null,
+      "gross_total_mark_usd_model": -6.239999999999782,
+      "simulated_three_consecutive_loss_latch": true,
+      "net_pnl": null,
+      "commission": null,
+      "swap": null
+    },
+    "independent_hypothetical_windows_not_continuous": true,
+    "complete_tick_coverage_verified": false,
+    "utc_verified": false,
+    "profitability_proven": false,
+    "execution_authorized": false
+  },
+  "raw_data_committed": false,
+  "trading_off": true,
+  "cloud_budget_revoked": true
+}

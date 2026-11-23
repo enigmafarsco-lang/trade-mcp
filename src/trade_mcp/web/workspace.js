@@ -1,0 +1,589 @@
+/* Visible agent activity. Polling reads saved results only; model calls are explicit. */
+(() => {
+'use strict';
+const node=id=>document.getElementById(id);
+const make=(tag,text)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;return n;};
+const busy=new Set();let refreshing=false,lease=null,modelLoaded=false,testing=false;
+let budgetAllowed=false,modelReady=false,connectionKnown=false,researchBusy=false;
+const time=v=>v?new Date(v*1000).toLocaleString('fa-IR'):'هنوز اجرا نشده';
+const duration=ms=>{const mins=Math.ceil(ms/60000);return mins>=60?`${Math.floor(mins/60).toLocaleString('fa-IR')} ساعت و ${(mins%60).toLocaleString('fa-IR')} دقیقه`:`${mins.toLocaleString('fa-IR')} دقیقه`;};
+const known=(v)=>v===null||v===undefined?'نامشخص':Number(v).toLocaleString('fa-IR');
+function syncTestButton(){
+ const b=node('workspace-test');if(!b)return;
+ b.disabled=testing||!connectionKnown||!budgetAllowed||!modelReady;
+ b.textContent=!connectionKnown?'وضعیت اتصال نامشخص — ابتدا بازخوانی کنید':testing?'در حال آزمایش مدل…':!modelReady?'مدل وب تنظیم نشده':!budgetAllowed?'آزمایش مدل — ابتدا بودجه را فعال کنید':'آزمایش پاسخ مدل (ممکن است هزینه داشته باشد)';
+}
+function budgetText(b){
+ b=b||{};
+ const state=b.state||'not_activated';
+ if(state==='active'&&b.reason==='provider_cooldown'){
+  const left=Number(b.retry_after_ms||0);
+  return `بودجه فعال است، اما provider تا ${duration(left)} دیگر درخواست جدید نمی‌پذیرد. تلاش خودکار انجام نمی‌شود.`;
+ }
+ if(state==='active'){
+  if(b.first_attempt_at==null)return `فعال و هنوز شروع نشده: حداکثر ${b.max_attempts||5} تلاش در پنجرهٔ ${b.window_seconds||300} ثانیه‌ای؛ پنجره با نخستین درخواست مجاز آغاز می‌شود.`;
+  const secs=Number(b.seconds_remaining||0);
+  return `فعال: ${b.used_attempts||0} از ${b.max_attempts||5} تلاش مصرف شده؛ ${Math.ceil(secs)} ثانیه از پنجره باقی است.`;
+ }
+ if(state==='exhausted')return 'پایان‌یافته: سقف پنج تلاش مصرف شده است. پنجرهٔ جدید فقط با فعال‌سازی صریح شروع می‌شود.';
+ if(state==='expired')return 'پایان‌یافته: پنجرهٔ ۳۰۰ ثانیه‌ای تمام شده است. پنجرهٔ جدید فقط با فعال‌سازی صریح شروع می‌شود.';
+ if(state==='revoked')return 'لغو شده است. برای ادامه باید پنجرهٔ جدید را صریحاً فعال کنید.';
+ return 'فعال نیست؛ هیچ درخواست مدلی در مسیر وب مجاز نیست.';
+}
+function syncBudgetButton(b){
+ b=b||{};
+ const activate=node('workspace-budget-activate'),revoke=node('workspace-budget-revoke');
+ if(activate){
+  activate.disabled=b.state==='active';
+  activate.textContent=b.state==='active'?'بودجهٔ فعال است (فعال‌سازی دوباره پنجره را بازنشانی نمی‌کند)':b.state==='not_activated'?'فعال‌سازی صریح بودجهٔ آزمایش':'شروع صریح پنجرهٔ جدید (۳۰۰ ثانیه / ۵ تلاش)';
+ }
+ if(revoke)revoke.disabled=b.state!=='active';
+}
+function usageText(u){
+ u=u||{};const f=u.fields||{};
+ const field=name=>{const x=f[name]||{};return `${known(x.known_total)} مجموع معلوم (${x.known_rows||0} ردیف) | نامشخص: ${x.unknown_rows||0} ردیف`;};
+ const conventions=Object.keys(u.accounting_conventions||{}).filter(Boolean);
+ const convention=conventions.length?conventions.join('، '):'نامشخص';
+ const costs=(u.cost||[]).length?(u.cost||[]).map(c=>`${known(c.known_total)} ${c.currency||'واحد پول نامشخص'} (${c.known_rows||0} ردیف)`).join(' | '):'نامشخص';
+ return [
+  `درخواست‌های واقعی ثبت‌شده: ${u.requests||0} | موفق: ${u.ok_rows||0} | ناموفق: ${u.failed_rows||0}`,
+  `input: ${field('input_tokens')}`,
+  `cached input: ${field('cached_input_tokens')}`,
+  `output: ${field('output_tokens')}`,
+  `reasoning: ${field('reasoning_tokens')}`,
+  `هزینهٔ گزارش‌شدهٔ provider: ${costs} | ردیف‌های بدون هزینه: ${u.cost_unknown_rows||0}`,
+  `قرارداد usage: ${convention} — cached input ممکن است داخل input و reasoning داخل output باشد؛ این صفحه جمع دوباره نمی‌سازد.`,
+  'این دفتر فقط تلاش‌های provider اختصاصی وب را نشان می‌دهد و با آمار OpenCode جمع نمی‌شود. مقدار نامشخص صفر نیست.'
+ ].join('\n');
+}
+function usageRows(rows){
+ const box=node('workspace-usage-rows');if(!box)return;
+ box.replaceChildren(make('h3','آخرین تلاش‌های provider وب'));
+ if(!(rows||[]).length){box.append(make('p','هنوز تلاش واقعی ثبت نشده است.'));return;}
+ const table=make('table');
+ const head=make('tr');
+ for(const title of ['زمان','نوع','مدل','وضعیت','input','cached','output','reasoning','هزینه'])head.append(make('th',title));
+ table.append(head);
+ for(const row of rows){
+  const tr=make('tr');
+  const cost=row.cost_amount==null?'نامشخص':`${known(row.cost_amount)} ${row.cost_currency||'واحد نامشخص'}`;
+  for(const value of [
+   time(row.created_at),row.request_kind||'—',row.model||'—',
+   row.ok?'موفق':(row.error_code||'ناموفق'),
+   known(row.input_tokens),known(row.cached_input_tokens),known(row.output_tokens),
+   known(row.reasoning_tokens),cost
+  ])tr.append(make('td',value));
+  table.append(tr);
+ }
+ box.append(table);
+}
+async function request(path,body){
+ const r=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+ let data=null;try{data=await r.json();}catch(_){}
+ if(!r.ok){const err=new Error((data&&(data.message||data.error))||('HTTP '+r.status));err.payload=data;throw err;}
+ return data||{};
+}
+function describe(report){
+ const lines=[`مدل واقعاً استفاده شد: ${report.used_llm?'بله':'خیر'} | پیشنهادهای این اجرا: ${(report.proposals||[]).length}`];
+ for(const d of report.decisions||[]){
+  lines.push(`${d.symbol}: ${{buy:'خرید',sell:'فروش',wait:'انتظار'}[d.action]||'نامشخص'} | منبع: ${d.source||'—'}`);
+  if(d.response_model)lines.push('مدل پاسخ‌دهنده: '+d.response_model+' / '+(d.response_variant||'default'));
+  for(const a of d.model_attempts||[])lines.push('تلاش مدل: '+a.model+' / '+(a.variant||'default')+' • '+a.status+(a.error?' • '+a.error:''));
+  if(d.model_error)lines.push(`توقف مدل: ${d.model_error.message} (${d.model_error.code})`);
+  if(d.reason)lines.push(d.reason);
+  if(d.note)lines.push(d.note);
+  if(d.proposal_error){
+   const error=d.proposal_error,sizing=error.sizing||{};
+   lines.push('پیشنهاد ساخته نشد — '+(error.error||'نامشخص')+' | '+(error.message||''));
+   if(error.error==='sizing_failed')lines.push(`مبنای حجم: ${known(error.effective_sizing_balance)} | بودجهٔ زیان: ${known(sizing.risk_amount)} | حداقل لات: ${known(sizing.minimum_volume)} | زیان تخمینی حداقل لات در SL: ${known(sizing.minimum_volume_loss)}
+ورود بررسی‌شده: ${known(error.checked_entry)} | SL: ${known(error.stop_loss)} | حجم خام: ${known(sizing.raw_volume)}
+ریسک یا SL برای عبور از این مانع تغییر نکرده است؛ این اعداد مجوز معامله نیستند.`);
+  }
+  if(d.post_response_check){
+   const check=d.post_response_check;
+   const reasons={analysis_expired:'عمر تحلیل بیش از ۳۰ ثانیه',original_quote_time_invalid_or_expired:'زمان قیمت ورودی تحلیل نامعتبر یا منقضی',fresh_quote_time_invalid_or_stale:'تیک تازه قدیمی یا زمان آن نامعتبر',fresh_quote_or_point_invalid:'قیمت یا مشخصات نماد نامعتبر',spread_too_wide_after_response:'اسپرد پس از پاسخ بیش از سقف',decision_levels_invalid:'SL/TP نامعتبر',decision_levels_crossed_or_wrong_side:'قیمت از سطوح تصمیم عبور کرده',entry_drift_exceeded:'تغییر قیمت بیش از یک‌چهارم فاصلهٔ اولیه تا SL'};
+   lines.push(`کنترل پس از پاسخ: ${check.ok?'مجاز برای ادامهٔ بررسی ریسک':'مسدود؛ پیشنهاد ساخته نشد'} | عمر تحلیل: ${known(check.analysis_age_seconds)} ثانیه | عمر تیک: ${known(check.tick_age_seconds)} ثانیه`);
+   for(const reason of check.reasons||[])lines.push(reasons[reason]||reason);
+   if(d.model_action)lines.push('تصمیم اولیهٔ مدل: '+d.model_action+'؛ برنامه آن را به توقف ایمن تبدیل کرد.');
+  }
+  const technical=d.technical_analysis||{},scenario=technical.scenario||{};
+  if(technical.summary)lines.push('تحلیل فنی قاعده‌محور — نه تصمیم مدل و نه سفارش:\n'+technical.summary);
+  for(const warning of technical.warnings||[])lines.push('هشدار بازار/برنامه: '+warning);
+  if(scenario.sizing){const z=scenario.sizing;lines.push(`بودجهٔ مبنای حجم: ${z.effective_sizing_balance??'—'} | بودجهٔ زیان: ${z.risk_amount??'—'} | لات محاسبه‌شده: ${z.volume??'—'}`);if(z.error)lines.push(z.error);}
+  const p=d.preview||{};
+  if(Object.keys(p).length)lines.push(`ورود مرجع: ${p.estimated_entry??'—'} | لات: ${p.volume??'—'} | SL: ${p.stop_loss??'—'} | TP: ${p.take_profit??'—'}\nزیان تخمینی: ${p.risk_amount??'—'} | سود هدف پیش از هزینه: ${p.estimated_profit??'—'} | مارجین: ${p.estimated_margin??'—'}`);
+  if(d.proposal_id)lines.push(`شناسهٔ پیشنهاد: ${d.proposal_id} | وضعیت: ${d.status||'—'}`);
+ }
+ for(const e of report.errors||[])lines.push(`خطا: ${e.symbol||''} ${e.error||''}`);
+ return lines.join('\n');
+}
+async function refresh(){
+ if(refreshing)return;refreshing=true;
+ try{
+  const d=await request('/api/workspace-status');
+  connectionKnown=true;
+  budgetAllowed=!!(d.model_budget&&d.model_budget.allowed);
+  modelReady=!!d.model_configured;
+  node('workspace-status').textContent=`داده: ${d.backend}${d.backend==='mock'?' — ساختگی؛ دادهٔ واقعی نیست':''} | اجرای معامله: ${d.trading_enabled?'فعال؛ هر پیشنهاد نیازمند تأیید شماست':'غیرفعال'} | provider: ${d.model_provider||'—'} | مدل: ${d.model||'تنظیم نشده'}\n${d.scheduler.running?'چرخهٔ ایجنت فعال است':'چرخهٔ خودکار خاموش است؛ دریافت قیمت به معنی معامله نیست.'}`;
+  node('workspace-provider').textContent=`backend: ${d.model_backend||'—'} | provider: ${d.model_provider||'نامشخص'} | مدل: ${d.model||'تنظیم نشده'} | وضعیت: ${d.model_configured?'تنظیم شده؛ فقط مسیر صریح انتخاب‌شده استفاده می‌شود':'تنظیم نشده؛ درخواست مدل مسدود است'}\nبرچسب billing: ${d.model_billing_project||'ندارد'} (فقط metadata؛ اثبات صورت‌حساب جدا نیست)\nقرارداد usage: ${d.model_usage_convention||'unknown'} | پروفایل درخواست ایجنت: ${d.model_request_profile||'provider-default'}`;
+  const cash=d.demo_cash_guard||{};
+  if(cash.enabled || (cash.unresolved_intent_count||0)>0 || cash.current_blocker_code || cash.last_poll_at || cash.last_successful_reconciliation_at){
+   const blocker=cash.current_blocker_code;
+   const blockerText={unresolved_intent:'intent حل‌نشده؛ ورود جدید مجاز نیست',loss_latch:'قفل سه زیان؛ بازبینی استراتژی لازم است',history_may_be_truncated:'سابقه ممکن است ناقص باشد',explicit_cost_fields_required:'هزینه‌ها/کارمزد نامشخص؛ سود/زیان خالص قطعی نشده',incomplete_closed_position_volume:'حجم بسته‌شده ناقص',opening_deal_history_required:'سابقهٔ معاملهٔ بازکننده در دسترس نیست',reserved_opening_identity_missing:'هویت معاملهٔ رزروشده تأیید نشد',reserved_opening_time_mismatch:'زمان معاملهٔ رزروشده منطبق نیست',reversal_or_unknown_entry:'نوع ورود/خروج مبهم',missing_or_duplicate_deal_ticket:'شناسهٔ معامله نامعتبر/تکراری',position_identity_mismatch:'هویت موقعیت منطبق نیست',broker_sl_required:'SL بروکر الزامی',floating_pnl_incomplete:'سود/زیان شناور ناقص',cost_source_aged_before_close:'منبع هزینه برای بستن منقضی شد',cash_guard_reconciliation_failed:'تطبیق نگهبان ناموفق',exit_due:'شرط خروج نقدی برقرار است'}[blocker]||'';
+   const parts=['حفاظت نقدی دمو (USD/DEMO)', cash.running?'پایش: فعال':'پایش: غیرفعال/خوانش موردی'];
+   parts.push('intent حل‌نشده: '+(cash.unresolved_intent_count??0));
+   if(cash.loss_streak!=null)parts.push('زیان متوالی: '+cash.loss_streak);
+   if(cash.latched)parts.push('قفل ضرر فعال');
+   if(blockerText)parts.push('انسداد: '+blockerText+(blocker?' ('+blocker+')':''));
+   else if(cash.ok===false)parts.push('انسداد: تطبیق ناموفق');
+   if(cash.last_poll_at)parts.push('آخرین بررسی: '+time(cash.last_poll_at));
+   if(cash.last_successful_reconciliation_at)parts.push('آخرین تطبیق موفق: '+time(cash.last_successful_reconciliation_at));
+   node('workspace-status').textContent+='\n'+parts.join(' | ');
+  }
+  node('workspace-budget').textContent=budgetText(d.model_budget);
+  syncBudgetButton(d.model_budget);
+  node('workspace-usage').textContent=usageText(d.model_usage);
+  usageRows(d.model_usage_rows||[]);
+  node('research-analyze').disabled=researchBusy||!budgetAllowed||!modelReady;
+  node('research-analyze').title=!modelReady?'مدل وب تنظیم نشده؛ پیش‌نمایش آفلاین در دسترس است.':!budgetAllowed?'بودجهٔ مدل فعال نیست.':'';
+  const cycle=d.page_cycle||{};
+  node('workspace-cycle-state').textContent=`${cycle.active?'چرخه فعال':'چرخه متوقف'} | ${cycle.busy?'در حال پایان تحلیل':''} ${cycle.reason||''}`;
+  if(!cycle.active)lease=null;
+  const test=d.model_test||{};
+  const testReady=test.state==='ready';
+  node('workspace-cycle-start').disabled=!!cycle.active||!!cycle.busy||!budgetAllowed||!modelReady||!testReady;
+  node('workspace-cycle-stop').disabled=!lease;
+  if(!modelLoaded){node('workspace-model-id').value=d.model||'';modelLoaded=true;}
+  const select=node('workspace-cycle-agent'),chosen=select.value;
+  const ids=(d.agents||[]).map(a=>a.id).join(',');
+  if(select.dataset.ids!==ids){select.replaceChildren();for(const a of d.agents||[]){const option=make('option',a.name+' • '+a.symbols.join(', '));option.value=a.id;select.append(option);}select.value=chosen||d.agents[0]?.id||'';select.dataset.ids=ids;}
+  const testLines=[`آخرین آزمایش پاسخ مدل: ${test.state==='not_tested'?'هنوز انجام نشده':`${test.state==='failed'?'ناموفق':test.state==='ready'?'موفق':test.state} — ${time(test.tested_at)}`}`];
+  if(test.message)testLines.push(test.message);
+  if(test.code)testLines.push('کد: '+test.code);
+  if(test.rate_limit_diagnostic){
+   const diagnostic=test.rate_limit_diagnostic;
+   const labels={upstream_rate_limit_reported:'سرویس محدودیت بالادستی را اعلام کرده',daily_limit_reported:'سرویس سقف روزانه را اعلام کرده',per_minute_limit_reported:'سرویس سقف دقیقه‌ای را اعلام کرده'};
+   testLines.push('جزئیات محدودیت: '+((diagnostic.reported_reasons||[]).map(x=>labels[x]||'نامشخص').join('؛ ')||'منشأ نامشخص')+' — صرفاً گفتهٔ سرویس، نه تأیید مستقل.');
+  }
+  if(test.response_model)testLines.push('مدل پاسخ‌دهندهٔ تست: '+test.response_model);
+  for(const a of test.model_attempts||[])testLines.push('تلاش: '+a.model+' • '+(a.status||'—')+(a.error?' • '+a.error:''));
+  if(test.retry_after_ms)testLines.push('provider تا حدود '+duration(Number(test.retry_after_ms))+' دیگر درخواست جدید نمی‌پذیرد.');
+  node('workspace-model').textContent=testLines.join('\n');
+  syncTestButton();
+  const box=node('workspace-agents');box.replaceChildren();
+  for(const a of d.agents||[]){
+   const card=make('div');card.className='card';
+   card.append(make('h3',a.name+' • '+a.symbols.join(', ')),make('p','آخرین اجرا: '+time(a.last_run)));
+   const run=make('button',busy.has(a.id)?'در حال تحلیل…':budgetAllowed?'تحلیل با ایجنت — بدون اجرای معامله':'تحلیل با ایجنت — نیازمند بودجهٔ فعال');run.className='primary';run.disabled=busy.has(a.id)||!budgetAllowed||!modelReady;run.title=!budgetAllowed?'ابتدا بودجهٔ آزمایش را فعال کنید.':'';
+   run.onclick=async()=>{if(busy.has(a.id))return;busy.add(a.id);run.disabled=true;run.textContent='در حال تحلیل…';node('workspace-action').textContent='در انتظار نتیجهٔ ایجنت؛ هیچ تأییدی ارسال نمی‌شود.';
+    try{const result=await request('/api/agents/'+encodeURIComponent(a.id),{action:'run_advisory'});node('workspace-action').textContent=result.ok?'گزارش ذخیره شد؛ نتیجه در کارت ایجنت نمایش داده می‌شود.':result.message||result.error||'اجرای ناموفق';}
+    catch(e){node('workspace-action').textContent=(e&&e.message)||'دریافت نتیجه ناموفق بود؛ قبل از تکرار، آخرین گزارش را بررسی کنید.';}
+    finally{busy.delete(a.id);await refresh();}
+   };
+   card.append(run,make('pre',a.last_run?describe(a.report||{}):'هنوز گزارشی وجود ندارد. روشن‌بودن ایجنت به‌تنهایی به معنی اجرای آن نیست.'));box.append(card);
+  }
+  if(!d.agents.length)box.append(make('p','ایجنتی تعریف نشده؛ در تب ایجنت‌ها یک ایجنت مشورتی بسازید.'));
+  const proposals=node('workspace-proposals'),history=node('workspace-history');proposals.replaceChildren();history.replaceChildren();
+  proposals.append(make('h3','پیشنهادها و سابقه — سفارش جدید خودکار اجرا نمی‌شود'));
+  for(const p of d.proposals||[]){
+   const payload=p.payload||{},card=make('details');
+   card.append(make('summary',`${p.id} | ${payload.symbol||'—'} | ${p.status==='expired'?'منقضی؛ قابل تأیید نیست':p.status} | ${time(p.created_at)}${p.status==='pending'?' | اعتبار: '+Math.max(0,Math.ceil(p.expires_at-Date.now()/1000))+' ثانیه':''}`));
+   card.append(make('pre',JSON.stringify(payload,null,2)));
+   const actionable=!!p.confirmable&&(p.status==='pending'||p.status==='blocked');
+   if(actionable){
+    const confirm=make('button','تأیید و اجرای همین پیشنهاد');confirm.className='primary';
+    confirm.onclick=async()=>{
+     if(!window.confirm(`اجرای واقعی همین پیشنهاد روی حساب متصل؟\n${p.id}\n${JSON.stringify(payload,null,2)}`))return;
+     confirm.disabled=true;confirm.textContent='در حال ارسال پیشنهاد…';
+     node('workspace-action').textContent='در حال ارسال پیشنهاد برای تأیید؛ تا دریافت نتیجه دوباره کلیک نکنید.';
+     try{const result=await request('/api/proposals/'+encodeURIComponent(p.id)+'/confirm',{});node('workspace-action').textContent=result.ok?'هسته اجرای پیشنهاد را پذیرفت؛ نتیجه و پوزیشن‌ها را بررسی کنید.':(result.message||result.error||'اجرا نشد');}
+     catch(e){node('workspace-action').textContent=(e&&e.message)||'نتیجهٔ اجرا نامشخص است؛ پیش از تکرار، پوزیشن‌ها را بررسی کنید.';}
+     finally{await refresh();}
+    };
+    card.append(confirm);
+   }else if(p.status==='pending'||p.status==='blocked'){
+    card.append(make('p','این پیشنهاد در وضعیت فعلی قابل تأیید نیست؛ کنترل اجرا نمایش داده نمی‌شود.'));
+   }
+   (p.status==='pending'||p.status==='blocked'?proposals:history).append(card);
+  }
+  if(!d.proposals.some(p=>p.status==='pending'||p.status==='blocked'))proposals.append(make('p','پیشنهاد فعال جدیدی وجود ندارد. موارد قدیمی در تاریخچه‌اند.'));
+  const runs=node('workspace-run-history');runs.replaceChildren(make('h3','تاریخچهٔ اجراهای ایجنت (اجراهای ثبت‌شده از این نسخه)'));
+  for(const item of d.run_history||[]){const detail=make('details');detail.append(make('summary','گزارش تاریخی • '+time(item.created_at)+' • '+item.agent_id),make('pre','وضعیت زیر مربوط به زمان همین اجراست؛ وضعیت فعلی در فهرست پیشنهادهاست.\n'+describe(item.report||{})));runs.append(detail);}
+ }catch(_){connectionKnown=false;budgetAllowed=false;modelReady=false;syncTestButton();
+  node('workspace-cycle-start').disabled=true;node('research-analyze').disabled=true;
+  for(const b of node('workspace-agents').querySelectorAll('button'))b.disabled=true;
+  node('workspace-status').textContent='ارتباط با کنسول برقرار نشد؛ وضعیت مدل و بودجه نامشخص است، نه الزاماً تنظیم‌نشده. داده‌های زیر مربوط به آخرین دریافت موفق‌اند.';
+  node('workspace-provider').textContent='وضعیت زندهٔ اتصال مدل در دسترس نیست؛ دادهٔ قبلی قابل اتکا نیست.';}
+ finally{refreshing=false;}
+}
+async function stopCycle(beacon=false){
+ if(!lease)return;const token=lease;lease=null;
+ const body={action:'stop',lease:token};
+ if(beacon){navigator.sendBeacon('/api/page-cycle',new Blob([JSON.stringify(body)],{type:'application/json'}));return;}
+ try{await request('/api/page-cycle',body);}
+ catch(e){node('workspace-action').textContent=(e&&e.message)||'توقف چرخه ناموفق بود؛ وضعیت را دوباره بررسی کنید.';}
+ finally{await refresh();}
+}
+node('workspace-connect-opencode').onclick=async()=>{
+ const button=node('workspace-connect-opencode');button.disabled=true;
+ node('workspace-action').textContent='در حال شناسایی امن OpenCode؛ درخواست تولید متن ارسال نمی‌شود…';
+ try{
+  const model=node('workspace-model-id').value.trim();
+  if(!model)throw new Error('شناسهٔ مدل رایگان را وارد کنید؛ مثلاً opencode/mimo-v2.6-flash-free');
+  const d=await request('/api/model-connect-opencode',{model,consent_connect:true});
+  node('workspace-action').textContent=d.ok?'اتصال سرور تأیید و مدل وب تنظیم شد؛ هنوز پاسخ هوش مصنوعی آزمایش نشده است.':(d.message||d.error);
+ }catch(e){node('workspace-action').textContent=e.message||'اتصال ناموفق بود.';}
+ finally{button.disabled=false;await refresh();}
+};
+node('workspace-save-model').onclick=async()=>{
+ const b=node('workspace-save-model');b.disabled=true;
+ node('workspace-action').textContent='در حال ذخیرهٔ تنظیمات مدل در همین اجرای وب…';
+ try{
+  const d=await request('/api/model-config',{model:node('workspace-model-id').value});
+  node('workspace-action').textContent=d.ok?'مدل وب اعمال شد؛ تنظیم چت OpenCode عوض نشد. اکنون پاسخ مدل را آزمایش کنید.':(d.message||d.error||'تنظیمات مدل اعمال نشد.');
+ }catch(e){node('workspace-action').textContent=(e&&e.message)||'اعمال تنظیمات مدل ناموفق بود.';}
+ finally{b.disabled=false;await refresh();}
+};
+node('workspace-budget-activate').onclick=async()=>{
+ const b=node('workspace-budget-activate');b.disabled=true;
+ node('workspace-action').textContent='در حال فعال‌سازی صریح بودجهٔ آزمایش…';
+ try{
+  const d=await request('/api/model-budget',{action:'activate'});
+  node('workspace-action').textContent=d.ok?'بودجهٔ آزمایش فعال شد؛ پنجره با نخستین درخواست آغاز می‌شود.':(d.message||d.error||'فعال‌سازی ناموفق بود.');
+ }catch(e){node('workspace-action').textContent=(e&&e.message)||'فعال‌سازی بودجه ناموفق بود.';}
+ finally{await refresh();}
+};
+node('workspace-budget-revoke').onclick=async()=>{
+ const b=node('workspace-budget-revoke');b.disabled=true;
+ try{await request('/api/model-budget',{action:'revoke'});node('workspace-action').textContent='بودجهٔ آزمایش لغو شد؛ برای ادامه فعال‌سازی صریح لازم است.';}
+ catch(e){node('workspace-action').textContent=(e&&e.message)||'لغو بودجه ناموفق بود.';}
+ finally{await refresh();}
+};
+node('workspace-cycle-start').onclick=async()=>{
+ if(document.hidden)return;
+ const b=node('workspace-cycle-start');b.disabled=true;
+ node('workspace-action').textContent='در حال شروع چرخهٔ مشورتی…';
+ try{
+  const d=await request('/api/page-cycle',{action:'start',agent_id:node('workspace-cycle-agent').value,
+   interval:Number(node('workspace-cycle-interval').value),consent_model_requests:node('workspace-cycle-consent').checked});
+  if(d.ok)lease=d.lease;
+  node('workspace-action').textContent=d.ok?'چرخهٔ مشورتی شروع شد؛ اجرای معامله فقط با تأیید جداگانه است.':(d.message||d.error||'چرخه شروع نشد.');
+ }catch(e){node('workspace-action').textContent=(e&&e.message)||'شروع چرخه ناموفق بود.';}
+ finally{await refresh();}
+};
+node('workspace-cycle-stop').onclick=()=>stopCycle();
+document.addEventListener('visibilitychange',()=>{if(document.hidden)stopCycle(true);});
+window.addEventListener('pagehide',()=>stopCycle(true));
+setInterval(async()=>{if(lease&&!document.hidden){try{const d=await request('/api/page-cycle',{action:'heartbeat',lease});if(!d.ok)lease=null;}catch(_){node('workspace-action').textContent='heartbeat ناموفق؛ چرخه بدون heartbeat معتبر متوقف خواهد شد.';}}},5000);
+node('workspace-refresh').onclick=refresh;
+let researchReport=null;
+node('research-download').onclick=()=>{
+ if(!researchReport)return;
+ const url=URL.createObjectURL(new Blob([JSON.stringify(researchReport,null,2)],{type:'application/json'}));
+ const a=document.createElement('a');a.href=url;a.download='research-'+new Date().toISOString().replace(/[:.]/g,'-')+'.json';
+ a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+};
+for(const operation of ['analyze','backtest','compare','prepare'])node('research-'+operation).onclick=async()=>{
+ const out=node('research-result');
+ if(researchBusy)return;
+ if(operation==='analyze'&&(!connectionKnown||!budgetAllowed||!modelReady)){out.textContent='مدل یا بودجه آماده نیست؛ پیش‌نمایش آفلاین را انتخاب کنید.';return;}
+ if(operation==='analyze'&&!node('research-consent').checked){out.textContent='ابتدا اجازهٔ درخواست مدل را مشخص کنید.';return;}
+ researchBusy=true;
+ for(const op of ['analyze','backtest','compare','prepare'])node('research-'+op).disabled=true;
+ out.textContent=operation==='prepare'?'آماده‌سازی آفلاین ورودی؛ هیچ مدل ابری فراخوانی نمی‌شود…':'در حال پژوهش؛ هیچ سفارشی اجرا نمی‌شود…';
+ researchReport=null;node('research-download').disabled=true;
+ try{
+  const d=await request('/api/research/'+operation,{role:node('research-role').value,strategy:node('research-strategy').value,agent_id:node('workspace-cycle-agent').value,consent_model_request:node('research-consent').checked});
+  if(operation!=='analyze'){researchReport=d;node('research-download').disabled=false;}
+  const display={...d};if(display.snapshot){display.snapshot={...display.snapshot};delete display.snapshot.bars;}
+  out.textContent=d.ok?(d.report||JSON.stringify(display,null,2)):(d.message||d.error||'پژوهش ناموفق بود.');
+ }catch(e){
+  if(operation!=='analyze'&&e.payload){researchReport=e.payload;node('research-download').disabled=false;}
+  out.textContent=e.message||'پژوهش ناموفق بود.';
+ }
+ finally{researchBusy=false;for(const op of ['analyze','backtest','compare','prepare'])node('research-'+op).disabled=false;await refresh();}
+};
+node('workspace-estimate').onclick=async()=>{
+ const button=node('workspace-estimate'),result=node('workspace-estimate-result');
+ button.disabled=true;result.textContent='در حال ساخت نمونهٔ تحلیل؛ بدون درخواست مدل…';
+ try{
+  const d=await request('/api/estimate-analysis-tokens',{agent_id:node('workspace-cycle-agent').value});
+  if(!d.ok)throw new Error(d.message||d.error||'تخمین ناموفق بود.');
+  result.textContent=`منبع: ${d.backend}${d.backend==='mock'?' — ساختگی، نه بازار واقعی':''} | نماد: ${d.symbol}
+کاراکتر پیام‌ها: ${d.characters} | ورودی تخمینی: ${d.estimated_input_tokens} توکن
+روش: ${d.method} | توکنایزر: ندارد | شمارش دقیق نیست
+خروجی، استدلال، کش و هزینهٔ واقعی: نامشخص | درخواست مدل: خیر
+${d.note}`;
+ }catch(e){result.textContent=e.message||'تخمین ناموفق بود.';}
+ finally{button.disabled=false;}
+};
+node('workspace-test').onclick=async()=>{
+ if(testing||!budgetAllowed||!modelReady)return;
+ testing=true;syncTestButton();
+ node('workspace-action').textContent='در انتظار آزمایش مدل؛ این درخواست از بودجهٔ مشترک کم می‌کند و ممکن است هزینه داشته باشد.';
+ try{
+  const d=await request('/api/model-test',{});
+  node('workspace-action').textContent=d.ok?(d.message||'پاسخ واقعی مدل دریافت شد.'):(d.message||d.error||'آزمایش ناموفق بود.');
+ }catch(e){node('workspace-action').textContent=(e&&e.message)||'آزمایش ناموفق بود؛ هیچ معامله‌ای درخواست نشد.';}
+ finally{testing=false;await refresh();}
+};
+node('engine-broker').onclick=async()=>{
+ const button=node('engine-broker'),out=node('engine-result');button.disabled=true;
+ out.textContent='دریافت کندل‌های بسته و محاسبهٔ محلی؛ بدون درخواست مدل یا سفارش…';
+ try{const d=await request('/api/engines/broker',{
+ symbol:node('engine-symbol').value,timeframe:node('engine-timeframe').value,
+ provider:node('engine-provider').value});out.textContent=JSON.stringify(d,null,2);
+ }catch(e){out.textContent='دریافت یا تحلیل دادهٔ بروکر ناموفق بود؛ سفارشی ارسال نشد.';}
+ finally{button.disabled=false;}
+};
+node('engine-analyze').onclick=async()=>{
+ const button=node('engine-analyze'),out=node('engine-result');button.disabled=true;
+ try{const ohlcv=JSON.parse(node('engine-ohlcv').value);
+ const d=await request('/api/engines/analyze',{ohlcv,provider:node('engine-provider').value});
+ out.textContent=JSON.stringify(d,null,2);
+ }catch(e){out.textContent='ورودی یا محاسبه نامعتبر است؛ سفارشی ارسال نشد.';}
+ finally{button.disabled=false;}
+};
+/* Offline M1 workbench: supplied data only, never an order or an automatic alert. */
+function dayNumber(id,required=false){
+ const raw=node(id).value.trim();
+ if(!raw){if(required)throw new Error('یک عدد ضروری وارد نشده است.');return null;}
+ const value=Number(raw);if(!Number.isFinite(value))throw new Error('عدد واردشده معتبر نیست.');
+ return value;
+}
+function dayJson(id){try{return JSON.parse(node(id).value);}catch(_){throw new Error('JSON ورودی معتبر نیست.');}}
+function dayBars(){
+ const value=dayJson('daytrade-bars');const rows=Array.isArray(value)?value:value&&value.data;
+ if(!Array.isArray(rows))throw new Error('آرایهٔ کندل‌ها یا خروجی get_candles را وارد کنید.');
+ return rows;
+}
+function dayPlanPayload(withSizing){
+ const targetPrice=dayNumber('daytrade-target-price');
+ const p={side:node('daytrade-side').value,entry:dayNumber('daytrade-price',true),
+  stop_rule:node('daytrade-stop-rule').value,stop_value:dayNumber('daytrade-stop-value'),
+  target_r:targetPrice===null?dayNumber('daytrade-target-r',true):null,target_price:targetPrice,
+  tick_size:dayNumber('daytrade-tick-size'),range_high:dayNumber('daytrade-high'),
+  range_low:dayNumber('daytrade-low'),atr_value:dayNumber('daytrade-atr')};
+ if(withSizing&&node('daytrade-sizing-enabled').checked){
+  const raw=dayJson('daytrade-spec');
+  p.sizing={spec:raw&&raw.info?raw.info:raw,budget:dayNumber('daytrade-budget',true),
+   risk_percent:dayNumber('daytrade-risk',true),commission_per_lot:dayNumber('daytrade-commission'),
+   slippage_price:dayNumber('daytrade-slippage')};
+ }
+ return p;
+}
+/* Explicit, visible-page-only quote monitoring; it never changes a position. */
+let dayMonitor=null,dayMonitorStarting=false,dayMonitorGeneration=0;
+function stopDayMonitor(message){
+ const wasActive=!!dayMonitor||dayMonitorStarting;
+ dayMonitorGeneration++;
+ if(dayMonitor){if(dayMonitor.timer)clearTimeout(dayMonitor.timer);if(dayMonitor.controller)dayMonitor.controller.abort();}
+ dayMonitor=null;dayMonitorStarting=false;
+ node('daytrade-monitor-start').disabled=false;node('daytrade-monitor-stop').disabled=true;
+ if(wasActive)node('daytrade-monitor-status').textContent=message||'پایش متوقف شد؛ هیچ سفارش یا تغییری در بروکر انجام نشد.';
+}
+async function pollDayMonitor(generation){
+ const mon=dayMonitor;if(!mon||generation!==dayMonitorGeneration)return;
+ if(document.hidden){stopDayMonitor('صفحه پنهان شد؛ پایش متوقف است و هشدار تضمین نمی‌شود.');return;}
+ const controller=new AbortController();mon.controller=controller;
+ const timeout=setTimeout(()=>controller.abort(),8000);
+ try{
+  const quoteResponse=await fetch('/api/quotes?'+new URLSearchParams({symbols:mon.symbol}),{signal:controller.signal});
+  const data=await quoteResponse.json();
+  if(generation!==dayMonitorGeneration)return;
+  const tick=data&&data.quotes&&data.quotes[mon.symbol];
+  if(!quoteResponse.ok||!data.ok||!tick)throw new Error('قیمت در دسترس نیست.');
+  const bid=Number(tick.bid),ask=Number(tick.ask);
+  if(!Number.isFinite(bid)||!Number.isFinite(ask)||bid<=0||ask<bid)throw new Error('Bid/Ask نامعتبر است.');
+  const check=await fetch('/api/daytrade/alert-rules',{method:'POST',headers:{'Content-Type':'application/json'},signal:controller.signal,
+   body:JSON.stringify({rules:mon.rules,quotes:{[mon.symbol]:{bid,ask}},now:Math.floor(Date.now()/1000),state:mon.state})});
+  const result=await check.json();
+  if(generation!==dayMonitorGeneration)return;
+  if(!check.ok||!result.ok)throw new Error(result.message||result.error||'بررسی هشدار ناموفق بود.');
+  mon.state=result.state;
+  for(const event of result.events||[]){
+   const line=`${new Date().toLocaleTimeString('fa-IR')} • ${mon.symbol} ${event.type}: ${event.quote_side} ${event.observed_price}`;
+   mon.events.unshift(line);mon.events=mon.events.slice(0,20);
+   if(typeof Notification!=='undefined'&&Notification.permission==='granted'){
+    try{new Notification('هشدار مشورتی Day Trader',{body:line+' — تازگی و پرشدن تأیید نشده است.'});}catch(_){}
+   }
+  }
+  node('daytrade-monitor-events').textContent=mon.events.join('\n');
+  node('daytrade-monitor-status').textContent=`پایش فعال: ${mon.symbol} / ${mon.side} • SL ${mon.stop} • TP ${mon.target} • Bid ${bid} / Ask ${ask}. تازگی بروکر تأیید نشده است.`;
+ }catch(e){
+  if(generation===dayMonitorGeneration)stopDayMonitor('پایش متوقف شد: '+((e&&e.message)||'ارتباط یا زمان پاسخ نامعتبر بود.')+' هشدار و سفارش تضمین نمی‌شوند.');
+  return;
+ }finally{clearTimeout(timeout);if(generation===dayMonitorGeneration&&dayMonitor)dayMonitor.controller=null;}
+ if(generation===dayMonitorGeneration&&dayMonitor)dayMonitor.timer=setTimeout(()=>{void pollDayMonitor(generation);},5000);
+}
+node('daytrade-monitor-start').onclick=async()=>{
+ if(dayMonitor||dayMonitorStarting||document.hidden)return;
+ const symbol=node('daytrade-monitor-symbol').value.trim();
+ if(!/^[\w.#+/!&() -]{1,64}$/.test(symbol)){node('daytrade-monitor-status').textContent='نماد دقیق بروکر معتبر نیست.';return;}
+ const generation=++dayMonitorGeneration;dayMonitorStarting=true;
+ node('daytrade-monitor-start').disabled=true;node('daytrade-monitor-stop').disabled=false;
+ node('daytrade-monitor-status').textContent='در حال آماده‌سازی طرح و شروع خواندن قیمت MT5…';
+ try{
+  const plan=await request('/api/daytrade/plan',dayPlanPayload(false));
+  if(generation!==dayMonitorGeneration||document.hidden)return;
+  if(!plan.ok)throw new Error(plan.message||plan.error||'طرح نامعتبر است.');
+  const rearm=!!node('daytrade-monitor-rearm').checked;
+  dayMonitor={symbol,side:plan.side,stop:plan.stop,target:plan.target,state:null,events:[],timer:null,controller:null,
+   rules:[{id:'stop',type:'stop',symbol,side:plan.side,price:plan.stop,rearm},
+          {id:'target',type:'target',symbol,side:plan.side,price:plan.target,rearm}]};
+  dayMonitorStarting=false;node('daytrade-monitor-events').textContent='';
+  await pollDayMonitor(generation);
+ }catch(e){if(generation===dayMonitorGeneration)stopDayMonitor('پایش شروع نشد: '+((e&&e.message)||'طرح نامعتبر است.'));}
+};
+node('daytrade-monitor-stop').onclick=()=>stopDayMonitor();
+node('daytrade-notifications').onclick=async()=>{
+ if(typeof Notification==='undefined'){node('daytrade-monitor-status').textContent='اعلان مرورگر در این محیط در دسترس نیست؛ نمایش صفحه جداست.';return;}
+ try{const permission=await Notification.requestPermission();
+  node('daytrade-monitor-status').textContent='اجازهٔ اعلان: '+permission+'؛ هشدار تنها هنگام باز بودن و پایش فعال قابل تلاش است.';
+ }catch(_){node('daytrade-monitor-status').textContent='درخواست اجازهٔ اعلان ناموفق بود.';}
+};
+for(const id of ['daytrade-side','daytrade-price','daytrade-stop-rule','daytrade-stop-value','daytrade-target-r',
+ 'daytrade-target-price','daytrade-tick-size','daytrade-high','daytrade-low','daytrade-atr','daytrade-monitor-symbol','daytrade-monitor-rearm'])
+ node(id).addEventListener('input',()=>stopDayMonitor('طرح یا نماد تغییر کرد؛ پایش متوقف شد.'));
+document.addEventListener('visibilitychange',()=>{if(document.hidden)stopDayMonitor('صفحه پنهان شد؛ پایش متوقف است.');});
+window.addEventListener('pagehide',()=>stopDayMonitor());
+
+async function dayRun(buttonId,resultId,task){
+ const button=node(buttonId),out=node(resultId);button.disabled=true;out.textContent='در حال محاسبهٔ آفلاین…';
+ try{const result=await task();out.textContent=JSON.stringify(result,null,2);}
+ catch(e){out.textContent=(e&&e.message)||'ورودی نامعتبر است؛ هیچ سفارشی ارسال نشد.';}
+ finally{button.disabled=false;}
+}
+node('daytrade-sample').onclick=()=>{
+ stopDayMonitor('نمونهٔ جدید بارگذاری شد؛ پایش قبلی متوقف شد.');
+ const base=Math.floor(1700000000/60)*60,round=x=>Math.round(x*1000)/1000,sessions=[];
+ for(let day=0;day<20;day++){
+  let p=2600+day*.2;const rows=[];
+  for(let i=0;i<45;i++){
+   const open=p,close=open+(i%15<8?.16:-.12)+(day%5-2)*.01;
+   rows.push([base+day*3600+i*60,round(open),round(Math.max(open,close)+.18),round(Math.min(open,close)-.18),round(close),100+i]);p=close;
+  }
+  sessions.push(rows);
+ }
+ const start=base+20*3600,current=[];
+ for(let i=0;i<20;i++){
+  const open=2700+i*.02,close=i<5?open+.01:2701+(i-5)*.05;
+  current.push([start+i*60,round(open),round(Math.max(open,close)+.18),round(Math.min(open,close)-.18),round(close),120+i]);
+ }
+ node('daytrade-bars').value=JSON.stringify(current);node('daytrade-sessions').value=JSON.stringify(sessions);
+ node('daytrade-start').value=start;node('daytrade-decision').value=start+6*60;
+ node('daytrade-side').value='buy';node('daytrade-setup').value='opening_range';node('daytrade-range').value='5';
+ node('daytrade-level').value='';node('daytrade-cutoff').value='';node('daytrade-volume').value='';
+ node('daytrade-price').value='';node('daytrade-high').value='';node('daytrade-low').value='';
+ node('daytrade-stop-rule').value='range_edge';node('daytrade-stop-value').value='';node('daytrade-atr').value='';
+ node('daytrade-target-r').value='1.5';node('daytrade-target-price').value='';node('daytrade-tick-size').value='.01';
+ node('daytrade-slot').value='5';node('daytrade-horizon').value='20';node('daytrade-history-cutoff').value='';
+ node('daytrade-segment-length').value='45';node('daytrade-split-status').textContent='۲۰ بخش کاملاً ساختگی بارگذاری شد.';
+ node('daytrade-replays').value='1000';node('daytrade-seed').value='19';node('daytrade-window').value='2';
+ node('daytrade-sizing-enabled').checked=false;node('daytrade-commission').value='';node('daytrade-slippage').value='';
+ node('daytrade-spec').value=JSON.stringify({trade_tick_size:.01,trade_tick_value:1,volume_step:.01,volume_min:.01,volume_max:100,point:.01,trade_stops_level:0});
+ node('daytrade-bid').value='2701';node('daytrade-ask').value='2701.2';
+ for(const id of ['daytrade-entry-result','daytrade-plan-result','daytrade-sim-result','daytrade-alert-result'])node(id).textContent='';
+ node('daytrade-entry-result').textContent='نمونهٔ ساختگی بارگذاری شد؛ ابتدا بررسی سیگنال را بزنید.';
+};
+node('daytrade-entry-run').onclick=()=>dayRun('daytrade-entry-run','daytrade-entry-result',async()=>{
+ stopDayMonitor('سیگنال دوباره محاسبه شد؛ پایش طرح قبلی متوقف شد.');
+ for(const id of ['daytrade-price','daytrade-high','daytrade-low','daytrade-decision'])node(id).value='';
+ node('daytrade-plan-result').textContent='';
+ const setup=node('daytrade-setup').value;
+ const d=await request('/api/daytrade/entry',{ohlcv:dayBars(),side:node('daytrade-side').value,
+  start_time:dayNumber('daytrade-start',true),setup,opening_range_bars:dayNumber('daytrade-range',true),
+  level:setup==='level'?dayNumber('daytrade-level',true):null,cutoff_time:dayNumber('daytrade-cutoff'),
+  min_tick_volume_ratio:dayNumber('daytrade-volume')});
+ if(d.trigger){
+  node('daytrade-price').value=d.trigger.close;node('daytrade-decision').value=d.trigger.bar_close_time;
+  node('daytrade-slot').value=d.trigger.slot;
+ }
+ if(d.opening_range&&d.opening_range.complete){
+  node('daytrade-high').value=d.opening_range.high;node('daytrade-low').value=d.opening_range.low;
+ }
+ return d;
+});
+node('daytrade-plan-run').onclick=()=>dayRun('daytrade-plan-run','daytrade-plan-result',
+ ()=>request('/api/daytrade/plan',dayPlanPayload(true)));
+node('daytrade-split').onclick=()=>{
+ const status=node('daytrade-split-status');
+ try{
+  const rows=dayBars(),size=dayNumber('daytrade-segment-length',true),decision=dayNumber('daytrade-decision',true);
+  if(!Number.isInteger(size)||size<2||size>1000||!Number.isSafeInteger(decision)||decision%60)
+   throw new Error('طول بخش یا زمان تصمیم معتبر نیست.');
+  if(rows.length<2||rows.length>10000)throw new Error('۲ تا ۱۰۰۰۰ ردیف مرتب لازم است.');
+  let previous=-1;
+  for(const row of rows){
+   if(!Array.isArray(row)||(row.length!==6&&row.length!==7)||!Number.isSafeInteger(row[0])||row[0]<0||row[0]%60||row[0]<=previous)
+    throw new Error('زمان کندل‌ها باید عدد صحیح، صعودی و روی شبکهٔ M1 باشد.');
+   previous=row[0];
+  }
+  // Exclude the final bar even if the caller says it has already closed.
+  const prior=rows.slice(0,-1).filter(row=>row[0]+60<=decision),runs=[];
+  for(const row of prior){
+   const run=runs[runs.length-1];
+   if(!run||row[0]!==run[run.length-1][0]+60)runs.push([row]);else run.push(row);
+  }
+  let blocks=[];
+  for(const run of runs){const offset=run.length%size;for(let i=offset;i+size<=run.length;i+=size)blocks.push(run.slice(i,i+size));}
+  if(!blocks.length)throw new Error('بخش پیوستهٔ کامل قبل از زمان تصمیم پیدا نشد.');
+  if(blocks.length>100)blocks=blocks.slice(-100);
+  node('daytrade-sessions').value=JSON.stringify(blocks);
+  status.textContent=`${blocks.length} بلوک پیوسته ساخته شد؛ ${prior.length-blocks.length*size} ردیف قبلی و آخرین ردیف ورودی کنار گذاشته شد. این بلوک‌ها نشست یا ساعت یکسان روز را اثبات نمی‌کنند.`;
+ }catch(e){status.textContent=(e&&e.message||'تقسیم ناموفق بود.')+' دادهٔ قبلی بخش‌ها تغییر نکرد.';}
+};
+node('daytrade-history-run').onclick=()=>dayRun('daytrade-history-run','daytrade-sim-result',async()=>{
+ if(node('daytrade-setup').value!=='opening_range')throw new Error('بازپخش تاریخی فعلاً فقط شکست رنج را پشتیبانی می‌کند.');
+ if(dayNumber('daytrade-target-price')!==null)throw new Error('برای بازپخش تاریخی قیمت هدف ثابت را خالی کنید و هدف R بدهید.');
+ return request('/api/daytrade/history',{sessions:dayJson('daytrade-sessions'),decision_time:dayNumber('daytrade-decision',true),
+  side:node('daytrade-side').value,opening_range_bars:dayNumber('daytrade-range',true),
+  stop_rule:node('daytrade-stop-rule').value,stop_value:dayNumber('daytrade-stop-value'),
+  target_r:dayNumber('daytrade-target-r',true),tick_size:dayNumber('daytrade-tick-size'),
+  horizon_bars:dayNumber('daytrade-horizon',true),cutoff_slot:dayNumber('daytrade-history-cutoff')});
+});
+node('daytrade-machine-run').onclick=()=>dayRun('daytrade-machine-run','daytrade-sim-result',async()=>{
+ const plan=await request('/api/daytrade/plan',dayPlanPayload(false));
+ node('daytrade-plan-result').textContent=JSON.stringify(plan,null,2);
+ return request('/api/daytrade/time-machine',{sessions:dayJson('daytrade-sessions'),decision_time:dayNumber('daytrade-decision',true),
+  side:plan.side,entry:plan.entry,stop:plan.stop,target:plan.target,entry_slot:dayNumber('daytrade-slot',true),
+  horizon_bars:dayNumber('daytrade-horizon',true),replays:dayNumber('daytrade-replays',true),
+  seed:dayNumber('daytrade-seed',true),window:dayNumber('daytrade-window',true)});
+});
+node('daytrade-alert-run').onclick=()=>dayRun('daytrade-alert-run','daytrade-alert-result',async()=>{
+ const plan=await request('/api/daytrade/plan',dayPlanPayload(false));
+ node('daytrade-plan-result').textContent=JSON.stringify(plan,null,2);
+ return request('/api/daytrade/alerts',{side:plan.side,stop:plan.stop,target:plan.target,
+  bid:dayNumber('daytrade-bid',true),ask:dayNumber('daytrade-ask',true)});
+});
+const dayExtraOperations=new Set(['scan','alert-rules','review','news','stock-facts','stock-disclosures']);
+node('daytrade-extra-example').onclick=()=>{
+ const kind=node('daytrade-extra-kind').value,base=Math.floor(1700000000/60)*60;
+ const rows=Array.from({length:32},(_,i)=>{const p=Math.round((100+i*.02)*100)/100;return [base+i*60,p,p+.1,p-.1,p,100];});
+ const spec={trade_tick_size:.01,trade_tick_value:1,volume_step:.01,volume_min:.01,volume_max:100,point:.01,trade_stops_level:0};
+ const samples={
+  scan:{markets:[{symbol:'XAUUSD',ohlcv:rows}],mode:'patterns'},
+  'alert-rules':{rules:[{id:'above',type:'above',symbol:'XAUUSD',price:101,quote_side:'bid',rearm:true}],quotes:{XAUUSD:{bid:101,ask:101.2}},now:1700000000},
+  review:{side:'buy',entry:100,stop:99,target:102,sizing:{spec,budget:10000,risk_percent:1,commission_per_lot:0,slippage_price:0},limits:{max_loss_per_trade:5,daily_risk_cap:20,risk_used_today:0,trades_today:0,max_trades_per_day:3,min_net_reward_risk:1}},
+  news:{market:'macro',now:'2024-01-02T12:00:00Z',watch:{XAUUSD:'gold'},feeds:[{kind:'rss',symbol:'XAUUSD',source:'نمونه ساختگی',xml:'<rss><channel><item><title>Fed inflation example</title><link>https://example.test/1</link><guid>1</guid><pubDate>Tue, 02 Jan 2024 11:00:00 GMT</pubDate></item></channel></rss>'}]},
+  'stock-facts':{companyfacts:{cik:123,entityName:'Synthetic Company',facts:{'us-gaap':{Revenues:{units:{USD:[{start:'2024-01-01',end:'2024-03-31',filed:'2024-05-01',val:1000000,form:'10-Q',fy:2024,fp:'Q1',accn:'example'}]}}}}},as_of:'2024-06-01'},
+  'stock-disclosures':{kind:'index',year:2024,as_of:'2024-06-01',members:['Example'],text:'<FinancialDisclosure><Member><First>Alex</First><Last>Example</Last><Year>2024</Year><DocID>123</DocID><FilingType>P</FilingType><FilingDate>05/01/2024</FilingDate></Member></FinancialDisclosure>'}
+ };
+ if(!dayExtraOperations.has(kind))return;
+ node('daytrade-extra-json').value=JSON.stringify(samples[kind],null,2);
+ node('daytrade-extra-result').textContent='نمونهٔ کاملاً ساختگی؛ دادهٔ بازار، شرکت یا افشای واقعی نیست.';
+};
+node('daytrade-extra-run').onclick=()=>dayRun('daytrade-extra-run','daytrade-extra-result',()=>{
+ const kind=node('daytrade-extra-kind').value;
+ if(!dayExtraOperations.has(kind))throw new Error('ابزار انتخاب‌شده معتبر نیست.');
+ return request('/api/daytrade/'+kind,dayJson('daytrade-extra-json'));
+});
+node('cost-health-check').onclick=async()=>{
+ const button=node('cost-health-check'),out=node('cost-health-result');
+ button.disabled=true;out.textContent='بررسی فقط‌خواندنی هزینه‌ها…';
+ try{const d=await request('/api/cost-reconciliation');out.textContent=JSON.stringify(d,null,2);}
+ catch(e){out.textContent='بررسی هزینه‌ها ناموفق بود؛ معامله‌ای انجام نشد.';}
+ finally{button.disabled=false;}
+};
+refresh();setInterval(refresh,5000);
+})();

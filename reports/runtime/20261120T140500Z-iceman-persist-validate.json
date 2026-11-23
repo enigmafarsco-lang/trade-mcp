@@ -1,0 +1,99 @@
+{
+  "schema": "trade-mcp/runtime-report",
+  "report_id": "20261120T140500Z-iceman-persist-validate",
+  "generated_at": "2026-11-20T14:05:00Z",
+  "commit_base": "6e0acd94d08b9ba3ac9a2426faf503d278f57d86",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "workflow": "persist verified opencode-session (iceman-free) via supported local mechanism without hard-coded ephemeral port; one bounded read-only web-analysis validation window (max 300s, 5 attempts) with exactly one analysis request; revoke budget; keep trading/policy off and cycles stopped",
+  "execution_authorized_by_report": false,
+  "git": {
+    "preserved_commits": ["6053277d1ca04b94c718c3a7aa86677c788c98d6", "734b8d8c5c32f9a1c4b5ba833546174b594ade4e", "c900999065c74220da4220a1864c1953ec8d5671", "6e0acd94d08b9ba3ac9a2426faf503d278f57d86"]
+  },
+  "persistence": {
+    "supported_local_mechanism": "local .env (gitignored, not committed) sets TRADE_MCP_WEB_MODEL_BACKEND=opencode-session and TRADE_MCP_OPENCODE_MODEL=opencode/iceman-free without TRADE_MCP_OPENCODE_URL; narrow adapter rediscovery (discover_desktop) obtains verified loopback URL/password at client creation when URL missing",
+    "hard_coded_ephemeral_port": false,
+    "secrets_committed": false,
+    "local_configuration_committed": false,
+    "starimg_restored_on_restart": false,
+    "console_restarted": true,
+    "effective_after_restart": {
+      "backend": "opencode-session",
+      "provider": "opencode-session",
+      "model": "opencode/iceman-free",
+      "configured": true
+    }
+  },
+  "source_tests_changes": {
+    "files": [
+      "src/trade_mcp/web_opencode.py",
+      "src/trade_mcp/console.py",
+      "tests/test_web_opencode.py"
+    ],
+    "summary": "narrow opencode-session rediscovery when URL not set (supported discover_desktop), updated unconfigured message, regression tests for rediscovery/fail-closed; preserves existing IDs and budget/permission controls",
+    "lint_ruff": "pass",
+    "tests_pytest": "pass (full suite; targeted web_opencode tests pass)"
+  },
+  "validation_window": {
+    "authorized": true,
+    "bounded_seconds": 300,
+    "max_application_attempts": 5,
+    "application_analysis_requests_sent": 1,
+    "mandatory_model_tests_counted": 0,
+    "retries": 0,
+    "model_fallback": false,
+    "paid_provider_requests": 0,
+    "extra_window": false,
+    "stopped_on_first_error": true,
+    "budget_revoked_after": true,
+    "request": {
+      "endpoint": "POST /api/terminal/explain",
+      "symbol": "XAUUSD",
+      "model": "opencode/iceman-free",
+      "context_sent": "minimal redacted market context only (symbol, quote, bias, scenario, warnings); no account/journal identifiers",
+      "trading_demo_policy_off": true,
+      "entry_cycles_stopped": true
+    },
+    "result": {
+      "ok": false,
+      "error": "quota_exhausted",
+      "http_status": 502,
+      "provider_message": "quota exhausted / provider quota reached (reported by provider)",
+      "genuine_model_response_text": null,
+      "rules_or_error_wait": "provider_error (not WAIT, not a genuine model response)",
+      "transport": {
+        "stage": "session_generate",
+        "generation_submitted": true,
+        "permissions_acknowledged": true,
+        "model_acknowledged": true
+      }
+    },
+    "usage_recorded": {
+      "request_kind": "explain",
+      "attempt_index": 1,
+      "provider": "opencode-session",
+      "model": "opencode/iceman-free",
+      "ok": 0,
+      "error_code": "quota_exhausted",
+      "input_tokens": null,
+      "cached_input_tokens": null,
+      "output_tokens": null,
+      "reasoning_tokens": null,
+      "cost_amount": null,
+      "cost_currency": null,
+      "usage_source": "unknown",
+      "cost_source": "unknown",
+      "accounting_convention": "unknown",
+      "retry_after_ms": null
+    }
+  },
+  "post_state": {
+    "trading_enabled": false,
+    "paper_trading": false,
+    "demo_cash_policy_off": true,
+    "budget_state": "revoked",
+    "budget_allowed": false,
+    "page_cycle_active": false,
+    "broker_flat": true,
+    "unresolved_intents": 0
+  }
+}

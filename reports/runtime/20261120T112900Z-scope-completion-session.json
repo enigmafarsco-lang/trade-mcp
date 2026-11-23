@@ -1,0 +1,90 @@
+{
+  "schema": "trade-mcp/runtime-report",
+  "report_id": "20261120T112900Z-scope-completion-session",
+  "generated_at": "2026-11-20T11:29:00Z",
+  "commit_base": "76c7f01ccdfd1226e0cfc69abdee749282a434bd",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "workflow": "authorized scope continuation: execution fixes, scenario UI, independent app cloud validation, one-shot DEMO acceptance attempt (run_rules_guarded)",
+  "execution_authorized_by_report": false,
+  "A_execution_integration_fixes": {
+    "sizing_agent_max_lot_applied_during_sizing": true,
+    "oversized_proposal_not_created": true,
+    "no_lot_risk_cap_raised_or_rounded_up_to_broker_min": true,
+    "no_valid_volume_returns_clear_no_trade": true,
+    "guarded_blocks_volatility_spiking_or_disagreement_before_proposal": true,
+    "guarded_checks_structured_and_prose_warning_representations": true,
+    "mandatory_sl_demo_ownership_uncertain_order_handling_cash_exit_policy_persistent_three_loss_latch_gates_preserved": "existing behavior/gates preserved; no weakening",
+    "tests_lint_js_checks": {
+      "pytest_full_offline": "pass (100% progress, skips observed as before)",
+      "ruff_src_tests": "pass",
+      "node_check_terminal_js": "not_applicable (Node 12 parser incompatible with existing modern syntax in file; no project JS lint configured)"
+    }
+  },
+  "B_hourly_scenario_ui": {
+    "future_scenario_overlay_15_30_45_60m": true,
+    "dashed_overlay_clearly_separated": true,
+    "persian_label_uncalibrated_not_prediction_not_signal": true,
+    "no_fabricated_future_candles_or_probabilities": true,
+    "stale_missing_symbol_timeframe_change_handling_no_old_overlay": true,
+    "historical_chart_expired_signals_entry_sl_tp_size_risk_ui_preserved": true,
+    "overlay_connected_to_order_execution": false,
+    "comparison_table_preserved": true
+  },
+  "C_independent_app_cloud_validation": {
+    "authorized": "ONE bounded read-only application analysis window (<=300s, <=5 attempts, no retries/fallback/extra windows)",
+    "endpoint": "https://ai.starimg.ru/v1",
+    "api_model_id_vendor_advertised_alias": "deepseek-v4.1-flash-1017",
+    "secure_local_key_used": true,
+    "trading_off_during_validation": true,
+    "demo_policy_off_during_validation": true,
+    "context_sent": "minimum necessary redacted market-analysis context via /api/terminal/explain (symbol/quote/bias/scenario/warnings only; no account identifiers, credentials, journal history, raw financial records)",
+    "budget_window": {"activated": true, "max_attempts": 5, "window_seconds": 300},
+    "application_attempts_made": 1,
+    "provider_request_result": {"ok": false, "error": "billing_required", "message": "اعتبار provider مدل وب کافی نیست؛ درخواست متوقف شد."},
+    "actual_usage": null,
+    "stopped_on_first_error": true,
+    "retries": 0,
+    "extra_windows": 0,
+    "window_revoked_after": true,
+    "model_access_confirmed_for_inference": false,
+    "note": "Application request format/path reached provider and was classified; inference not completed due to provider billing/credit requirement."
+  },
+  "D_bounded_demo_acceptance": {
+    "run_rules_guarded_invocation_performed": false,
+    "invocations": 0,
+    "fresh_preflight_passed": false,
+    "preflight": {
+      "demo_usd_account": "pass",
+      "broker_positions_zero": "pass",
+      "broker_orders_zero": "pass",
+      "demo_cash_guard_no_latch_no_unresolved_intents": "pass",
+      "fresh_v2_cost_snapshot": "fail (stale/not updating)",
+      "cost_account_reconciliation": "fail (stage=snapshot, cost_check_failed)",
+      "healthy_independent_guardian": "not_verified_for_enabled_run (console trading/policy off; no enabled test run started due to preflight blocker)",
+      "budget_revoked_scheduler_stopped": "pass",
+      "agent_single_symbol_limits_preserved": "pass (a76d1cff5b XAUUSD guarded max_lot=0.02 max_risk=0.5)"
+    },
+    "monitor_restoration_attempted": false,
+    "monitor_restoration_blocker": "Cost snapshot stale and monitor not observed in today's terminal/expert logs; previously verified restoration (attach existing compiled TradeMCPCostMonitor.ex5 to one dedicated chart with verified unchanged bounded inputs) could not be performed because MT5 chart/EA attachment tools are unavailable in this harness. No MT5/Wine restart, recompilation, monitor input change, or duplicate writer attempted.",
+    "outcomes": {
+      "model": "not_applicable (run_rules_guarded is deterministic; no cloud window used)",
+      "signal": "unobserved",
+      "sizing": "unobserved",
+      "proposal": "unobserved",
+      "broker_acceptance": "unobserved",
+      "ownership": "unobserved",
+      "floating_net_pl": "unobserved",
+      "guardian_exit": "unobserved"
+    },
+    "end_state": {
+      "broker_positions": 0,
+      "broker_orders": 0,
+      "demo_cash_guard_latched": false,
+      "demo_cash_guard_intents": 0,
+      "console_trading_enabled": false,
+      "console_demo_cash_policy_enabled": false,
+      "entry_cycles_stopped": true,
+      "budget_revoked": true
+    }
+  }
+}

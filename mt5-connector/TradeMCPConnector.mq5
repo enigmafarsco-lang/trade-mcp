@@ -12,7 +12,7 @@
 //+------------------------------------------------------------------+
 #property copyright "trade-mcp"
 #property link      "https://github.com/enigmafarsco-lang/trade-mcp"
-#property version   "1.10"
+#property version   "1.11"
 #property description "MetaTrader 5 <-> trade-mcp bridge (TCP, newline-delimited JSON)"
 
 #include <Trade\Trade.mqh>
@@ -37,7 +37,7 @@ input int    InpMaxRatesCount   = 5000;        // hard cap on bars per request
 input int    InpMaxSymbols      = 2000;        // hard cap on symbols per request
 
 //--- globals --------------------------------------------------------
-#define EA_VERSION "1.10"
+#define EA_VERSION "1.11"
 #define SOCK_NONE  INVALID_HANDLE
 
 int      g_socket        = SOCK_NONE;
@@ -90,7 +90,7 @@ public:
    }
    void Str(const string k, const string v) { Raw("\"" + JEsc(k) + "\":\"" + JEsc(v) + "\""); }
    void Num(const string k, const double v, const int digits = 5) { Raw("\"" + JEsc(k) + "\":" + DoubleToString(v, digits)); }
-   void Int(const string k, const long v) { Raw("\"" + JEsc(k) + "\":" + LongToString(v)); }
+   void Int(const string k, const long v) { Raw("\"" + JEsc(k) + "\":" + (string)v); }
    void Bool(const string k, const bool v) { Raw("\"" + JEsc(k) + "\":" + (v ? "true" : "false")); }
    void Val(const string raw) { Raw(raw); }
    string ToString() { return (m_isArray ? "[" + m_body + "]" : "{" + m_body + "}"); }
@@ -867,7 +867,7 @@ string CmdTradeModify(const string line)
    double tp   = JGetNum(line, "tp", 0.0);
    if(FindPositionByTicket(ticket) == 0)
    {
-      SetError("not_found", "position " + LongToString(ticket) + " not found");
+      SetError("not_found", "position " + (string)ticket + " not found");
       return "";
    }
    string symbol = PositionGetString(POSITION_SYMBOL);
@@ -894,7 +894,7 @@ string CmdTradeClose(const string line)
 
    if(FindPositionByTicket(ticket) == 0)
    {
-      SetError("not_found", "position " + LongToString(ticket) + " not found");
+      SetError("not_found", "position " + (string)ticket + " not found");
       return "";
    }
    double posVolume = PositionGetDouble(POSITION_VOLUME);

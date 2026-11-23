@@ -1,0 +1,84 @@
+{
+  "schema": "trade-mcp/runtime-report",
+  "report_id": "20261120T134500Z-glm-pricing-failclosed",
+  "generated_at": "2026-11-20T13:45:00Z",
+  "commit_base": "734b8d8c5c32f9a1c4b5ba833546174b594ade4e",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "workflow": "resolve installed-model identifier mismatch: inspect sanitized installed metadata for opencode/glm-5.3-flash; pricing nonzero -> do not use; configure web as opencode-session on verified loopback URL but leave unconfigured/fail-closed (no direct Starimg active/fallback); independent flat/intents verification; non-generation validation only; tests/lint; sanitized report",
+  "execution_authorized_by_report": false,
+  "git": {
+    "fetched": true,
+    "head_before_changes": "734b8d8c5c32f9a1c4b5ba833546174b594ade4e",
+    "origin_before_push": "6053277d1ca04b94c718c3a7aa86677c788c98d6",
+    "fast_forward_performed": false,
+    "reason": "local branch ahead; no reset/rebase",
+    "preserved_commits": ["6053277d1ca04b94c718c3a7aa86677c788c98d6", "734b8d8c5c32f9a1c4b5ba833546174b594ade4e"]
+  },
+  "selection": {
+    "user_authorized_conditional": "opencode/glm-5.3-flash ONLY IF installed provider metadata explicitly identifies zero-cost for input and output",
+    "explicit_selection": true,
+    "silent_fallback": false,
+    "other_model_selected": false,
+    "coding_conversation_model_changed": false
+  },
+  "installed_metadata_sanitized": {
+    "provider_identity": {"id": "opencode", "name": "Personal / OpenCode"},
+    "installed_model_id_observed": "glm-5.3-flash",
+    "requested_exact_id": "opencode/glm-5.3-flash-free",
+    "requested_exact_id_listed_in_installed_opencode": false,
+    "input_price": 0.15,
+    "output_price": 0.5,
+    "cache_price": {"read": 0.03, "write": 0},
+    "separate_reasoning_price_field_listed": false,
+    "missing_metadata": "no separate reasoning-price field listed in cost metadata (reasoning present in variants/capabilities but not as priced cost field)",
+    "pricing_unknown_or_nonzero": "nonzero",
+    "zero_cost_verified": false,
+    "note": "Missing price fields are unknown, not zero; pricing not inferred from -free suffix. Input/output explicitly nonzero -> model not used."
+  },
+  "implementation": {
+    "source_tests_docs_changed_for_model_support": false,
+    "reason": "pricing not verified zero-cost (nonzero); adapter allowlist/validation not bypassed and no model-support implementation added"
+  },
+  "pre_restart_independent_verification": {
+    "broker_demo_usd_flat": true,
+    "positions": 0,
+    "orders": 0,
+    "unresolved_intents": 0,
+    "latched": false,
+    "guardian_protection_preserved": true,
+    "note": "independent checks (broker state + durable guard intents) confirmed flat/no unresolved intents; console restarted only after safe state confirmed"
+  },
+  "console_restart_configuration": {
+    "console_restarted": true,
+    "console_pid": 133776,
+    "effective_backend": "opencode-session",
+    "effective_provider": null,
+    "effective_model": "",
+    "model_configured": false,
+    "model_configuration_issue": "OpenCode session requires OPENCODE_URL and an allowlisted OPENCODE_MODEL; LLM_* does not configure this backend.",
+    "opencode_loopback_url_configured_in_process": "verified loopback (http://127.0.0.1:49374)",
+    "direct_starimg_active_or_fallback": false,
+    "direct_provider_credentials_removed_from_console_process_env": true,
+    "secure_files_and_rollback_settings_preserved": true,
+    "fail_closed": true,
+    "trading_enabled": false,
+    "paper_trading": false,
+    "demo_cash_policy": false,
+    "budget_state": "revoked",
+    "budget_allowed": false,
+    "entry_cycles_stopped": true
+  },
+  "session_health": {
+    "opencode_server_identity_health_non_generation": {"verified": true, "api": "v2", "healthy": true, "note": "server health/identity checked earlier without text generation"},
+    "runtime_web_session_health_validation_for_requested_model": "not_run",
+    "reason": "web backend left unconfigured/fail-closed due to blocked model validation (nonzero/unusable pricing and exact requested ID not listed); app session probe requires configured allowlisted model",
+    "inference_performed": false,
+    "budget_activation": false,
+    "paid_requests": 0,
+    "orders_created": 0
+  },
+  "tests_lint": {
+    "ruff": "pass",
+    "pytest": "pass"
+  }
+}

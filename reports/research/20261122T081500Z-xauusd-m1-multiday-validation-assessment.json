@@ -1,0 +1,59 @@
+{
+  "schema": "xauusd-research-check-report/v1",
+  "report_id": "20261122T081500Z-xauusd-m1-multiday-validation-assessment",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "head_at_execution": "043a125",
+  "trading_off": true,
+  "cloud_budget_revoked": true,
+  "strategy_fixed": {
+    "consecutive_changes": 3,
+    "lot_research_scenario": 0.02,
+    "gross_cash_exits_usd": {"loss": -2, "profit": 2},
+    "one_position": true,
+    "three_loss_latch": true
+  },
+  "inspection": {
+    "archived_tick_sample": {
+      "path": "logs/research-inputs/xauusd-ticks-corrected-20261122T073154Z/raw-response.json",
+      "rows": 1015,
+      "window_minutes": 5,
+      "interior_minutes_seen_in_replay": 3,
+      "bid_ask_two_sided": true,
+      "time_semantics_verified_utc": false,
+      "time_field": "time_ms_string_iso_like_no_tz",
+      "sufficient_for_meaningful_multiday_test": false
+    },
+    "native_mcp_read_only_tools_verified": [
+      {"name": "get_chart_ticks_history", "read_only": true, "required": ["datetime_from","datetime_to","symbol"], "optional": ["limit"], "limit_default_schema": 100000},
+      {"name": "get_chart_history", "read_only": true, "note": "M1 bars; insufficient for tick-momentum Bid/Ask strategy"}
+    ],
+    "metadata_read_only_call_made": {
+      "tool": "get_marketwatch_symbols",
+      "symbol": "XAUUSD_i",
+      "count": 1,
+      "cost_fields_present": ["swap_long","swap_short","swap_mode","tick_value","tick_size","contract_size","currency_profit"],
+      "commission_field_present": false
+    }
+  },
+  "cost_assessment": {
+    "commission_actual": "unknown_not_in_symbol_metadata",
+    "swap_actual_application": "unknown_incomplete_for_net_pnl",
+    "net_pnl": null,
+    "gross_only_allowed": true,
+    "sufficient_for_net_profitability_label": false
+  },
+  "predefined_windows_and_limits_recorded": {
+    "evaluation_window": {"label":"eval_fixed","broker_wall_clock_from":"2026-11-18T00:00:00","broker_wall_clock_to":"2026-11-19T00:00:00","days":1},
+    "final_test_window": {"label":"final_fixed","broker_wall_clock_from":"2026-11-19T00:00:00","broker_wall_clock_to":"2026-11-20T00:00:00","days":1},
+    "per_request_max_rows_limit": 10000,
+    "max_requests_allowed": 0,
+    "timestamp_semantics": "broker_wall_clock_labels_unknown_not_utc",
+    "bounds_enforceable_for_meaningful_multiday_tick_validation": false
+  },
+  "execution": {
+    "new_tick_data_requested": false,
+    "existing_offline_scenario_rerun": false,
+    "existing_offline_scenario_reference": "reports/research/20261122T075608Z-xauusd-cash-offline.json"
+  },
+  "verified_limitation": "Insufficient historical Bid/Ask tick data for a meaningful multi-day test: archived sample is 5 minutes/1015 rows (3 interior minutes). get_chart_ticks_history has schema default limit 100000 but observed density (~203 rows/min) implies ~292k rows/day, exceeding per-request limit; covering even 1 day requires many bounded requests, and multi-day meaningful coverage cannot be enforced within explicit bounded request/row limits without retries/fallback. Actual commission is unavailable and swap application is incomplete for net PnL; unknown costs remain NULL and gross results cannot be labeled net profitability."
+}

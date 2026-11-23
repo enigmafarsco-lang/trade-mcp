@@ -1,0 +1,104 @@
+{
+  "schema": "trade-mcp/runtime-report",
+  "report_id": "20261120T100914Z-rules-guarded-demo-continuation",
+  "generated_at": "2026-11-20T10:09:14Z",
+  "commit_base": "302ad14b67ce926181139b7e37e74b1468db4db3",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "workflow": "authorized one-shot DEMO acceptance continuation (docs/RULES-GUARDED.md, run_rules_guarded)",
+  "recovery": {
+    "diagnosis": {
+      "configured_snapshot_path_belongs_to_running_terminal": true,
+      "snapshot_before": "v2, stale/not updating",
+      "monitor_attached_before": false,
+      "connector_chart_untouched": true,
+      "charts_before": [
+        {"chart_id": "105274268700280", "symbol": "XAUUSD", "period": "H1", "expert": "TradeMCPConnector"}
+      ],
+      "expert_journal_recent_monitor_records": 0,
+      "terminal_log_costmonitor_mentions_today": 0
+    },
+    "monitor_parameters_verified": {"From": "2026-01-01T00:00:00Z (1767225600)", "MaxDeals": 10000, "IntervalSeconds": 5, "source": "get_expert_advisor_parameters on compiled TradeMCPCostMonitor.ex5"},
+    "action": "attached existing compiled TradeMCPCostMonitor.ex5 to exactly one new dedicated chart with no expert_parameters; no recompile, no MT5/Wine restart, no input change, no duplicate writer",
+    "dedicated_chart": {"chart_id": "105331913664529", "symbol": "XAUUSD", "period": "H1", "expert": "TradeMCPCostMonitor"},
+    "charts_after": [
+      {"chart_id": "105274268700280", "symbol": "XAUUSD", "period": "H1", "expert": "TradeMCPConnector"},
+      {"chart_id": "105331913664529", "symbol": "XAUUSD", "period": "H1", "expert": "TradeMCPCostMonitor"}
+    ],
+    "snapshot_updates_observed": 3,
+    "cost_reconciliation_ok_after_recovery": true
+  },
+  "checks": {
+    "fresh_preflight_repeated": true,
+    "preflight_pass_before_invocation": true,
+    "demo_usd_account": "pass",
+    "broker_positions_zero_before": "pass",
+    "broker_orders_zero_before": "pass",
+    "demo_cash_guard_no_latch_no_intents": "pass",
+    "fresh_v2_snapshot": "pass",
+    "cost_reconciliation_pass": "pass",
+    "budget_revoked": "pass",
+    "scheduler_stopped": "pass",
+    "page_cycle_stopped": "pass",
+    "agent_single_symbol_guarded_limits_preserved": "pass",
+    "independent_guardian_runtime": "console restarted with guardian (test run) and later safe run; broker flat, guard state clean",
+    "paper_trading_env_verified_correct_var": "TRADE_MCP_PAPER_TRADING=false (process env)"
+  },
+  "invocation": {
+    "performed": true,
+    "count": 1,
+    "endpoint": "POST /api/agents/a76d1cff5b {\"action\":\"run_rules_guarded\"}",
+    "agent_id": "a76d1cff5b",
+    "agent_symbol": "XAUUSD",
+    "http_status": 200,
+    "duration_s": 0.2918975353240967
+  },
+  "outcomes": {
+    "strategy_signal": {
+      "source": "rules",
+      "llm_status": "not_configured",
+      "cloud_request": false,
+      "action": "sell",
+      "confidence": 63,
+      "scenario": {"action": "sell", "entry_reference": 3575.45, "stop_loss": 3594.65, "take_profit_1": 3546.64},
+      "warnings": ["volatility is spiking - widen stops or stay out"]
+    },
+    "risk_checks": {
+      "result": "blocked_by_agent_lot_cap",
+      "detail": "proposal cancelled: sized 0.05 lot, above the agent's 0.02 cap",
+      "agent_max_lot": 0.02,
+      "agent_max_risk": 0.5
+    },
+    "proposal": {"created_then_cancelled": true, "status": "cancelled", "symbol": "XAUUSD", "side": "sell", "comment_prefix": "agent:a76d1cff5b", "broker_submitted": false},
+    "confirmation": "none (auto-confirm not reached; cancelled by cap gate)",
+    "broker_response": "none (no order submitted)",
+    "owned_position_reconciliation": "not_applicable (flat)",
+    "floating_net_pl_evidence": "not_applicable",
+    "actual_exit_evidence": "not_applicable",
+    "position_open": false,
+    "result_class": "no_order (decision produced by deterministic rules; execution cancelled by existing risk/limit gate)"
+  },
+  "counts": {
+    "run_rules_guarded_invocations": 1,
+    "proposals_created": 1,
+    "proposals_executed": 0,
+    "proposals_cancelled": 1,
+    "confirmations_sent": 0,
+    "broker_orders_submitted": 0,
+    "positions_opened": 0,
+    "positions_closed": 0,
+    "cloud_requests": 0,
+    "budget_state_after": "revoked",
+    "budget_used_attempts_after": 1
+  },
+  "end_state": {
+    "broker_positions": 0,
+    "broker_orders": 0,
+    "demo_cash_guard_latched": false,
+    "demo_cash_guard_intents": 0,
+    "console_trading_enabled": false,
+    "console_demo_cash_policy_enabled": false,
+    "console_paper_trading": false,
+    "notes": "After invocation result (flat, no unresolved intent), test console (trading flags enabled in process env) stopped and safe console restarted with both trading flags false. Existing local report commit 302ad14 preserved."
+  },
+  "execution_authorized_by_report": false
+}

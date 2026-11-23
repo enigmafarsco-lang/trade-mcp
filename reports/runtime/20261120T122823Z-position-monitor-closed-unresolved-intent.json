@@ -1,0 +1,65 @@
+{
+  "schema": "trade-mcp/runtime-report",
+  "report_id": "20261120T122823Z-position-monitor-closed-unresolved-intent",
+  "generated_at": "2026-11-20T12:28:23Z",
+  "commit_base": "91b61d1a13ec7d2a9e2bf816a90a80c474d2aea4",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "workflow": "monitor-only continuation for existing acceptance-session position (no new invocation/proposal/entry/cloud request/budget activation)",
+  "execution_authorized_by_report": false,
+  "constraints_respected": {
+    "no_new_agent_invocation": true,
+    "no_new_proposal_or_entry": true,
+    "no_cloud_request": true,
+    "no_budget_activation": true,
+    "no_manual_intent_ownership_rewrite_adopt_delete": true,
+    "no_resubmit_or_force_close": true,
+    "loss_latch_auto_reset": false,
+    "paid_api_disabled_budget_revoked_entry_cycles_stopped": true
+  },
+  "observation": {
+    "fresh_broker_read_performed": true,
+    "bounded_observation": "fresh state read performed; position found closed (definitive outcome observed)",
+    "broker_positions": 0,
+    "broker_orders": 0
+  },
+  "outcomes_separate": {
+    "broker_acceptance_entry": "previously observed (prior report 20261120T113947Z; not repeated)",
+    "ownership_reconciliation": {
+      "status": "unresolved",
+      "blocker": "durable demo-guard intent remains awaiting_position with null position_id (comment-reservation ownership) while broker is flat; ownership/closure not reconciled in durable guard state",
+      "cash_policy_protection_claimed": false
+    },
+    "broker_exit": {
+      "status": "closed",
+      "actual_broker_exit_evidence_observed": true,
+      "evidence_summary_sanitized": "owned sell position (acceptance-session intent) closed by broker Take Profit; close recorded in broker history for the owned position/comment. Tickets, exact times/prices and raw financial records excluded from Git (archived locally owner-only).",
+      "broker_sl_was_present_while_open": "previously observed (prior report); position now closed by TP"
+    },
+    "realized_net_pl_cost_completeness": {
+      "gross_profit_observed_in_broker_history": true,
+      "amounts_disclosed_in_git": false,
+      "swap_commission_fee_completeness": "unknown/incomplete (not assumed zero)",
+      "realized_net_pl": "unknown (cost completeness not confirmed)"
+    },
+    "guardian_exit": "not_confirmed_as_reconciled (broker exit observed; durable intent remains unresolved)",
+    "floating_net_pl": "not_applicable (closed)"
+  },
+  "guardian_and_protection": {
+    "guardian_console_process_running": true,
+    "trading_and_demo_policy_flags_enabled_in_process": true,
+    "reason": "unresolved intent remains; guardian and protection kept intact (console not restarted, flags not set false)",
+    "last_successful_poll_or_health_api": "not exposed via console API (guardian.last not surfaced in queried endpoints); process observed running",
+    "sanitized_blocker_code": "intent_awaiting_position_unreconciled_while_broker_flat"
+  },
+  "end_state": {
+    "broker_positions": 0,
+    "broker_orders": 0,
+    "unresolved_intents": 1,
+    "demo_cash_guard_latched": false,
+    "console_trading_enabled": true,
+    "console_demo_cash_policy_enabled": true,
+    "flags_returned_to_false": false,
+    "budget_revoked": true,
+    "entry_cycles_stopped": true
+  }
+}

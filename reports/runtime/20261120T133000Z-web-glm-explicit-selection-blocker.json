@@ -1,0 +1,68 @@
+{
+  "schema": "trade-mcp/runtime-report",
+  "report_id": "20261120T133000Z-web-glm-explicit-selection-blocker",
+  "generated_at": "2026-11-20T13:30:00Z",
+  "commit_base": "6053277d1ca04b94c718c3a7aa86677c788c98d6",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "workflow": "resolve web-provider blocker via explicit authorized selection opencode/glm-5.3-flash-free (opencode-session), verify listing/health/config; blocked on installed OpenCode model availability",
+  "execution_authorized_by_report": false,
+  "selection": {
+    "requested_model": "opencode/glm-5.3-flash-free",
+    "explicit_user_authorization": true,
+    "silent_fallback": false,
+    "coding_conversation_model_changed": false
+  },
+  "git": {
+    "fetched": true,
+    "head_before": "6053277d1ca04b94c718c3a7aa86677c788c98d6",
+    "origin": "6053277d1ca04b94c718c3a7aa86677c788c98d6",
+    "fast_forward_performed": false,
+    "reason": "already up to date with origin; local commits preserved",
+    "preserved_report_commit": "6053277d1ca04b94c718c3a7aa86677c788c98d6"
+  },
+  "installed_opencode_verification": {
+    "loopback_url_verified_previously": "http://127.0.0.1:49374",
+    "server_healthy": true,
+    "api": "v2",
+    "exact_model_in_codebase_FREE_MODELS_allowlist": true,
+    "exact_model_listed_by_installed_opencode": false,
+    "result": "unavailable_in_installed_opencode",
+    "detail": "Exact ID 'opencode/glm-5.3-flash-free' not found in installed OpenCode provider/model listings queried (including /api/provider, /api/config, /api/model). Installed OpenCode lists related 'opencode/glm-5.3-flash' (without -free suffix) in /api/model, but this is not the exact requested model ID; no substitution performed."
+  },
+  "pre_restart_inspection": {
+    "fresh": true,
+    "broker_demo_usd_flat": true,
+    "positions": 0,
+    "orders": 0,
+    "unresolved_intents": 0,
+    "latched": false,
+    "open_position_protection_required": false
+  },
+  "console_configuration_and_restart": {
+    "applied": false,
+    "console_restarted": false,
+    "reason": "exact requested model not listed by installed OpenCode (step 2 blocker); per instructions no other model selected and configuration/restart not completed for unavailable model",
+    "effective_backend_provider_model": "unchanged (openai-compatible / direct ai.starimg.ru)",
+    "trading_enabled": false,
+    "paper_trading": false,
+    "demo_cash_policy": false,
+    "budget_state": "revoked",
+    "entry_cycles_stopped": true,
+    "direct_starimg_prevented_in_reconfigured_process": "not applicable (no reconfigured process started)"
+  },
+  "session_health": {
+    "supported_non_generation_session_health_check_for_requested_model": "not performed (model unavailable in installed OpenCode; configuration not applied)",
+    "inference_performed": false,
+    "budget_activation": false,
+    "paid_requests": 0,
+    "orders_created": 0
+  },
+  "outcomes_separate": {
+    "configuration_success": false,
+    "session_health_outcome": "not_run_due_to_unavailable_model"
+  },
+  "notes": [
+    "No visual browser verification claimed.",
+    "MCP settings, secrets, journals and unrelated settings preserved."
+  ]
+}

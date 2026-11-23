@@ -1,0 +1,17 @@
+{
+  "schema": "xauusd-research-check-report/v1",
+  "report_id": "20261122T071905Z-xauusd-tick-capability-check",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "head": "f73cc84",
+  "command_executed": ".venv/bin/python scripts/xauusd_research_check.py \"logs/research-inputs/xauusd-capabilities-20261122T071556Z.json\"",
+  "discovery_status": "candidate_advertised",
+  "candidate_tool": "get_chart_ticks_history",
+  "candidate_read_only_description": true,
+  "bounded_sample_attempted": true,
+  "bounded_sample_obtained": false,
+  "historical_bid_ask_verified": false,
+  "blocker": "single_bounded_request_failed_due_to_local_arg_construction_bug_no_retry",
+  "trading_off": true,
+  "cloud_budget_revoked": true,
+  "raw_data_committed": false
+}

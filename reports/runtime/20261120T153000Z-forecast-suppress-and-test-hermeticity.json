@@ -1,0 +1,63 @@
+{
+  "schema": "trade-mcp/runtime-report",
+  "report_id": "20261120T153000Z-forecast-suppress-and-test-hermeticity",
+  "generated_at": "2026-11-20T16:36:00Z",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "loaded_commit_deployed": "5a10aa78975715ea0f73dfe4aef0f52336e72f8c",
+  "workflow": "fetch/ff-only through 5a10aa7 -> fresh preflight -> safe deploy (trading/policy off) -> verify failed_historical_baseline_check suppression + obsolete volatility table removal -> investigate 21 full-suite failures with reproduction -> fix genuine test-hermeticity defect with regression tests -> run tests -> commit/push sanitized results",
+  "execution_authorized_by_report": false,
+  "explicit_user_authorization_session": true,
+  "deploy_preflight": {
+    "pre_restart": "DEMO/USD flat (positions=0, orders=0), durable guard unresolved=0 not latched, proposals/risk settings preserved",
+    "deploy": "console restarted on 5a10aa7 with TRADE_MCP_ALLOW_TRADING=false, TRADE_MCP_DEMO_CASH_POLICY=false, PAPER_TRADING=false, cloud budget revoked",
+    "post_deploy": "trading_enabled=false, paper_trading=false, demo_cash_policy_enabled=false, budget revoked, broker demo flat"
+  },
+  "forecast_suppression_verification": {
+    "request": "GET /api/chart?symbol=XAUUSD&tf=M15&full=1 (fresh read-only request)",
+    "trend_forecast": {
+      "available": false,
+      "reason": "failed_historical_baseline_check",
+      "method": "independent_32_bar_log_ols_anchored_trend",
+      "source": "closed_broker_bars_not_llm",
+      "validated_for_trading": false,
+      "execution_eligible": false,
+      "has_drawable_points": false,
+      "has_diagnostics": true,
+      "diagnostics": [
+        {"minutes_ahead": 15, "evaluation_samples": 20, "mae": 6.936486583424994, "no_change_mae": 6.699500000000057, "direction_accuracy": 0.45},
+        {"minutes_ahead": 30, "evaluation_samples": 20, "mae": 9.506883675530526, "no_change_mae": 8.404999999999973, "direction_accuracy": 0.4},
+        {"minutes_ahead": 60, "evaluation_samples": 20, "mae": 12.797746039159552, "no_change_mae": 10.566000000000008, "direction_accuracy": 0.35}
+      ]
+    },
+    "suppression": "Drawable forecast points withheld on failed historical baseline check; diagnostics-only returned (not out-of-sample validation/profitability proof).",
+    "ui_persian_explanation": "terminal.js displays 'پیش‌بینی پنهان شد: خطای تاریخی/جهت بهتر از مبنا نیست' for reason failed_historical_baseline_check (no lines drawn).",
+    "obsolete_volatility_table_removed": "Volatility comparison/table rendering removed from comparison UI (hourly_scenarios API compatibility retained, not rendered as obsolete prediction table).",
+    "browser_visual_inspection": "unavailable in this environment; API and rendering logic/code verified."
+  },
+  "full_suite_failure_investigation": {
+    "observed_failures": "21 failures (cycle/research/terminal/usage/workspace) when running full pytest with local .env present",
+    "reproduction": "Full suite passed without local .env contamination (100%). With local .env present, failures reproduced; root cause identified as load_dotenv populating process environment from local .env (web_model_backend opencode-session config) during pytest runs, making tests non-hermetic and altering web/direct model assumptions.",
+    "dismissed_as_environment_only_without_reproduction": false,
+    "genuine_defect_fixed": "config.load_dotenv now skips under pytest (or explicit TRADE_MCP_SKIP_DOTENV) to keep test suite hermetic in presence of local .env",
+    "regression_tests": ["tests/test_config_dotenv.py::test_load_dotenv_skipped_under_pytest", "tests/test_config_dotenv.py::test_load_dotenv_can_be_explicitly_skipped"],
+    "runtime_secrets_changed": false
+  },
+  "tests": {
+    "full_suite_after_fix": "pass (with local .env present; all tests passed, skips only)",
+    "targeted_regression": "tests/test_config_dotenv.py pass"
+  },
+  "claims": {
+    "hourly_prediction_acceptance_complete": false,
+    "automatic_trading_acceptance_complete": false,
+    "browser_visual_confirmed": false
+  },
+  "safety": {
+    "trading_off": true,
+    "cloud_budget_revoked": true,
+    "no_new_trading_window": true,
+    "no_cloud_request": true,
+    "no_threshold_change": true,
+    "no_fabricated_forecast": true,
+    "secrets_not_committed": true
+  }
+}

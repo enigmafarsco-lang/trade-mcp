@@ -1,0 +1,48 @@
+{
+  "schema": "trade-mcp/runtime-report",
+  "report_id": "20261120T142500Z-autonomous-completion",
+  "generated_at": "2026-11-20T14:25:00Z",
+  "commit_base": "3f34a5b966bfa15d614bea38d277a57d3c080fbf",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "workflow": "inspect -> implement -> test -> deploy safely -> verify -> record -> push (autonomous completion pass)",
+  "execution_authorized_by_report": false,
+  "git": {
+    "head": "3f34a5b966bfa15d614bea38d277a57d3c080fbf",
+    "origin_head_at_inspection": "3f34a5b966bfa15d614bea38d277a57d3c080fbf",
+    "working_tree_clean_except_preserved_untracked": ["trade-mcp/"],
+    "preserved_commits_in_scope": ["276b7c2", "91b61d1", "9e51d7c", "ba20689", "9efd274", "6053277", "734b8d8", "c900999", "6e0acd9", "3f34a5b"]
+  },
+  "scope_status": {
+    "execution_sizing": "implemented/tested (agent max_lot cap applied in sizing, stricter call cap, no widening/round-up, NO TRADE on invalid fit; regressions in tests)",
+    "guarded_gates": "implemented/tested (pre-proposal blockers: confidence threshold preserved, structured+prose volatility-spike/timeframe-disagreement warnings checked before proposal creation; mandatory SL/ownership/uncertain-order/cash-exit/latch/other gates preserved)",
+    "ownership_history_reconciliation": "implemented/tested (unique comment-reservation identity with tolerant unparseable opening time, no unrelated adoption/symbol-side inference, unknown costs/net not zeroed, unresolved remains blocking; existing intent reconciled/closed per prior evidence)",
+    "guardian_health": "exposed (sanitized ok/enabled/running/blocker/unresolved/latch/streak/last poll+success/reconcile timestamps, read-only reconcile path, workspace status/API; durable enrichment on read)",
+    "chart_scenarios": "implemented (hourly_scenarios 15/30/45/60m, zero-drift log-vol illustrative uncalibrated, execution_eligible=false/calibrated=false; terminal dashed colored overlay + comparison table with honest Persian non-prediction/non-signal labeling; read-only/no orders/budget)",
+    "web_opencode_integration": "configured/persisted (opencode-session, model opencode/iceman-free verified available+explicit zero-cost; supported local rediscovery via discover_desktop when URL absent, no ephemeral port hard-coded; Starimg/direct paid providers inactive for web backend; non-generation session health OK; bounded validation attempt hit provider quota_exhausted - no retry/fallback/budget activation)",
+    "iceman_error_investigation_saved_evidence_only": "quota_exhausted originated from explicit quota indicators in upstream/local OpenCode service response during session_generate (permissions/model acknowledged), classified by app mapper (not generic fallback); persisted usage http_status null, retry_after_ms/reset unknown; web session auth context matches intended local verified OpenCode service (loopback v2, pid-verified), ephemeral web session only (no coding session reuse). No new inference/retry/rotation/budget activation performed."
+  },
+  "tests_lint": {
+    "ruff": "pass (src, tests)",
+    "pytest_full_clean_env": "pass (all collected tests; environment skips as applicable)",
+    "targeted_scope_subset": "pass (sizing/guards, demo_guard/regressions, agents, execution, analysis)"
+  },
+  "runtime_readonly_verification": {
+    "broker": "DEMO/USD flat, positions=0, orders=0",
+    "durable_guard": "unresolved_intents=0, latched=false, streak=0",
+    "guardian_status": "ok, disabled/not running (as configured), no blocker, unresolved=0",
+    "web_effective": "opencode-session / opencode-session / opencode/iceman-free, configured, trading=false, paper=false, budget revoked, page cycles stopped",
+    "session_health_non_generation": "ok (permissions/model acknowledged, generation_requested=false, generation_submitted=false)",
+    "chart_scenarios": "available, execution_eligible=false, calibrated=false, points [15,30,45,60] with ranges, honest labeling",
+    "inference_or_new_requests": "none"
+  },
+  "safety": {
+    "trading_demo_policy_off": true,
+    "budget_revoked": true,
+    "no_new_order_or_forced_close": true,
+    "no_mt5_wine_restart_mql5_recompile_monitor_change_duplicate_writer": true,
+    "risk_caps_mandatory_sl_ownership_latch_preserved": true,
+    "starimg_paid_providers_inactive_for_web": true,
+    "secrets_not_committed": true
+  },
+  "push": "to_be_attempted"
+}

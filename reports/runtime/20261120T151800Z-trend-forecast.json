@@ -1,0 +1,60 @@
+{
+  "schema": "trade-mcp/runtime-report",
+  "report_id": "20261120T151800Z-trend-forecast",
+  "generated_at": "2026-11-20T16:17:00Z",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "loaded_commit_executed": "2ce423a83b133e64f750a9ca3ed81a009b058997",
+  "workflow": "fetch/ff-only through 2ce423a -> read docs/TREND-FORECAST.md -> fresh preflight (flat/no orders/no unresolved) -> restart console (trading/policy OFF, budget revoked) -> one fresh M15 chart request trend_forecast verification -> review 257-eval refusal evidence -> tests -> sanitized report commit/push",
+  "execution_authorized_by_report": false,
+  "explicit_user_authorization_session": true,
+  "preflight_and_deploy": {
+    "pre_restart": "DEMO/USD flat (positions=0, orders=0), durable guard unresolved=0 not latched, pending proposals preserved (250)",
+    "deploy": "console restarted on 2ce423a with TRADE_MCP_ALLOW_TRADING=false, TRADE_MCP_DEMO_CASH_POLICY=false, PAPER_TRADING=false, cloud budget revoked, page cycle/scheduler stopped",
+    "post_deploy": "trading_enabled=false, paper_trading=false, demo_cash_policy_enabled=false, budget revoked, guardian disabled/inactive in safe mode, broker flat"
+  },
+  "trend_forecast_verification": {
+    "request": "GET /api/chart?symbol=XAUUSD&tf=M15&full=1 (single fresh request)",
+    "symbol": "XAUUSD",
+    "timeframe": "M15",
+    "available": true,
+    "method": "independent_32_bar_log_ols_anchored_trend",
+    "source": "closed_broker_bars_not_llm",
+    "as_of": 1795191300.0,
+    "last_closed_bar_time": 1795190400.0,
+    "anchor_price": 3579.86,
+    "validated_for_trading": false,
+    "execution_eligible": false,
+    "warning": "پیش‌بینی آماری آزمایشی؛ خطا دارد و سیگنال سفارش نیست",
+    "points": [
+      {"minutes_ahead": 15, "color_ui": "cyan", "price": 3580.2512746887637, "direction": "up", "evaluation_samples": 20, "mae": 6.801747297212637, "no_change_mae": 6.537500000000068, "direction_accuracy": 0.45},
+      {"minutes_ahead": 30, "color_ui": "amber", "price": 3580.642592143412, "direction": "up", "evaluation_samples": 20, "mae": 9.847774599054514, "no_change_mae": 8.739999999999986, "direction_accuracy": 0.4},
+      {"minutes_ahead": 60, "color_ui": "rose", "price": 3581.425355369063, "direction": "up", "evaluation_samples": 20, "mae": 13.335640593119887, "no_change_mae": 10.97800000000002, "direction_accuracy": 0.35}
+    ],
+    "path": "single future directional path (up), 15/30/60-minute points",
+    "rendering_code_check": "terminal.js includes future forecast prices in y-axis scale (lo/hi consider futurePrices), draws one dashed path in separate future area with elapsed-minute points and palette 15:#22d3ee,30:#fbbf24,60:#fb7185, labeled as experimental statistical forecast (not order signal)",
+    "browser_visual_inspection": "unavailable in this environment (no browser/UI); API and rendering logic/code verified",
+    "hourly_scenarios_table": "present as separate diagnostic volatility scenario (method independent_zero_drift_log_volatility_scenarios, calibrated=false, execution_eligible=false) with explicit non-prediction/non-signal labeling; not labeled as prediction"
+  },
+  "existing_257_evaluation_evidence_review": {
+    "source": "bounded rules window v2 (20261120T151500Z), commit 0631ca7 runtime, 257 evaluations/257 runs, 0 new proposals, 0 trades/entries, halt_reason null",
+    "observed_refusal": "action=wait, status=refused, blocked=true, blockers=[\"mode=guarded: confidence 50 < 62\"], source=rules, used_llm=false, proposals_count=0 (e.g. sell bias, score ~-0.907, scenario confidence 50)",
+    "explanation_from_strategy_inputs": "Directional scenario confidence in analysis.build_scenario starts at 50 and is adjusted by alignment (max(0, alignment-0.5)*40), ADX ((adx-20)*0.8, clamped), conflict penalty (-15), and volatility regime penalties (spiking -8, compressed -4), then clamped [5,92]. In the observed runs confidence remained 50 (< GUARDED_MIN_CONFIDENCE 62) with no conflict/spiking/disagreement guarded-risk blockers recorded—indicating net adjustments did not lift confidence above the base (insufficient alignment/ADX contribution for this setup) so the guarded pre-proposal gate correctly refused without creating a proposal/order. This is a threshold/gate outcome from underlying inputs, not an execution-confirmation bug.",
+    "actions_not_taken": "no thresholds lowered, no signals invented, no additional trading window started"
+  },
+  "tests": {
+    "targeted_relevant": "pass (forecast, bounded, rules_action, agents, agent_sizing_and_guards)",
+    "full_suite_in_environment": "21 failures (same environment-sensitive set observed with local .env/opencode-session interaction in this environment, e.g. workspace/cycle/terminal/usage/research expectations), exit status as captured; not attributable to trend_forecast changes"
+  },
+  "claims": {
+    "hourly_price_prediction_implemented_as_validated": false,
+    "application_executed_entries_proves_broker_fill": false,
+    "browser_visual_confirmed": false
+  },
+  "safety": {
+    "trading_policy_off": true,
+    "cloud_budget_revoked": true,
+    "no_new_trading_window": true,
+    "data_secrets_proposals_risk_settings_preserved": true,
+    "secrets_not_committed": true
+  }
+}

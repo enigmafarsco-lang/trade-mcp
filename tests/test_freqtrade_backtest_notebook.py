@@ -1,0 +1,154 @@
+"""Notebook wiring tests only: these do not run Freqtrade or claim a real backtest."""
+import json
+import sys
+import types
+import zipfile
+from pathlib import Path
+
+import pytest
+
+from trade_mcp.engines.upstream import FREQTRADE_COMMIT, STRATEGY001_SHA256
+
+ROOT = Path(__file__).resolve().parents[1]
+NB = ROOT/'notebooks/freqtrade_strategy001_backtest_colab.ipynb'
+
+
+def codes():
+    nb = json.loads(NB.read_text())
+    return [''.join(c['source']) for c in nb['cells'] if c['cell_type'] == 'code']
+
+
+def test_notebook_uses_engine_not_signal_return_proxy():
+    nb = json.loads(NB.read_text())
+    for c in nb['cells']:
+        if c['cell_type'] == 'code':
+            assert c['execution_count'] is None and c['outputs'] == []
+            compile(''.join(c['source']), '<backtest-colab>', 'exec')
+    text = '\n'.join(codes())
+    assert FREQTRADE_COMMIT in text and STRATEGY001_SHA256 in text
+    for required in ["FREQTRADE_VERSION='2025.10'", "'evaluation':'20260101-20260301'",
+                     "'final_test':'20260301-20260401'", "ft('backtesting'",
+                     "'--timeframe-detail','1m'", "'--cache','none'",
+                     "'--export','trades'", "'dry_run':True", "'key':'','secret':''",
+                     "'fee':0.001", "'execution_authorized':False", "'is_xauusd_test':False",
+                     "command in ('download-data','backtesting')", 'Historical gap; stop, do not fill']:
+        assert required in text
+    assert 'populate_entry_trend(' not in text
+    # Python export remains identical to notebook code, not an independently maintained variant.
+    export = (ROOT/'notebooks/freqtrade_strategy001_backtest_colab.py').read_text()
+    for code in codes():
+        assert code in export
+
+
+def test_engine_result_reader_preserves_zero_trades_and_exports(tmp_path, monkeypatch):
+    results = tmp_path/'results'
+    plan = {'evaluation': '20260101-20260301', 'final_test': '20260301-20260401'}
+    for split in plan:
+        folder = results/split
+        folder.mkdir(parents=True)
+        with zipfile.ZipFile(folder/'result.zip', 'w') as z:
+            z.writestr('result.json', json.dumps({'strategy': {'Strategy001': {
+                'timeframe': '5m', 'total_trades': 0, 'profit_total': 0,
+                'profit_total_abs': 0, 'profit_factor': None}}}))
+    (tmp_path/'coverage.json').write_text('{}')
+    (tmp_path/'dependencies.txt').write_text('mock fixture only')
+    config = tmp_path/'config.json'
+    config.write_text('{}')
+    downloads = []
+    google = types.ModuleType('google')
+    colab = types.ModuleType('google.colab')
+    colab.files = types.SimpleNamespace(download=downloads.append)
+    monkeypatch.setitem(sys.modules, 'google', google)
+    monkeypatch.setitem(sys.modules, 'google.colab', colab)
+    env = dict(WORK=tmp_path, RESULTS=results, PLAN=plan, CONFIG=config,
+               FREQTRADE_VERSION='2025.10', FREQTRADE_COMMIT=FREQTRADE_COMMIT,
+               STRATEGY001_SHA256=STRATEGY001_SHA256, json=json, zipfile=zipfile)
+    exec(compile(codes()[-1], '<mock-result-reader>', 'exec'), env)
+    report = json.loads((tmp_path/'freqtrade_strategy001_engine_research.json').read_text())
+    assert report['splits']['final_test']['total_trades'] == 0
+    assert report['splits']['final_test']['profit_factor'] is None
+    assert report['execution_authorized'] is False
+    assert len(downloads) == 2
+    # Missing actual archive must fail, rather than fabricating output.
+    (results/'final_test'/'result.zip').unlink()
+    with pytest.raises(AssertionError, match='actual engine result'):
+        exec(compile(codes()[-1], '<missing-result>', 'exec'), env)
+
+
+def test_setup_avoids_system_ensurepip_and_checks_real_isolation():
+    setup = codes()[0]
+    assert "'virtualenv==20.28.0'" in setup
+    assert "'--target',BOOTSTRAP" in setup
+    assert "'-m','virtualenv','--no-download'" in setup
+    assert 'sys.prefix!=sys.base_prefix' in setup
+    assert "'-m','venv'" not in setup
+    assert 'capture_output=True,text=True' in setup
+    assert 'print(result.stderr)' in setup
+    assert 'if result.returncode:' in setup
+    assert setup.index('sys.prefix!=sys.base_prefix') < setup.index("'freqtrade=='+FREQTRADE_VERSION")
+
+
+def test_engine_command_wrapper_surfaces_stderr_without_hidden_retry():
+    import ast
+
+    source = next(c for c in codes() if 'def ft(' in c)
+    node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == 'ft')
+    calls = []
+
+    def fail_visible(args):
+        calls.append(args)
+        raise RuntimeError('visible engine diagnostic')
+
+    env = {'PY': Path('/isolated/python'), 'CONFIG': Path('/research/config.json'),
+           'run_visible': fail_visible, 'USERDIR': Path('/research/user_data')}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), '<wrapper>', 'exec'), env)
+    with pytest.raises(RuntimeError, match='visible engine diagnostic'):
+        env['ft']('download-data', '--pairs', 'BTC/USDT')
+    assert len(calls) == 1
+    assert calls[0][2:4] == ['freqtrade', 'download-data']
+    with pytest.raises(AssertionError):
+        env['ft']('trade')
+    assert len(calls) == 1
+
+
+
+def test_onecell_is_full_script_and_stops_on_first_failure():
+    nb = json.loads((ROOT/'notebooks/freqtrade_strategy001_onecell_colab.ipynb').read_text())
+    cells = [c for c in nb['cells'] if c['cell_type'] == 'code']
+    assert len(cells) == 1
+    script = ''.join(cells[0]['source'])
+    assert script == (ROOT/'notebooks/freqtrade_strategy001_backtest_colab.py').read_text()
+    compile(script, '<onecell>', 'exec')
+    assert "USERDIR.mkdir(parents=True,exist_ok=True)" in script
+    assert "'--userdir',USERDIR" in script
+    assert "run_visible([PY,'-c',coverage_code,DATA])" in script
+    assert script.index('COVERAGE_VERIFIED=False') < script.index("ft('download-data'")
+    assert script.index('COVERAGE_VERIFIED=True') < script.index("ft('backtesting'")
+    assert 'Data checks did not pass; do not backtest' in script
+
+
+def test_disabled_services_have_valid_shape_and_preflight_precedes_network():
+    import ast
+
+    text = next(c for c in codes() if 'config={' in c)
+    tree = ast.parse(text)
+    assign = next(n for n in tree.body if isinstance(n, ast.Assign)
+                  and any(isinstance(t, ast.Name) and t.id == 'config' for t in n.targets))
+    cfg = ast.literal_eval(assign.value)
+    assert cfg['telegram'] == {'enabled': False, 'token': '', 'chat_id': ''}
+    assert not cfg.get('api_server', {}).get('enabled', False)
+    assert cfg['dataformat_ohlcv'] == 'feather'
+    assert "validate_config_schema(cfg,preliminary=True)" in text
+    assert text.index("run_visible([PY,'-c',preflight_code,CONFIG])") < text.index("ft('download-data'")
+
+
+def test_setup_reuses_successful_install_without_package_commands():
+    import ast
+
+    setup = ast.parse(codes()[0])
+    branch = next(n for n in setup.body if isinstance(n, ast.If)
+                  and isinstance(n.test, ast.Name) and n.test.id == 'ready')
+    calls = []
+    env = {'ready': True, 'run_visible': calls.append}
+    exec(compile(ast.Module(body=[branch], type_ignores=[]), '<reuse-install>', 'exec'), env)
+    assert calls == []

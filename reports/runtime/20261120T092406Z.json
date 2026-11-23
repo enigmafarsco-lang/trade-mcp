@@ -1,0 +1,70 @@
+{
+  "schema": "trade-mcp/runtime-report",
+  "report_id": "20261120T092406Z",
+  "generated_at": "2026-11-20T09:24:06Z",
+  "commit": "b0489cb229e533d3a342f5a3c436f559334b60db",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "workflow": "documented authorized one-shot DEMO acceptance (docs/RULES-GUARDED.md, run_rules_guarded)",
+  "checks": {
+    "fast_forward_to_b0489cb": "pass",
+    "tests_test_rules_action_py": "pass (3)",
+    "tests_full_suite": "completed_to_100_percent_progress_5_skips_observed_summary_line_not_captured",
+    "fresh_preflight_performed": true,
+    "preflight_pass": false,
+    "preflight_blockers": [
+      "cost_reconciliation_failed_stage_snapshot",
+      "snapshot_stale_not_updating"
+    ],
+    "demo_usd_account": "pass",
+    "broker_positions_zero": "pass",
+    "broker_orders_zero": "pass",
+    "demo_cash_guard_no_latch_no_intents": "pass",
+    "agent_single_symbol_guarded_limits_preserved": "pass",
+    "budget_revoked": "pass",
+    "scheduler_stopped": "pass",
+    "page_cycle_stopped": "pass",
+    "independent_guardian_runtime": "console_started_and_running_with_guardian_in_safe_state"
+  },
+  "counts": {
+    "run_rules_guarded_invocations": 0,
+    "proposals_created": 0,
+    "confirmations_sent": 0,
+    "broker_orders_submitted": 0,
+    "positions_opened": 0,
+    "positions_closed": 0,
+    "cloud_requests": 0,
+    "budget_used_attempts": 1,
+    "budget_state": "revoked"
+  },
+  "invocation": {
+    "performed": false,
+    "reason": "fresh preflight failed (stale/non-updating v2 cost snapshot; cost reconciliation cost_check_failed stage snapshot)",
+    "endpoint": "POST /api/agents/{agent_id} {\"action\":\"run_rules_guarded\"}",
+    "agent_id": "a76d1cff5b",
+    "agent_symbol": "XAUUSD",
+    "result": "not_invoked"
+  },
+  "outcomes": {
+    "strategy_signal": "unavailable (invocation not performed)",
+    "risk_checks": "not_executed",
+    "proposal": "none",
+    "confirmation": "none",
+    "broker_response": "none",
+    "owned_position_reconciliation": "not_applicable (flat)",
+    "floating_net_pl_evidence": "not_applicable",
+    "actual_exit_evidence": "not_applicable",
+    "position_open": false
+  },
+  "end_state": {
+    "broker_positions": 0,
+    "broker_orders": 0,
+    "demo_cash_guard_latched": false,
+    "demo_cash_guard_intents": 0,
+    "console_trading_enabled": false,
+    "console_demo_cash_policy_enabled": false,
+    "console_paper_trading": false,
+    "console_pid_new_safe": 47727,
+    "notes": "Old console (trading flags enabled in process env, pre-ff code) stopped; new console restarted with both trading flags false while flat. Stale journal proposals with status=pending observed (expired); broker state and guardian intents clean."
+  },
+  "execution_authorized_by_report": false
+}

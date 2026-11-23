@@ -1,0 +1,112 @@
+{
+  "schema": "xauusd-research-check-report/v1",
+  "report_id": "20261122T130500Z-xauusd-m1-previous-direction",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "head_at_execution": "8f684993ffac34bb4c8a36ca0aebda35677ef531",
+  "command_executed": ".venv/bin/python scripts/xauusd_m1_previous_direction.py",
+  "execution_count": 1,
+  "synthetic_tests_run": "tests/test_m1_previous_context_replay.py tests/test_xauusd_m1_previous_direction.py (32 pass, RC=0)",
+  "synthetic_test_count_note": "Workstation count is operator-reported. Arena collected 42 parameterized cases from the same test files at the execution revision; workstation pytest output is unavailable, so the discrepancy is unresolved.",
+  "new_mt5_history_requests": 0,
+  "network_calls": 0,
+  "models_called": 0,
+  "orders_sent": 0,
+  "trading_off": true,
+  "cloud_budget_revoked": true,
+  "output_exists_prior": false,
+  "output_path": "logs/research-inputs/xauusd-m1-previous-direction-v1/summary.json",
+  "delta_definition": "For each pair, aligned_minus_marked means pda.gross_total_mark minus pav.gross_total_mark in modeled gross USD; the legacy field name is retained.",
+  "result": {
+    "schema": "xauusd-m1-previous-direction/v1",
+    "status": "completed_all_paired_comparisons",
+    "history_calls_made": 0,
+    "network_calls_made": 0,
+    "strategy_models_called": 0,
+    "orders_sent": 0,
+    "execution_authorized": false,
+    "profitability_proven": false,
+    "commission": null,
+    "fees": null,
+    "swap": null,
+    "net_pnl": null,
+    "spread_included": true,
+    "additional_slippage_modeled": false,
+    "prior_hypothesis_selection_after_results": true,
+    "blind_holdout_or_out_of_sample": false,
+    "independent_hypothetical_windows_not_continuous": true,
+    "complete_tick_coverage_verified": false,
+    "utc_verified": false,
+    "historical_contract_rules_verified": false,
+    "economics_symbol_binding_independently_verified": false,
+    "additional_sample_requested_bounds_independently_verified": false,
+    "baseline_check_is_metrics_not_raw_archive_hash": true,
+    "planned_paired_comparisons": 12,
+    "completed_paired_comparisons": 12,
+    "baseline_checks_attempted": 12,
+    "baseline_checks_matched": 12,
+    "input_presence_only_not_validation": {
+      "economics": "present_unverified",
+      "published_boundary_reference": "present_unverified",
+      "saved_samples": {
+        "additional_sample": "present_unverified",
+        "w1": "present_unverified",
+        "w2": "present_unverified",
+        "w3": "present_unverified",
+        "w4": "present_unverified",
+        "w5": "present_unverified"
+      }
+    },
+    "windows": [
+      {"id":"additional_sample","status":"compared","pairs":[
+        {"model":"original_3_changes","baseline_matched":true,"aligned_minus_marked":0.0,
+         "pav":{"entries":5,"profit":1,"loss":4,"gross_total_mark":-6.079999999999927,"open_at_end":false,"latch":true},
+         "pda":{"entries":5,"profit":1,"loss":4,"gross_total_mark":-6.079999999999927,"open_at_end":false,"latch":true}},
+        {"model":"2_changes_spread_cap_1_00","baseline_matched":true,"aligned_minus_marked":4.520000000000437,
+         "pav":{"entries":10,"profit":3,"loss":7,"gross_total_mark":-8.540000000001783,"open_at_end":false,"latch":true},
+         "pda":{"entries":6,"profit":2,"loss":4,"gross_total_mark":-4.020000000001346,"open_at_end":false,"latch":false}}
+      ]},
+      {"id":"w1","status":"compared","pairs":[
+        {"model":"original_3_changes","baseline_matched":true,"aligned_minus_marked":-2.1200000000008004,
+         "pav":{"entries":4,"profit":2,"loss":2,"gross_total_mark":0.0,"open_at_end":false,"latch":false},
+         "pda":{"entries":3,"profit":1,"loss":2,"gross_total_mark":-2.1200000000008004,"open_at_end":false,"latch":false}},
+        {"model":"2_changes_spread_cap_1_00","baseline_matched":true,"aligned_minus_marked":-2.040000000000873,
+         "pav":{"entries":3,"profit":2,"loss":1,"gross_total_mark":2.140000000001237,"open_at_end":false,"latch":false},
+         "pda":{"entries":2,"profit":1,"loss":1,"gross_total_mark":0.1000000000003638,"open_at_end":false,"latch":false}}
+      ]},
+      {"id":"w2","status":"compared","pairs":[
+        {"model":"original_3_changes","baseline_matched":true,"aligned_minus_marked":3.600000000000364,
+         "pav":{"entries":3,"profit":0,"loss":2,"gross_total_mark":-5.680000000000291,"open_at_end":true,"latch":false},
+         "pda":{"entries":1,"profit":0,"loss":1,"gross_total_mark":-2.0799999999999272,"open_at_end":false,"latch":false}},
+        {"model":"2_changes_spread_cap_1_00","baseline_matched":true,"aligned_minus_marked":2.0799999999999272,
+         "pav":{"entries":2,"profit":0,"loss":2,"gross_total_mark":-4.220000000001164,"open_at_end":false,"latch":false},
+         "pda":{"entries":1,"profit":0,"loss":1,"gross_total_mark":-2.140000000001237,"open_at_end":false,"latch":false}}
+      ]},
+      {"id":"w3","status":"compared","pairs":[
+        {"model":"original_3_changes","baseline_matched":true,"aligned_minus_marked":8.579999999998108,
+         "pav":{"entries":6,"profit":1,"loss":4,"gross_total_mark":-8.659999999998035,"open_at_end":true,"latch":false},
+         "pda":{"entries":2,"profit":1,"loss":1,"gross_total_mark":-0.07999999999992724,"open_at_end":false,"latch":false}},
+        {"model":"2_changes_spread_cap_1_00","baseline_matched":true,"aligned_minus_marked":8.279999999998836,
+         "pav":{"entries":6,"profit":1,"loss":4,"gross_total_mark":-8.859999999998763,"open_at_end":true,"latch":false},
+         "pda":{"entries":2,"profit":1,"loss":1,"gross_total_mark":-0.5799999999999272,"open_at_end":false,"latch":false}}
+      ]},
+      {"id":"w4","status":"compared","pairs":[
+        {"model":"original_3_changes","baseline_matched":true,"aligned_minus_marked":-2.0,
+         "pav":{"entries":3,"profit":1,"loss":1,"gross_total_mark":-0.9600000000000364,"open_at_end":true,"latch":false},
+         "pda":{"entries":2,"profit":0,"loss":1,"gross_total_mark":-2.9600000000000364,"open_at_end":true,"latch":false}},
+        {"model":"2_changes_spread_cap_1_00","baseline_matched":true,"aligned_minus_marked":-1.2799999999997453,
+         "pav":{"entries":3,"profit":1,"loss":2,"gross_total_mark":-1.7000000000007276,"open_at_end":false,"latch":false},
+         "pda":{"entries":2,"profit":0,"loss":1,"gross_total_mark":-2.980000000000473,"open_at_end":true,"latch":false}}
+      ]},
+      {"id":"w5","status":"compared","pairs":[
+        {"model":"original_3_changes","baseline_matched":true,"aligned_minus_marked":0.0,
+         "pav":{"entries":4,"profit":1,"loss":3,"gross_total_mark":-4.719999999999345,"open_at_end":false,"latch":true},
+         "pda":{"entries":4,"profit":1,"loss":3,"gross_total_mark":-4.719999999999345,"open_at_end":false,"latch":true}},
+        {"model":"2_changes_spread_cap_1_00","baseline_matched":true,"aligned_minus_marked":1.6599999999998545,
+         "pav":{"entries":5,"profit":1,"loss":4,"gross_total_mark":-5.920000000000073,"open_at_end":false,"latch":true},
+         "pda":{"entries":4,"profit":1,"loss":3,"gross_total_mark":-4.260000000000218,"open_at_end":false,"latch":true}}
+      ]}
+    ]
+  },
+  "raw_data_committed": false,
+  "note": "Hypothesis and models were selected after prior results; this is neither a blind nor a genuinely unseen test. A positive difference can mean less loss or no entry. Verified costs and net are unknown."
+}

@@ -152,3 +152,20 @@ def test_tool_registry(mcp_tools):
 
     prompts = asyncio.run(mcp_tools.mcp.list_prompts())
     assert {p.name for p in prompts} == {"gold_session_briefing", "trade_review"}
+
+
+def test_position_size_respects_practice_cap_and_lower_balance(mcp_tools, mock_app):
+    mock_app.cfg.training_budget = 100
+    price = mcp_tools.symbol_spec('XAUUSD')['quote']['ask']
+    result = mcp_tools.position_size('XAUUSD', .5, price, price-5)
+    assert result['effective_sizing_balance'] == 100
+    assert result['sizing']['risk_amount'] == .5
+    assert not result['ok']
+    raised = mcp_tools.position_size('XAUUSD', .5, price, price-5, balance=1000000)
+    assert raised['effective_sizing_balance'] == 100
+    lower = mcp_tools.position_size('XAUUSD', .5, price, price-5, balance=50)
+    assert lower['effective_sizing_balance'] == 50
+    assert lower['sizing']['risk_amount'] == .25
+    zero = mcp_tools.position_size('XAUUSD', .5, price, price-5, balance=0)
+    assert zero['effective_sizing_balance'] == 0
+    assert not zero['ok']

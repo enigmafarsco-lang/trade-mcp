@@ -1,0 +1,29 @@
+{
+  "schema": "xauusd-research-check-report/v1",
+  "report_id": "20261122T091500Z-xauusd-sparse-error-diagnosis",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "head_at_execution": "38398cc",
+  "command_executed": ".venv/bin/python scripts/inspect_xauusd_sparse_error.py",
+  "execution_count": 1,
+  "new_mt5_network_request": false,
+  "screen_retried": false,
+  "result": {
+    "schema": "xauusd-sparse-offline-error-diagnostic/v1",
+    "source": "existing_saved_eval_1_response",
+    "diagnosis_scope": "structural_flags_and_literal_phrase_hints_only",
+    "is_error_true": false,
+    "structured_content_present": false,
+    "text_content_present": true,
+    "structured_payload_type": "dict",
+    "payload_ok_false": true,
+    "payload_error_truthy": false,
+    "phrase_hints_unverified": [],
+    "root_cause_verified": false,
+    "raw_provider_text_disclosed": false,
+    "history_calls_made": 0,
+    "execution_authorized": false
+  },
+  "raw_data_committed": false,
+  "trading_off": true,
+  "cloud_budget_revoked": true
+}

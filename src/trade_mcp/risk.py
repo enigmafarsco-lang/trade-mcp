@@ -6,7 +6,8 @@ import math
 from collections.abc import Iterable
 from typing import Any
 
-from .config import Config
+from .config import Config, sizing_balance
+from .risk_manager import HARD_MAX_RISK_PERCENT
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -59,6 +60,10 @@ def lots_for_risk(
     max_lot: float | None = None,
 ) -> dict[str, Any]:
     """Volume such that hitting ``stop`` costs ``risk_percent`` of balance."""
+    if any(isinstance(v, bool) or v is None or not math.isfinite(float(v)) or float(v) <= 0
+           for v in (balance, risk_percent, entry, stop)):
+        return {'ok': False, 'error': 'invalid_sizing_inputs', 'volume': 0.0}
+    risk_percent = min(float(risk_percent), HARD_MAX_RISK_PERCENT)
     distance = abs(float(entry) - float(stop))
     risk_amount = max(0.0, float(balance) * float(risk_percent) / 100.0)
     per_lot = loss_per_lot(info, distance)
@@ -69,7 +74,7 @@ def lots_for_risk(
             "error": "entry and stop are identical - cannot size the position",
             "volume": 0.0,
         }
-    if per_lot <= 0:
+    if not math.isfinite(per_lot) or per_lot <= 0:
         return {"ok": False, "error": "symbol has no tick value information", "volume": 0.0}
     raw = risk_amount / per_lot
     volume, notes = normalise_volume(raw, info)
@@ -82,6 +87,15 @@ def lots_for_risk(
         volume, notes = normalise_volume(max_lot, info)
         warnings.append(f"volume capped by TRADE_MCP_MAX_LOT ({max_lot})")
         warnings.extend(notes)
+    if volume * per_lot > risk_amount + 1e-9:
+        return {"ok": False, "volume": 0.0, "risk_amount": risk_amount,
+                "actual_risk": 0.0, "warnings": warnings,
+                "minimum_volume": _f(info.get("volume_min"), 0.01),
+                "minimum_volume_loss": round(_f(info.get("volume_min"), 0.01) * per_lot, 4),
+                "risk_per_lot": round(per_lot, 4),
+                "stop_distance": round(distance, 5),
+                "raw_volume": raw,
+                "error": "حداقل حجم بروکر از بودجهٔ ریسک بیشتر است؛ معامله نکنید"}
     return {
         "ok": True,
         "volume": volume,
@@ -125,10 +139,27 @@ def validate_order(
 ) -> list[dict[str, str]]:
     """Return a list of problems. Empty list == the trade passes all guards."""
     issues: list[dict[str, str]] = []
+    open_positions = list(open_positions)
 
     def add(severity: str, code: str, message: str) -> None:
         issues.append({"severity": severity, "code": code, "message": message})
 
+    # Validate before arithmetic/rounding: NaN comparisons must not pass silently.
+    numeric = (volume, entry, stop, take_profit, cfg.max_lot, cfg.max_risk_percent)
+    if any(not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v) for v in numeric):
+        add('blocker', 'nonfinite_order', 'Order and risk limits must be finite numbers')
+        return issues
+    if volume <= 0 or entry <= 0 or stop <= 0 or take_profit < 0 or cfg.max_lot <= 0 or cfg.max_risk_percent <= 0:
+        add('blocker', 'invalid_order_numbers', 'Positive volume, entry, protective stop and limits required')
+        return issues
+    if cfg.demo_cash_policy:
+        if account.get('trade_mode') != 'demo' or account.get('currency') != 'USD':
+            add('blocker','usd_demo_required','Cash policy requires a USD demo account')
+        cash_loss = loss_per_lot(info,abs(entry-stop))*volume
+        if not stop or not math.isfinite(cash_loss) or cash_loss > 10.0+1e-9:
+            add('blocker','cash_loss_limit','Planned stop loss must not exceed 10 USD')
+        if list(open_positions):
+            add('blocker','cash_single_position','Cash policy permits only one open position')
     if not cfg.allow_trading:
         add("blocker", "trading_disabled", "TRADE_MCP_ALLOW_TRADING is false - orders cannot be sent")
     if not cfg.is_symbol_allowed(symbol):
@@ -139,6 +170,9 @@ def validate_order(
     vmin = _f(info.get("volume_min"), 0.01)
     vmax = _f(info.get("volume_max"), 100.0)
     step = _f(info.get("volume_step"), 0.01) or 0.01
+    if (not all(math.isfinite(v) and v > 0 for v in (vmin, vmax, step)) or vmin > vmax):
+        add('blocker', 'invalid_volume_spec', 'Finite positive broker volume limits required')
+        return issues
     if volume < vmin:
         add("blocker", "volume_below_min", f"volume {volume} < broker minimum {vmin}")
     if volume > vmax:
@@ -157,6 +191,8 @@ def validate_order(
         )
 
     spread_points = _f(info.get("spread_points"), _f(info.get("spread"), 0.0))
+    if not math.isfinite(spread_points) or spread_points < 0:
+        add('blocker', 'invalid_spread', 'Spread must be finite and nonnegative')
     if spread_points > cfg.max_spread_points:
         add(
             "blocker",
@@ -177,7 +213,7 @@ def validate_order(
         if (side == "buy" and stop >= entry) or (side == "sell" and stop <= entry):
             add("blocker", "stop_wrong_side", "stop loss is on the wrong side of the entry")
     else:
-        add("warning", "no_stop", "no stop loss - risk is unbounded")
+        add("blocker", "no_stop", "protective stop loss is mandatory")
 
     if take_profit:
         if (side == "buy" and take_profit <= entry) or (side == "sell" and take_profit >= entry):
@@ -191,19 +227,27 @@ def validate_order(
     if stop and entry:
         per_lot = loss_per_lot(info, abs(entry - stop))
         risk = per_lot * volume
-        equity = _f(account.get("equity"), _f(account.get("balance"), 0.0))
+        if not math.isfinite(risk) or per_lot <= 0:
+            add('blocker', 'invalid_price_risk', 'Finite positive broker price risk required')
+        equity = sizing_balance(account, cfg)
+        if equity <= 0:
+            add("blocker", "invalid_budget", "sizing budget must be positive")
         if equity > 0:
             risk_pct = risk / equity * 100.0
-            if risk_pct > cfg.max_risk_percent + 1e-9:
+            if risk_pct > min(cfg.max_risk_percent, HARD_MAX_RISK_PERCENT) + 1e-9:
                 add(
                     "blocker",
                     "risk_exceeded",
-                    f"the stop would risk {risk_pct:.2f}% of equity "
-                    f"(limit {cfg.max_risk_percent:.2f}%)",
+                    f"the stop would risk {risk_pct:.2f}% of sizing budget "
+                    f"(limit {min(cfg.max_risk_percent, HARD_MAX_RISK_PERCENT):.2f}%)",
                 )
 
+    if margin_required is not None and (not math.isfinite(float(margin_required)) or margin_required < 0):
+        add('blocker', 'invalid_margin', 'Required margin must be finite and nonnegative')
     if margin_required is not None:
         free = _f(account.get("margin_free"), 0.0)
+        if not math.isfinite(free) or free < 0:
+            add('blocker', 'invalid_free_margin', 'Free margin must be finite and nonnegative')
         if margin_required > free:
             add(
                 "blocker",

@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import functools
 import logging
+import math
 import time
 from collections.abc import Callable
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import StrictBool, StrictFloat, StrictInt
 
 from . import analysis, execution
-from .app import get_app
+from .app import get_app, get_app_config
 from .bridge.base import BridgeError
-from .config import VALID_TIMEFRAMES
+from .config import VALID_TIMEFRAMES, sizing_balance
 from .risk import loss_per_lot, lots_for_risk
+from .risk_manager import HARD_MAX_RISK_PERCENT
+from .workspace import WorkspaceManager
 
 LOG = logging.getLogger(__name__)
 
@@ -88,6 +92,7 @@ def mt5_status() -> dict[str, Any]:
             "default_symbol": cfg.default_symbol,
             "timeframes": list(cfg.timeframes),
             "allow_trading": cfg.allow_trading,
+            "paper_trading": cfg.paper_trading,
             "max_lot": cfg.max_lot,
             "max_risk_percent": cfg.max_risk_percent,
             "max_open_positions": cfg.max_open_positions,
@@ -130,7 +135,7 @@ def account_info() -> dict[str, Any]:
     positions = app.mt5.positions()
     account["open_positions"] = len(positions)
     account["floating_profit"] = round(sum(float(p.get("profit") or 0) for p in positions), 2)
-    return {"ok": True, "account": account, "trading_enabled": app.cfg.allow_trading}
+    return {"ok": True, "account": account, "trading_enabled": app.cfg.trading_enabled, "paper_trading": app.cfg.paper_trading}
 
 
 @mcp.tool()
@@ -278,10 +283,18 @@ def position_size(
         entry = float(app.mt5.tick(resolved).get("ask") or 0.0)
     if not stop:
         return {"ok": False, "error": "missing_stop", "message": "a stop price is required"}
-    equity = float(balance or app.mt5.account_info().get("equity") or 0.0)
-    pct = min(float(risk_percent), app.cfg.max_risk_percent)
+    account = app.mt5.account_info(fresh=True)
+    effective = sizing_balance(account, app.cfg)
+    if balance is not None:
+        requested_balance = float(balance)
+        if not math.isfinite(requested_balance) or requested_balance < 0:
+            return {"ok": False, "error": "invalid_balance"}
+        effective = min(effective, requested_balance)
+    if not math.isfinite(float(risk_percent)) or float(risk_percent) <= 0:
+        return {"ok": False, "error": "invalid_risk_percent"}
+    pct = min(float(risk_percent), app.cfg.max_risk_percent, HARD_MAX_RISK_PERCENT)
     sizing = lots_for_risk(
-        balance=equity, risk_percent=pct, entry=entry, stop=stop, info=info, max_lot=app.cfg.max_lot
+        balance=effective, risk_percent=pct, entry=entry, stop=stop, info=info, max_lot=app.cfg.max_lot
     )
     if sizing.get("ok"):
         try:
@@ -292,11 +305,15 @@ def position_size(
     return {
         "ok": bool(sizing.get("ok")),
         "symbol": resolved,
-        "equity_used": round(equity, 2),
+        "equity_used": round(effective, 2),
+        "effective_sizing_balance": effective,
+        "account_equity": account.get("equity"),
+        "training_budget": app.cfg.training_budget,
+        "requested_balance": balance,
         "requested_risk_percent": risk_percent,
         "applied_risk_percent": pct,
         "sizing": sizing,
-        "cap_note": f"risk above {app.cfg.max_risk_percent}% is clamped by configuration",
+        "cap_note": f"risk above {app.cfg.max_risk_percent}% is clamped; sizing balance cannot exceed equity or the training budget",
     }
 
 
@@ -417,6 +434,7 @@ def risk_report() -> dict[str, Any]:
             "max_open_positions": cfg.max_open_positions,
             "max_spread_points": cfg.max_spread_points,
             "allow_trading": cfg.allow_trading,
+            "paper_trading": cfg.paper_trading,
         },
         "warnings": warnings,
     }
@@ -547,6 +565,270 @@ def journal_list(limit: int = 20, symbol: str = "") -> dict[str, Any]:
     return {"ok": True, "count": len(notes), "notes": notes}
 
 
+# One owned console per MCP process; never stop unrelated listeners.
+
+_web_workspace = WorkspaceManager()
+
+
+@mcp.tool()
+@_safe
+def start_web_workspace(open_browser: bool = False) -> dict[str, Any]:
+    """Start/reuse the read-only native web console using this active connection.
+
+    No clipboard or password prompt, no new OpenCode server, no model requests,
+    no scheduler and no trades. Requires a verified native demo connection and
+    OpenCode configuration in this MCP process. open_browser uses the system browser.
+    """
+    return _web_workspace.start(get_app(), open_browser=open_browser)
+
+
+@mcp.tool()
+@_safe
+def web_workspace_status() -> dict[str, Any]:
+    """Read console readiness and saved reports only. Does not run models or agents."""
+    return _web_workspace.status(get_app().cfg)
+
+
+@mcp.tool()
+@_safe
+def stop_owned_web_workspace() -> dict[str, Any]:
+    """Stop only the console started by this MCP process, never a reused listener."""
+    return _web_workspace.stop()
+
+
+# Web agents share the journal with this MCP process when journal paths match.
+@mcp.tool()
+@_safe
+def list_web_agents() -> dict[str, Any]:
+    """List persisted agents and their last reports, also visible in the web console."""
+    return {"ok": True, "agents": get_app().store.list_agents()}
+
+
+@mcp.tool()
+@_safe
+def create_web_agent(name: str, symbols: list[str], max_risk: float = 0.5,
+                     max_lot: float = 0.01) -> dict[str, Any]:
+    """Create a disabled advisory web agent. Never starts a loop or places a trade."""
+    app = get_app()
+    if not symbols or not all(math.isfinite(v) and v > 0 for v in (max_risk, max_lot)):
+        return {"ok": False, "error": "invalid_agent_limits"}
+    agent = app.store.create_agent({
+        "name": name[:60], "symbols": [s.strip().upper() for s in symbols[:8]],
+        "max_risk": min(max_risk, app.cfg.max_risk_percent),
+        "max_lot": min(max_lot, app.cfg.max_lot), "mode": "advisory", "enabled": False,
+    })
+    return {"ok": True, "agent": agent}
+
+
+@mcp.tool()
+@_safe
+def run_web_agent(agent_id: str) -> dict[str, Any]:
+    """Run one OpenCode-backed analysis, producing proposals only. Never confirms.
+
+    Requires OPENCODE_URL in this MCP process. View the saved report and any pending
+    proposals in the web console using the same journal. No scheduler is enabled.
+    """
+    from .agents import AgentEngine
+    app = get_app()
+    if not app.cfg.opencode_url:
+        return {"ok": False, "error": "opencode_not_configured_in_this_process"}
+    agent = app.store.get_agent(agent_id)
+    if not agent:
+        return {"ok": False, "error": "unknown_agent"}
+    report = AgentEngine(cfg=app.cfg, mt5=app.mt5, store=app.store).run({**agent, "mode": "advisory"})
+    return {"ok": True, "report": report}
+
+
+# ----------------------------------------------------------- offline day-trader
+
+def _daytrade_result(operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+    from .daytrade import run_request
+
+    try:
+        needs_cfg = operation == "review" or (operation == "plan" and payload.get("sizing") is not None)
+        cfg = get_app_config() if needs_cfg else None
+        return run_request(operation, payload, cfg)
+    except (ValueError, TypeError, OverflowError) as exc:
+        return {"ok": False, "error": "invalid_input", "message": str(exc),
+                "executable": False, "execution_authorized": False}
+
+
+@mcp.tool()
+@_safe
+def daytrade_entry_signal(
+    ohlcv: list[list[Any]], side: str, start_time: StrictInt,
+    setup: str = "opening_range", opening_range_bars: StrictInt = 5,
+    level: StrictFloat | None = None, cutoff_time: StrictInt | None = None,
+    min_tick_volume_ratio: StrictFloat | None = None,
+) -> dict[str, Any]:
+    """Offline first closed-M1 breakout of a caller-defined range or level, buy or sell.
+
+    Rows: [broker_time, open, high, low, close, tick_volume, optional_spread].
+    Times are same-basis minute labels, not assumed UTC. The final row is always
+    excluded as possibly forming; gaps in the searched interval are rejected.
+    start_time defines the range/search start, not an assumed exchange open.
+    No broker/model/order calls; signal freshness and execution are not verified.
+    """
+    return _daytrade_result("entry", locals())
+
+
+@mcp.tool()
+@_safe
+def daytrade_exit_plan(
+    side: str, entry: StrictFloat, stop_rule: str = "price", stop_value: StrictFloat | None = None,
+    target_r: StrictFloat | None = 1.5, target_price: StrictFloat | None = None,
+    tick_size: StrictFloat | None = None, range_high: StrictFloat | None = None,
+    range_low: StrictFloat | None = None, atr_value: StrictFloat | None = None,
+    sizing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Offline buy/sell stop and target plan; never an order or execution approval.
+
+    stop_rule: price, distance, percent, atr, range_edge, or range_mid. For an
+    explicit target_price pass target_r=null. Optional sizing contains spec,
+    budget, risk_percent, commission_per_lot, slippage_price; missing costs give
+    no volume. Caps are applied but broker/account/margin are not checked.
+    """
+    return _daytrade_result("plan", locals())
+
+
+@mcp.tool()
+@_safe
+def daytrade_historical_replay(
+    sessions: list[list[list[Any]]], decision_time: StrictInt, side: str,
+    opening_range_bars: StrictInt = 5, stop_rule: str = "range_edge",
+    stop_value: StrictFloat | None = None, target_r: StrictFloat = 1.5,
+    tick_size: StrictFloat | None = None, horizon_bars: StrictInt = 30,
+    cutoff_slot: StrictInt | None = None,
+) -> dict[str, Any]:
+    """Replay a closed-M1 range breakout on earlier caller-supplied segments.
+
+    Each segment is an equal-length, ordered, contiguous list of compact M1 rows;
+    all bars must end by decision_time in the same broker-label basis. Uses next
+    open as a hypothetical fill, gap-aware stop and stop-first ambiguous bars.
+    Open positions are marked at the horizon, never forcibly closed. Gross only.
+    """
+    return _daytrade_result("history", locals())
+
+
+@mcp.tool()
+@_safe
+def daytrade_time_machine(
+    sessions: list[list[list[Any]]], decision_time: StrictInt, side: str,
+    entry: StrictFloat, stop: StrictFloat, target: StrictFloat,
+    entry_slot: StrictInt, horizon_bars: StrictInt, replays: StrictInt = 1000,
+    seed: StrictInt = 19, window: StrictInt = 2,
+) -> dict[str, Any]:
+    """Seeded, offline M1 OHLC resampling of a hypothetical plan, not prediction.
+
+    Requires >=20 equal-length, contiguous, earlier supplied M1 segments. Slot
+    zero is the segment start; entry_slot is the completed signal bar. Prices
+    are sampled from prior same-slot OHLC ratios. No spreads, costs or actual
+    fills; open trades are marked at the horizon, not automatically closed.
+    """
+    return _daytrade_result("time-machine", locals())
+
+
+@mcp.tool()
+@_safe
+def daytrade_check_alert(
+    side: str, stop: StrictFloat, target: StrictFloat, bid: StrictFloat, ask: StrictFloat,
+) -> dict[str, Any]:
+    """Check supplied bid/ask once against stop and target; no polling or notification.
+
+    Long exits are checked against bid and short exits against ask. No quote
+    freshness, broker-side stop, fill, position change or order is implied.
+    """
+    return _daytrade_result("alerts", locals())
+
+
+@mcp.tool()
+@_safe
+def daytrade_scan(
+    markets: list[dict[str, Any]], mode: str = "patterns", side: str = "buy",
+    start_time: StrictInt | None = None, opening_range_bars: StrictInt = 5,
+    cutoff_time: StrictInt | None = None, min_tick_volume_ratio: StrictFloat | None = None,
+) -> dict[str, Any]:
+    """Offline multi-symbol M1 pattern or caller-defined range-breakout scan.
+
+    Each market has symbol and ohlcv. Final bars are excluded. The five upstream
+    daily patterns are adapted to M1 bars, not days. No freshness or trade approval.
+    """
+    return _daytrade_result("scan", locals())
+
+
+@mcp.tool()
+@_safe
+def daytrade_alert_rules(
+    rules: list[dict[str, Any]], quotes: dict[str, Any], now: StrictInt,
+    state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Evaluate multiple supplied rules once; return caller-owned once/rearm state.
+
+    Supports bid/ask above, below, stop, target, percentage moves and explicit
+    clock instants. No polling, NYSE calendar, notifications, execution or
+    freshness verification. Feed back state to the next manual evaluation.
+    """
+    return _daytrade_result("alert-rules", locals())
+
+
+@mcp.tool()
+@_safe
+def daytrade_review_limits(
+    side: str, entry: StrictFloat, stop: StrictFloat, target: StrictFloat,
+    sizing: dict[str, Any], limits: dict[str, Any],
+) -> dict[str, Any]:
+    """Review hypothetical MT5 sizing and supplied daily limits; not a risk gate.
+
+    Uses the same cost-aware sizing preview and active caps as daytrade_exit_plan.
+    Missing limits and costs remain unknown. No live account, broker or approval.
+    """
+    return _daytrade_result("review", locals())
+
+
+@mcp.tool()
+@_safe
+def daytrade_parse_news(
+    feeds: list[dict[str, Any]], watch: dict[str, Any], now: str,
+    hours: StrictInt = 48, seen_ids: list[str] | None = None,
+    show_all: StrictBool = False, market: str = "macro", moves: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Parse supplied RSS or US-stock SEC Atom; tag, deduplicate and track seen ids.
+
+    No URL, file access, fetching, scheduler or notifications. Caller supplies
+    timestamp and any price comparisons. SEC filings are not gold fundamentals.
+    """
+    return _daytrade_result("news", locals())
+
+
+@mcp.tool()
+@_safe
+def daytrade_stock_facts(
+    companyfacts: dict[str, Any], quarters: StrictInt = 6, as_of: str | None = None,
+) -> dict[str, Any]:
+    """Analyze supplied US-company SEC XBRL facts, not XAUUSD fundamentals.
+
+    Quarterly, margins, growth and trailing totals use the upstream formulas.
+    Optional as_of filters by filing date, not an exact intraday publication time.
+    Offline only; no latest-filings, source authenticity or freshness checks.
+    """
+    return _daytrade_result("stock-facts", locals())
+
+
+@mcp.tool()
+@_safe
+def daytrade_stock_disclosures(
+    kind: str, text: str, year: StrictInt | None = None, as_of: str | None = None,
+    members: list[str] | None = None, since: str | None = None,
+    seen_ids: list[str] | None = None, filed: str | None = None, new_only: StrictBool = False,
+) -> dict[str, Any]:
+    """Parse a supplied US House XML index or pre-extracted PTR report text.
+
+    Index requires year and as_of. It can filter member names and return seen ids.
+    No PDF conversion, network, scheduler or claims about gold CFD direction.
+    """
+    return _daytrade_result("stock-disclosures", locals())
+
+
 # ---------------------------------------------------------------------- prompts
 @mcp.prompt()
 def gold_session_briefing(symbol: str = "XAUUSD") -> str:
@@ -584,3 +866,9 @@ def trade_review(days: str = "30") -> str:
 - سه اقدام مشخص برای بهبود انضباط ریسک در هفته آینده
 اگر داده کافی نیست، صریح بگو و حدس نزن.
 """
+
+
+# Additive clean-string facade: existing clients retain their structured tools.
+from .text_tools import register_text_tools  # noqa: E402
+
+register_text_tools(mcp)

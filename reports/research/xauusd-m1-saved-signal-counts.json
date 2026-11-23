@@ -1,0 +1,333 @@
+{
+  "schema": "xauusd-m1-saved-signal-counts/v1",
+  "status": "completed_aggregate_extraction_no_replay",
+  "source_report": "20261122T130500Z-xauusd-m1-previous-direction.json",
+  "source_baseline_report": "20261122T124500Z-xauusd-final-boundary-replay.json",
+  "matched_scenario_pairs": 12,
+  "saved_baseline_copies_match_published_reference": true,
+  "published_row_and_original_raw_signal_counts_matched": true,
+  "history_calls_made": 0,
+  "network_calls_made": 0,
+  "strategy_models_called": 0,
+  "orders_sent": 0,
+  "tick_replays": 0,
+  "execution_authorized": false,
+  "profitability_proven": false,
+  "commission": null,
+  "fees": null,
+  "swap": null,
+  "net_pnl": null,
+  "blind_holdout_or_out_of_sample": false,
+  "aggregate_comparison_does_not_verify_raw_archive_hash": true,
+  "raw_signals_are_not_entries_and_precede_position_latch_spread_and_direction_filters": true,
+  "windows": [
+    {
+      "id": "additional_sample",
+      "returned_rows": 1015,
+      "eligible_current_minute_buckets": 2,
+      "previous_observed_bid_directions": {
+        "up": 2,
+        "down": 0,
+        "flat": 0
+      },
+      "models": [
+        {
+          "model_id": "original_3_changes",
+          "raw_signals_before_all_entry_filters": {
+            "buy": 16,
+            "sell": 17,
+            "previous_unavailable": 6,
+            "previous_available": 27,
+            "previous_available_and_direction_aligned": 13
+          },
+          "simulated_entries": {
+            "previous_available_only": 5,
+            "previous_direction_aligned": 5
+          },
+          "signals_blocked_at_entry_decision": {
+            "previous_unavailable_control": 6,
+            "previous_unavailable_aligned": 6,
+            "previous_direction_aligned_mode": 0
+          }
+        },
+        {
+          "model_id": "2_changes_spread_cap_1_00",
+          "raw_signals_before_all_entry_filters": {
+            "buy": 45,
+            "sell": 44,
+            "previous_unavailable": 27,
+            "previous_available": 62,
+            "previous_available_and_direction_aligned": 29
+          },
+          "simulated_entries": {
+            "previous_available_only": 10,
+            "previous_direction_aligned": 6
+          },
+          "signals_blocked_at_entry_decision": {
+            "previous_unavailable_control": 27,
+            "previous_unavailable_aligned": 27,
+            "previous_direction_aligned_mode": 32
+          }
+        }
+      ]
+    },
+    {
+      "id": "w1",
+      "returned_rows": 647,
+      "eligible_current_minute_buckets": 2,
+      "previous_observed_bid_directions": {
+        "up": 2,
+        "down": 0,
+        "flat": 0
+      },
+      "models": [
+        {
+          "model_id": "original_3_changes",
+          "raw_signals_before_all_entry_filters": {
+            "buy": 20,
+            "sell": 5,
+            "previous_unavailable": 10,
+            "previous_available": 15,
+            "previous_available_and_direction_aligned": 12
+          },
+          "simulated_entries": {
+            "previous_available_only": 4,
+            "previous_direction_aligned": 3
+          },
+          "signals_blocked_at_entry_decision": {
+            "previous_unavailable_control": 10,
+            "previous_unavailable_aligned": 10,
+            "previous_direction_aligned_mode": 3
+          }
+        },
+        {
+          "model_id": "2_changes_spread_cap_1_00",
+          "raw_signals_before_all_entry_filters": {
+            "buy": 48,
+            "sell": 12,
+            "previous_unavailable": 21,
+            "previous_available": 39,
+            "previous_available_and_direction_aligned": 29
+          },
+          "simulated_entries": {
+            "previous_available_only": 3,
+            "previous_direction_aligned": 2
+          },
+          "signals_blocked_at_entry_decision": {
+            "previous_unavailable_control": 21,
+            "previous_unavailable_aligned": 21,
+            "previous_direction_aligned_mode": 10
+          }
+        }
+      ]
+    },
+    {
+      "id": "w2",
+      "returned_rows": 738,
+      "eligible_current_minute_buckets": 2,
+      "previous_observed_bid_directions": {
+        "up": 1,
+        "down": 1,
+        "flat": 0
+      },
+      "models": [
+        {
+          "model_id": "original_3_changes",
+          "raw_signals_before_all_entry_filters": {
+            "buy": 6,
+            "sell": 9,
+            "previous_unavailable": 9,
+            "previous_available": 6,
+            "previous_available_and_direction_aligned": 1
+          },
+          "simulated_entries": {
+            "previous_available_only": 3,
+            "previous_direction_aligned": 1
+          },
+          "signals_blocked_at_entry_decision": {
+            "previous_unavailable_control": 9,
+            "previous_unavailable_aligned": 9,
+            "previous_direction_aligned_mode": 5
+          }
+        },
+        {
+          "model_id": "2_changes_spread_cap_1_00",
+          "raw_signals_before_all_entry_filters": {
+            "buy": 12,
+            "sell": 28,
+            "previous_unavailable": 22,
+            "previous_available": 18,
+            "previous_available_and_direction_aligned": 1
+          },
+          "simulated_entries": {
+            "previous_available_only": 2,
+            "previous_direction_aligned": 1
+          },
+          "signals_blocked_at_entry_decision": {
+            "previous_unavailable_control": 22,
+            "previous_unavailable_aligned": 22,
+            "previous_direction_aligned_mode": 17
+          }
+        }
+      ]
+    },
+    {
+      "id": "w3",
+      "returned_rows": 820,
+      "eligible_current_minute_buckets": 2,
+      "previous_observed_bid_directions": {
+        "up": 0,
+        "down": 2,
+        "flat": 0
+      },
+      "models": [
+        {
+          "model_id": "original_3_changes",
+          "raw_signals_before_all_entry_filters": {
+            "buy": 16,
+            "sell": 10,
+            "previous_unavailable": 8,
+            "previous_available": 18,
+            "previous_available_and_direction_aligned": 10
+          },
+          "simulated_entries": {
+            "previous_available_only": 6,
+            "previous_direction_aligned": 2
+          },
+          "signals_blocked_at_entry_decision": {
+            "previous_unavailable_control": 8,
+            "previous_unavailable_aligned": 8,
+            "previous_direction_aligned_mode": 3
+          }
+        },
+        {
+          "model_id": "2_changes_spread_cap_1_00",
+          "raw_signals_before_all_entry_filters": {
+            "buy": 43,
+            "sell": 27,
+            "previous_unavailable": 24,
+            "previous_available": 46,
+            "previous_available_and_direction_aligned": 26
+          },
+          "simulated_entries": {
+            "previous_available_only": 6,
+            "previous_direction_aligned": 2
+          },
+          "signals_blocked_at_entry_decision": {
+            "previous_unavailable_control": 24,
+            "previous_unavailable_aligned": 24,
+            "previous_direction_aligned_mode": 10
+          }
+        }
+      ]
+    },
+    {
+      "id": "w4",
+      "returned_rows": 745,
+      "eligible_current_minute_buckets": 2,
+      "previous_observed_bid_directions": {
+        "up": 1,
+        "down": 1,
+        "flat": 0
+      },
+      "models": [
+        {
+          "model_id": "original_3_changes",
+          "raw_signals_before_all_entry_filters": {
+            "buy": 24,
+            "sell": 13,
+            "previous_unavailable": 16,
+            "previous_available": 21,
+            "previous_available_and_direction_aligned": 7
+          },
+          "simulated_entries": {
+            "previous_available_only": 3,
+            "previous_direction_aligned": 2
+          },
+          "signals_blocked_at_entry_decision": {
+            "previous_unavailable_control": 16,
+            "previous_unavailable_aligned": 16,
+            "previous_direction_aligned_mode": 14
+          }
+        },
+        {
+          "model_id": "2_changes_spread_cap_1_00",
+          "raw_signals_before_all_entry_filters": {
+            "buy": 53,
+            "sell": 31,
+            "previous_unavailable": 34,
+            "previous_available": 50,
+            "previous_available_and_direction_aligned": 15
+          },
+          "simulated_entries": {
+            "previous_available_only": 3,
+            "previous_direction_aligned": 2
+          },
+          "signals_blocked_at_entry_decision": {
+            "previous_unavailable_control": 34,
+            "previous_unavailable_aligned": 34,
+            "previous_direction_aligned_mode": 35
+          }
+        }
+      ]
+    },
+    {
+      "id": "w5",
+      "returned_rows": 862,
+      "eligible_current_minute_buckets": 2,
+      "previous_observed_bid_directions": {
+        "up": 2,
+        "down": 0,
+        "flat": 0
+      },
+      "models": [
+        {
+          "model_id": "original_3_changes",
+          "raw_signals_before_all_entry_filters": {
+            "buy": 25,
+            "sell": 12,
+            "previous_unavailable": 10,
+            "previous_available": 27,
+            "previous_available_and_direction_aligned": 16
+          },
+          "simulated_entries": {
+            "previous_available_only": 4,
+            "previous_direction_aligned": 4
+          },
+          "signals_blocked_at_entry_decision": {
+            "previous_unavailable_control": 10,
+            "previous_unavailable_aligned": 10,
+            "previous_direction_aligned_mode": 0
+          }
+        },
+        {
+          "model_id": "2_changes_spread_cap_1_00",
+          "raw_signals_before_all_entry_filters": {
+            "buy": 52,
+            "sell": 24,
+            "previous_unavailable": 26,
+            "previous_available": 50,
+            "previous_available_and_direction_aligned": 27
+          },
+          "simulated_entries": {
+            "previous_available_only": 5,
+            "previous_direction_aligned": 4
+          },
+          "signals_blocked_at_entry_decision": {
+            "previous_unavailable_control": 26,
+            "previous_unavailable_aligned": 26,
+            "previous_direction_aligned_mode": 1
+          }
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "Only existing saved aggregates were read; no quotes, fills, account records or costs were checked",
+    "The six sparse samples and two overlapping models are not a continuous account or unseen test",
+    "Directions use observed previous-minute first and last bid; complete feed and true candles are unverified",
+    "Broker-label time and the actual research execution dates are not independently verified",
+    "A matching aggregate is not a cryptographic identity check on raw archives",
+    "Commission, fees, swap, slippage and net remain unknown; no trading is authorized"
+  ]
+}

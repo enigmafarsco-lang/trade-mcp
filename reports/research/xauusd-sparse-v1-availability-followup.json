@@ -1,0 +1,33 @@
+{
+  "schema": "xauusd-sparse-v1-followup/v1",
+  "evidence_source": "user_report_of_local_offline_inspection_not_independently_accessible_in_arena",
+  "existing_response": "eval-1-raw-response.json",
+  "response_shape_reported": {
+    "symbol": "XAUUSD_i",
+    "period": "tick",
+    "isError": false,
+    "ok": false,
+    "history_empty": true,
+    "data_available_from_present": true,
+    "explicit_error_reason_present": false
+  },
+  "user_reported_label_comparison": {
+    "status": "calendar_labels_compared",
+    "eval-1": "availability_label_at_or_before_window_start",
+    "eval-2": "availability_label_at_or_before_window_start",
+    "eval-3": "availability_label_at_or_before_window_start",
+    "final-1": "availability_label_at_or_before_window_start",
+    "final-2": "availability_label_at_or_before_window_start",
+    "final-3": "availability_label_at_or_before_window_start"
+  },
+  "interpretation": "Reported calendar ordering does not support the simple hypothesis that the failed window was before the availability label, assuming labels share a time basis. That assumption and server semantics are not verified; true provider root cause remains unknown. Availability does not prove window completeness or data presence.",
+  "history_calls_in_this_followup": 0,
+  "sparse_screen_retried": false,
+  "utc_verified": false,
+  "response_time_semantics_verified": false,
+  "provider_root_cause_verified": false,
+  "complete_tick_coverage_verified": false,
+  "profitability_proven": false,
+  "execution_authorized": false,
+  "raw_provider_data_committed": false
+}

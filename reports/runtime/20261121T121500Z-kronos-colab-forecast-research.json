@@ -1,0 +1,101 @@
+{
+  "schema": "trade-mcp/runtime-report",
+  "report_id": "20261121T121500Z-kronos-colab-forecast-research",
+  "generated_at": "2026-11-21T12:15:00Z",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "head": "e6459f88d83b26565016b2a726ca9ac37a147a03",
+  "workflow": "locate Colab Kronos output -> preserve owner-only gitignored research dir -> validate schema/source/timestamps/postprocessing/evaluation (no raw prices) -> generate offline research chart -> present chart -> sanitized report only",
+  "trading_enabled": false,
+  "cloud_budget_revoked": true,
+  "guardian_state_preserved": true,
+  "kronos_artifact": {
+    "source_file": "~/Downloads/kronos_forecast_XAUUSD_M1.json (inspected locally; raw not committed)",
+    "preserved_gitignored_owner_only": "logs/research-kronos-20261121T090633Z/kronos_forecast_XAUUSD_M1.json (dir 700, file 600)",
+    "sha256": "afb43301c379f6a49daa8b18eec282bd5147dbfa5b11c37a33ba25a22380c4a3",
+    "symbol": "XAUUSD",
+    "timeframe": "M1",
+    "source": "official_KronosPredictor.predict",
+    "upstream_commit_expected": "67b630e67f6a18c9e9be918d9b4337c960db1e9a",
+    "forecast_origin": 1795202940,
+    "forecast_origin_iso_utc": "2026-11-20T19:29:00Z",
+    "age_seconds_at_inspection": 36453,
+    "fresh_120s": false,
+    "candles_count": 60,
+    "candles_schema_ok": true,
+    "execution_authorized": false,
+    "validated_for_trading": false,
+    "research_only": true,
+    "display_eligible": false,
+    "baseline_screen_top_level": {
+      "passed": false,
+      "failed_horizons_minutes": [
+        15,
+        30,
+        60
+      ],
+      "independent_origins": 1
+    },
+    "baseline_screen_passed_preserved": false,
+    "baseline_screen_timestamps_rewritten": false,
+    "postprocessing": {
+      "present": true,
+      "prices_modified": true,
+      "ohlc_policy": "envelope_preserve_open_close_with_raw_audit",
+      "volume_policy": "negative_to_zero_with_raw_audit",
+      "ohlc_adjustments_count": 3,
+      "volume_adjustments_count": 37
+    },
+    "holdout_evaluation": {
+      "present": true,
+      "source": "official_KronosPredictor.predict",
+      "holdout_candles": 60,
+      "independent_origins": 1,
+      "validated_for_trading": false,
+      "warning": "One holdout origin is not profitability or generalization proof",
+      "metrics": [
+        {
+          "minutes_ahead": 15,
+          "passed": false,
+          "ratio_error_to_baseline": 1.117746
+        },
+        {
+          "minutes_ahead": 30,
+          "passed": false,
+          "ratio_error_to_baseline": 2.501242
+        },
+        {
+          "minutes_ahead": 60,
+          "passed": false,
+          "ratio_error_to_baseline": 7.691637
+        }
+      ],
+      "failed_horizons_minutes": [
+        15,
+        30,
+        60
+      ]
+    }
+  },
+  "chart": {
+    "generated": true,
+    "path_gitignored": "logs/research-kronos-20261121T090633Z/kronos_research_failed_baseline_chart.svg",
+    "presented_to_user": true,
+    "label": "Historical Kronos research — failed baseline — not a live signal",
+    "context_included": true,
+    "context_source": "/tmp/opencode/xauusd_m1_closed_180_redacted.json (180 contiguous closed M1, verified UTC)",
+    "markers_minutes": [
+      15,
+      30,
+      60
+    ],
+    "forecast_only": false,
+    "postprocessing_disclosed": true
+  },
+  "actions_not_taken": [
+    "Did not set TRADE_MCP_KRONOS_FORECAST_PATH",
+    "Did not bypass live loader or connect to order execution",
+    "Did not rewrite baseline_screen.passed or timestamps",
+    "No new inference/model retry/cloud budget activation/trading",
+    "Raw artifact/chart not committed"
+  ]
+}

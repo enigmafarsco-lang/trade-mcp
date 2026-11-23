@@ -1,0 +1,23 @@
+{
+  "schema": "xauusd-research-check-report/v1",
+  "report_id": "20261122T075312Z-xauusd-cash-research",
+  "branch": "arena/f81b6b27-trade-mcp",
+  "head_at_execution": "16cfd85",
+  "command_executed": ".venv/bin/python scripts/run_xauusd_cash_research.py logs/research-inputs/xauusd-ticks-corrected-20261122T073154Z/raw-response.json \"logs/research-inputs/xauusd-cash-research-20261122T075312Z\" --symbol XAUUSD_i",
+  "execution_count": 1,
+  "new_tick_request": false,
+  "metadata_tool_calls": 1,
+  "result": {
+    "status": "blocked_invalid_input_metadata_or_unsupported_profit_model",
+    "missing_economic_fields": [],
+    "reported_trade_calc_mode": "cfd leverage",
+    "required_economic_fields_present": ["trade_contract_size","currency_profit","trade_calc_mode","volume_min","volume_max","volume_step"],
+    "gross_cash_exit_scenario_produced": false,
+    "net_pnl": null,
+    "commission_assumed_zero": false,
+    "swap_assumed_zero": false
+  },
+  "raw_data_committed": false,
+  "trading_off": true,
+  "cloud_budget_revoked": true
+}
