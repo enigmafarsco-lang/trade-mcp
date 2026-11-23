@@ -16,6 +16,12 @@ SPEC = dict(trade_tick_size=.01, trade_tick_value=1, volume_step=.01,
             volume_min=.01, volume_max=100, point=.01, trade_stops_level=0)
 
 
+@pytest.fixture(autouse=True)
+def isolated_cash_policy(monkeypatch):
+    # Do not let a workstation's live policy change synthetic fixture expectations.
+    monkeypatch.setenv('TRADE_MCP_DEMO_CASH_POLICY', 'false')
+
+
 def row(stamp, op=100, hi=101, lo=99, close=100, volume=100, spread=None):
     result = [stamp, op, hi, lo, close, volume]
     return result if spread is None else [*result, spread]
@@ -449,6 +455,10 @@ def test_mcp_sizing_without_initialized_app_does_not_start_bridge_or_journal(mon
     monkeypatch.setattr(app_mod, 'build_app', lambda *a, **k: pytest.fail('app must not start'))
     monkeypatch.setenv('TRADE_MCP_BACKEND', 'file')
     monkeypatch.setenv('TRADE_MCP_FILES_DIR', '')
+    monkeypatch.setenv('TRADE_MCP_TRAINING_BUDGET', '100')
+    monkeypatch.setenv('TRADE_MCP_MAX_RISK_PERCENT', '1')
+    monkeypatch.setenv('TRADE_MCP_MAX_LOT', '0.1')
+    monkeypatch.setenv('TRADE_MCP_DEMO_CASH_POLICY', 'false')
     result = server.daytrade_exit_plan('buy', 100, stop_value=99, tick_size=.01,
         sizing=dict(spec=SPEC, budget=100, risk_percent=1, commission_per_lot=0, slippage_price=0))
     assert result['ok'] and result['sizing']['status'] == 'estimate_only'
