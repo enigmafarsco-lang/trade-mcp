@@ -104,6 +104,11 @@ def test_gold_lab_365d_cli_mock_and_no_execution_imports(tmp_path, monkeypatch, 
     assert ids == [
         "M5_MOMENTUM_G5",
         "M5_MOMENTUM_G5_ADX20_35",
+        "TPSL_LONDON_BREAKOUT",
+        "NY_ORB_BREAKOUT",
+        "NY_ORB_RETEST",
+        "NY_SESSION_SWEEP",
+        "VOL_SQUEEZE_KELTNER",
         "SMC_BOS_FVG",
         "SMC_LIQUIDITY_SWEEP",
         "SKILL_BREAKOUT20_MA20",
@@ -187,4 +192,71 @@ def test_smc_bos_fvg_and_liquidity_sweep_actually_trigger():
         bars_sw, spec=spec, htf_indices=htf_idx, signal_generator="smc_liquidity_sweep", spread_price=0.34,
     )
     assert s_sw["trades"] >= 1 and tr_sw[0]["side"] == "buy"
+
+
+def test_github_tpsl_london_and_ny_orb_retest_sweep_trigger():
+    from datetime import datetime, timezone
+
+    from trade_mcp.gold_lab import _sim_ny_session_xauusd, _sim_tpsl_london_breakout
+
+    spec = {
+        "trade_tick_size": 0.01, "trade_tick_value": 0.1, "trade_contract_size": 100.0,
+        "currency_profit": "USD", "trade_calc_mode": "CFD Leverage",
+        "digits": 2, "volume_step": 0.01, "volume_min": 0.01, "volume_max": 50.0, "point": 0.01,
+    }
+    # Build 2 full weekday M5 sessions (2026-11-17 & 2026-11-18 UTC; Athens=UTC+2, NY=UTC-5)
+    t_day1 = int(datetime(2026, 11, 17, 0, 0, tzinfo=timezone.utc).timestamp())
+    t_day2 = int(datetime(2026, 11, 18, 0, 0, tzinfo=timezone.utc).timestamp())
+    bars: list[list[float]] = []
+
+    # Day 1: range [3590, 3605] so PDH=3605, PDL=3590
+    for k in range(24 * 12):
+        ts = float(t_day1 + k * 300)
+        bars.append([ts, 3598.0, 3605.0 if k == 50 else 3600.0, 3590.0 if k == 80 else 3595.0, 3598.0, 100.0])
+
+    # Day 2:
+    # - 01:00..05:55 UTC (= 03:00..07:55 Athens): clean $15 box [3595, 3610] (~0.42% of price, passes [0.3%, 1.6%])
+    # - 06:00..13:25 UTC (= 08:00+ Athens): breaks above 3610.20 at 06:10 UTC and rallies to 3655 (hits 2.5R TP!)
+    # - 13:30..13:40 UTC (= 08:30..08:40 NY): NY Opening Range [3640, 3648] ($8 range, passes [$3, $25])
+    # - 13:45 UTC (08:45 NY): breaks above 3648 (close=3650) -> NY_ORB_BREAKOUT long at 13:50!
+    # - 13:55 UTC (08:55 NY): retests 3648 (low=3648.1, close=3650.5 > open=3648.5) -> NY_ORB_RETEST long!
+    # - 14:05 UTC (09:05 NY): sweeps above London high & rejects -> NY_SESSION_SWEEP!
+    for k in range(24 * 12):
+        ts = float(t_day2 + k * 300)
+        hr = (k * 5) // 60
+        mn = (k * 5) % 60
+        if 1 <= hr < 6:
+            hi = 3610.0 if k == 24 else 3604.0
+            lo = 3595.0 if k == 30 else 3599.0
+            bars.append([ts, 3602.0, hi, lo, 3603.0, 100.0])
+        elif hr == 6 and mn == 10:
+            bars.append([ts, 3609.0, 3615.0, 3608.5, 3614.0, 200.0])
+        elif (hr == 6 and mn > 10) or (7 <= hr < 13) or (hr == 13 and mn < 30):
+            bars.append([ts, 3640.0, 3660.0 if hr == 9 else 3646.0, 3638.0, 3644.0, 120.0])
+        elif hr == 13 and 30 <= mn < 45:
+            bars.append([ts, 3644.0, 3648.0, 3640.0, 3645.0, 140.0])
+        elif hr == 13 and mn == 45:
+            bars.append([ts, 3645.0, 3651.0, 3644.5, 3650.0, 200.0])
+        elif hr == 13 and mn == 50:
+            bars.append([ts, 3650.0, 3650.5, 3648.2, 3649.0, 150.0])
+        elif hr == 13 and mn == 55:
+            bars.append([ts, 3648.5, 3652.0, 3648.0, 3651.5, 180.0])
+        elif hr == 14 and mn == 5:
+            # Sweeps London high 3660.0 -> 3664.0 and closes back below at 3658.0!
+            bars.append([ts, 3659.0, 3664.0, 3657.0, 3658.0, 220.0])
+        else:
+            bars.append([ts, 3655.0, 3665.0, 3650.0, 3656.0, 100.0])
+
+    s_lon, tr_lon = _sim_tpsl_london_breakout(bars, spec=spec, spread_price=0.34)
+    assert s_lon["trades"] >= 1 and tr_lon[0]["side"] == "buy"
+
+    s_orb, tr_orb = _sim_ny_session_xauusd(bars, spec=spec, setup="ny_orb", spread_price=0.34)
+    assert s_orb["trades"] >= 1 and tr_orb[0]["side"] == "buy"
+
+    s_ret, tr_ret = _sim_ny_session_xauusd(bars, spec=spec, setup="ny_retest", spread_price=0.34)
+    assert s_ret["trades"] >= 1 and tr_ret[0]["side"] == "buy"
+
+    s_swp, tr_swp = _sim_ny_session_xauusd(bars, spec=spec, setup="ny_sweep", spread_price=0.34)
+    assert s_swp["trades"] >= 1 and tr_swp[0]["side"] == "sell"
+
 

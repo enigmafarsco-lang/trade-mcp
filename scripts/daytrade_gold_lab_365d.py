@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
 """Strictly read-only 365-day GoldAgent Lab Head-to-Head Multi-Engine Bake-Off.
 
-Compares 6 strategies on the EXACT same 365-day Alpari MT5 XAUUSD_i M5 dataset
-(100 oz/lot CFD Leverage, live spread, $12 max stop, 0.01 lot, London/NY 07-20 UTC,
-zero lookahead, conservative SL-before-trail OHLC fills, + 1,000-run Monte Carlo):
+Compares 11 strategies (our locked M5_5 + real GitHub XAUUSD repos + deterministic SMC
++ vendored day-trader-skill) on the EXACT same 365-day Alpari MT5 XAUUSD_i M5 dataset
+(100 oz/lot CFD Leverage, live spread, 0.01 lot, zero lookahead, conservative SL-before-TP/trail
+OHLC fills, dual-half split, 4-level cost stress, + 1,000-run Monte Carlo):
   1. M5_MOMENTUM_G5           — Locked M5_5 + London/NY + H1 ADX >= 20
   2. M5_MOMENTUM_G5_ADX20_35  — EXPLORATORY: G5 skipping exhausted H1 ADX >= 35
-  3. SMC_BOS_FVG              — Deterministic SMC: Swing BOS + FVG retest (H1+H4)
-  4. SMC_LIQUIDITY_SWEEP      — Deterministic SMC: Liquidity Sweep rejection (H4)
-  5. SKILL_BREAKOUT20_MA20    — Vendored day-trader-skill: breakout_20_bars + reclaim_ma20
-  6. SKILL_RSI_BOUNCE         — Vendored day-trader-skill: RSI14 <30/>70 bounce (H4)
+  3. TPSL_LONDON_BREAKOUT     — GitHub TradingTPSL: Classic London Box Breakout (BE 1.5R, TP 2.5R)
+  4. NY_ORB_BREAKOUT          — GitHub Rushi-Javiya/xauusd-day-trader: NY Opening Range Breakout (2R)
+  5. NY_ORB_RETEST            — GitHub Rushi-Javiya/xauusd-day-trader: NY ORB Break + Retest (2R)
+  6. NY_SESSION_SWEEP         — GitHub Rushi-Javiya & GoldAI: PDH/PDL/Asia/London Liquidity Sweep (2R)
+  7. VOL_SQUEEZE_KELTNER      — GitHub Aurum / Carter: Bollinger-inside-Keltner Squeeze release
+  8. SMC_BOS_FVG              — Deterministic SMC: Swing BOS + FVG retest (H1+H4)
+  9. SMC_LIQUIDITY_SWEEP      — Deterministic SMC: Intra-session fractal Sweep rejection (H4)
+ 10. SKILL_BREAKOUT20_MA20    — Vendored day-trader-skill: breakout_20_bars + reclaim_ma20
+ 11. SKILL_RSI_BOUNCE         — Vendored day-trader-skill: RSI14 <30/>70 bounce (H4)
 
 Strictly read-only: NEVER submits, modifies, closes, or proposes any broker orders.
 """

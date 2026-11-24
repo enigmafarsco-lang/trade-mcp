@@ -20,6 +20,7 @@ import math
 import random
 from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .daytrade_paper import (
     HARD_MAX_LOT,
@@ -39,6 +40,7 @@ from .m1_momentum import (
     clean_ohlcv_bars,
     compute_htf_coverage,
     detect_m1_impulse,
+    ema_series,
     htf_allows_signal,
     lookup_htf,
     replay_m1_momentum,
@@ -198,7 +200,13 @@ def _sim_single_position_engine(
       - Broker pricing resolved via `resolve_pricing_basis(spec, 'auto')` (100 oz/lot).
       - Signal decisions at bar `i` read ONLY strictly closed bars `<= i-1` and closed HTF bars.
     """
-    if signal_generator not in ("smc_bos_fvg", "smc_liquidity_sweep", "skill_breakout20_ma20", "skill_rsi_bounce"):
+    if signal_generator not in (
+        "smc_bos_fvg",
+        "smc_liquidity_sweep",
+        "skill_breakout20_ma20",
+        "skill_rsi_bounce",
+        "vol_squeeze_keltner",
+    ):
         raise ValueError(f"unsupported signal_generator: {signal_generator}")
 
     _, multiplier = resolve_pricing_basis(spec, "auto")
@@ -231,6 +239,7 @@ def _sim_single_position_engine(
         atr_vals = atr_series(seg, period=14)
         closes = [b[4] for b in seg]
         rsi_vals = rsi_series(closes, 14) if signal_generator == "skill_rsi_bounce" else []
+        ema20_vals = ema_series(closes, 20) if signal_generator == "vol_squeeze_keltner" else []
 
         pos: dict[str, Any] | None = None
         last_swing_high: float | None = None
@@ -377,6 +386,49 @@ def _sim_single_position_engine(
                                 epx = o
                                 entry_sig = {"side": "sell", "entry": epx, "stop_dist": max(b1[2] + spread_price - epx, atr_now * 1.2)}
 
+                    elif signal_generator == "vol_squeeze_keltner":
+                        # Aurum / Carter Volatility Squeeze: Bollinger(20, 2.0) strictly inside Keltner(20, 1.5 ATR)
+                        # on bars i-3 & i-2, releasing on strictly closed bar i-1 with directional momentum.
+                        def _in_squeeze(
+                            idx_k: int,
+                            _e20: list[float | None] = ema20_vals,
+                            _atr: list[float | None] = atr_vals,
+                            _cls: list[float] = closes,
+                        ) -> bool:
+                            e20 = _e20[idx_k]
+                            av = _atr[idx_k]
+                            if e20 is None or av is None or av <= 0 or idx_k < 20:
+                                return False
+                            win = _cls[idx_k - 19 : idx_k + 1]
+                            mean = sum(win) / 20.0
+                            sd = math.sqrt(sum((x - mean) ** 2 for x in win) / 20.0)
+                            bb_hi, bb_lo = mean + 2.0 * sd, mean - 2.0 * sd
+                            kc_hi, kc_lo = e20 + 1.5 * av, e20 - 1.5 * av
+                            return bb_hi < kc_hi and bb_lo > kc_lo
+
+                        if _in_squeeze(i - 3) and _in_squeeze(i - 2) and not _in_squeeze(i - 1):
+                            e20_1 = ema20_vals[i - 1]
+                            if e20_1 is not None:
+                                cand_side = None
+                                if b1[4] > e20_1 and b1[4] > b1[1]:
+                                    cand_side = "buy"
+                                elif b1[4] < e20_1 and b1[4] < b1[1]:
+                                    cand_side = "sell"
+                                if cand_side is not None:
+                                    ok_htf, deny = htf_allows_signal(
+                                        side=cand_side, htf_filter="m15_h1_h4", m5=m15_c, m15=h1_c, h1=h4_c,
+                                        min_m5_adx=15.0, min_mid_adx=18.0,
+                                    )
+                                    if ok_htf:
+                                        epx = (o + spread_price) if cand_side == "buy" else o
+                                        entry_sig = {
+                                            "side": cand_side,
+                                            "entry": epx,
+                                            "stop_dist": max(b1[2] - b1[3], atr_now * 1.25),
+                                        }
+                                    else:
+                                        _ref(str(deny))
+
                     if entry_sig is not None:
                         side = entry_sig["side"]
                         epx = float(entry_sig["entry"])
@@ -476,6 +528,351 @@ def _sim_single_position_engine(
     return summary, trades
 
 
+def _sim_tpsl_london_breakout(
+    m5_bars: list[list[float]],
+    *,
+    spec: dict[str, Any],
+    spread_price: float = 0.34,
+    commission_per_lot: float = 0.0,
+    max_lot: float = 0.01,
+    leverage: float = 500.0,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Faithful zero-lookahead M5 implementation of TradingTPSL Classic London Breakout.
+
+    Source rules (TradingTPSL/Trading-Strategies-TPSL.si london-breakout-classic.json):
+      - Box: 03:00-08:00 Europe/Athens (DST-aware); skip if width < 0.3% or > 1.6% of price.
+      - Entry at >= 08:00 Athens: OCO buy-stop (box_high + $0.20) / sell-stop (box_low - $0.20).
+      - Stop: opposite side of box, capped at 0.6% of entry price.
+      - Target: 2.5R; move stop to breakeven after closing/reaching 1.5R (SL checked first!).
+      - Flat all at 21:00 Athens; max 1 trade/day.
+    """
+    _, multiplier = resolve_pricing_basis(spec, "auto")
+    contract_size = float(spec.get("trade_contract_size") or 100.0)
+    vol = min(float(max_lot), HARD_MAX_LOT)
+    comm = commission_per_lot * vol
+    tz = ZoneInfo("Europe/Athens")
+
+    by_day: dict[str, list[tuple[datetime, list[float]]]] = {}
+    for b in clean_ohlcv_bars(m5_bars):
+        dt_loc = datetime.fromtimestamp(b[0], tz=timezone.utc).astimezone(tz)
+        if dt_loc.weekday() > 4:
+            continue
+        by_day.setdefault(dt_loc.strftime("%Y-%m-%d"), []).append((dt_loc, b))
+
+    trades: list[dict[str, Any]] = []
+    refusals: dict[str, int] = {}
+    peak_margin = 0.0
+
+    def _ref(reason: str) -> None:
+        refusals[reason] = refusals.get(reason, 0) + 1
+
+    for _day, items in sorted(by_day.items()):
+        box_bars = [b for dt_l, b in items if 3 <= dt_l.hour < 8]
+        if len(box_bars) < 12:
+            _ref("insufficient_box_bars")
+            continue
+        box_hi = max(b[2] for b in box_bars)
+        box_lo = min(b[3] for b in box_bars)
+        width = box_hi - box_lo
+        mid = (box_hi + box_lo) / 2.0
+        if mid <= 0 or width < 0.003 * mid or width > 0.016 * mid:
+            _ref("box_width_out_of_bounds")
+            continue
+
+        buy_stop = box_hi + 0.20
+        sell_stop = box_lo - 0.20
+        session = [(dt_l, b) for dt_l, b in items if 8 <= dt_l.hour < 21]
+        if not session:
+            continue
+
+        pos: dict[str, Any] | None = None
+        for _dt_l, b in session:
+            t, o, h, low = b[0], b[1], b[2], b[3]
+            bar_end = t + 300.0
+            if pos is None:
+                hit_buy = (h + spread_price) >= buy_stop
+                hit_sell = low <= sell_stop
+                if hit_buy and hit_sell:
+                    _ref("ambiguous_both_stops_same_bar")
+                    break
+                if not hit_buy and not hit_sell:
+                    continue
+                side = "buy" if hit_buy else "sell"
+                entry = max(o + spread_price, buy_stop) if side == "buy" else min(o, sell_stop)
+                raw_dist = (entry - box_lo) if side == "buy" else (box_hi + spread_price - entry)
+                stop_dist = min(max(raw_dist, spread_price * 3.0), 0.006 * entry)
+                stop_px = (entry - stop_dist) if side == "buy" else (entry + stop_dist)
+                tp_px = (entry + 2.5 * stop_dist) if side == "buy" else (entry - 2.5 * stop_dist)
+                be_trig = (entry + 1.5 * stop_dist) if side == "buy" else (entry - 1.5 * stop_dist)
+                pos = {
+                    "side": side,
+                    "entry": entry,
+                    "stop": stop_px,
+                    "tp": tp_px,
+                    "be_trig": be_trig,
+                    "be_moved": False,
+                    "opened_at": t,
+                }
+                peak_margin = max(peak_margin, vol * contract_size * o / leverage)
+                # Conservative entry-bar SL check (never allow same-bar TP on stop entry bar)
+                hit_sl_same = (low <= pos["stop"]) if side == "buy" else ((h + spread_price) >= pos["stop"])
+                if hit_sl_same:
+                    diff = (pos["stop"] - entry) if side == "buy" else (entry - pos["stop"])
+                    trades.append({
+                        "opened_at": t,
+                        "closed_at": bar_end,
+                        "side": side,
+                        "net_pnl_usd": round(diff * vol * multiplier - comm, 4),
+                        "exit_reason": "stop_loss",
+                    })
+                    pos = None
+                    break
+                continue
+
+            # Manage open trade: SL ALWAYS checked strictly before TP or BE move!
+            side = pos["side"]
+            if side == "buy":
+                hit_sl = low <= pos["stop"]
+                fill_sl = min(o, pos["stop"])
+                hit_tp = h >= pos["tp"]
+                hit_be = h >= pos["be_trig"]
+            else:
+                hit_sl = (h + spread_price) >= pos["stop"]
+                fill_sl = max(o + spread_price, pos["stop"])
+                hit_tp = (low + spread_price) <= pos["tp"]
+                hit_be = (low + spread_price) <= pos["be_trig"]
+
+            if hit_sl:
+                diff = (fill_sl - pos["entry"]) if side == "buy" else (pos["entry"] - fill_sl)
+                trades.append({
+                    "opened_at": pos["opened_at"],
+                    "closed_at": bar_end,
+                    "side": side,
+                    "net_pnl_usd": round(diff * vol * multiplier - comm, 4),
+                    "exit_reason": "breakeven_stop" if pos["be_moved"] else "stop_loss",
+                })
+                pos = None
+                break
+            if hit_tp:
+                diff = (pos["tp"] - pos["entry"]) if side == "buy" else (pos["entry"] - pos["tp"])
+                trades.append({
+                    "opened_at": pos["opened_at"],
+                    "closed_at": bar_end,
+                    "side": side,
+                    "net_pnl_usd": round(diff * vol * multiplier - comm, 4),
+                    "exit_reason": "target_2_5r",
+                })
+                pos = None
+                break
+            if not pos["be_moved"] and hit_be:
+                pos["stop"] = pos["entry"]
+                pos["be_moved"] = True
+
+        if pos is not None:
+            _, lb = session[-1]
+            ex = lb[4] if pos["side"] == "buy" else (lb[4] + spread_price)
+            diff = (ex - pos["entry"]) if pos["side"] == "buy" else (pos["entry"] - ex)
+            trades.append({
+                "opened_at": pos["opened_at"],
+                "closed_at": lb[0] + 300.0,
+                "side": pos["side"],
+                "net_pnl_usd": round(diff * vol * multiplier - comm, 4),
+                "exit_reason": "eod_21_athens",
+            })
+
+    summary = _summarize_trades(trades, peak_margin_usd=peak_margin, refusals=refusals)
+    return summary, trades
+
+
+def _sim_ny_session_xauusd(
+    m5_bars: list[list[float]],
+    *,
+    spec: dict[str, Any],
+    setup: str,
+    spread_price: float = 0.34,
+    commission_per_lot: float = 0.0,
+    max_lot: float = 0.01,
+    leverage: float = 500.0,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Faithful zero-lookahead M5 implementation of Rushi-Javiya/xauusd-day-trader setups.
+
+    Supports ``ny_orb``, ``ny_retest``, and ``ny_sweep`` (PDH/PDL, Asia H/L, London H/L).
+    Signals on closed M5 bars in [08:45, 11:30) America/New_York; executes strictly on
+    NEXT bar open; SL checked before 2.0R TP; flat at 16:30 NY; max 1 trade/day.
+    """
+    if setup not in ("ny_orb", "ny_retest", "ny_sweep"):
+        raise ValueError(f"unsupported NY setup: {setup}")
+
+    _, multiplier = resolve_pricing_basis(spec, "auto")
+    contract_size = float(spec.get("trade_contract_size") or 100.0)
+    vol = min(float(max_lot), HARD_MAX_LOT)
+    comm = commission_per_lot * vol
+    tz_ny = ZoneInfo("America/New_York")
+
+    clean = clean_ohlcv_bars(m5_bars)
+    atr_all = atr_series(clean, period=14)
+    by_day: dict[str, list[tuple[datetime, datetime, list[float], float]]] = {}
+    for idx, b in enumerate(clean):
+        dt_u = datetime.fromtimestamp(b[0], tz=timezone.utc)
+        dt_ny = dt_u.astimezone(tz_ny)
+        if dt_ny.weekday() > 4:
+            continue
+        av = float(atr_all[idx] or max(b[2] - b[3], 0.5))
+        by_day.setdefault(dt_ny.strftime("%Y-%m-%d"), []).append((dt_ny, dt_u, b, av))
+
+    trades: list[dict[str, Any]] = []
+    refusals: dict[str, int] = {}
+    peak_margin = 0.0
+    prev_day_hi: float | None = None
+    prev_day_lo: float | None = None
+
+    def _ref(reason: str) -> None:
+        refusals[reason] = refusals.get(reason, 0) + 1
+
+    for _day, items in sorted(by_day.items()):
+        # Strictly causal levels known BEFORE 08:45 NY
+        asia = [b for _ny, u, b, _a in items if 0 <= u.hour <= 6]
+        london = [b for _ny, u, b, _a in items if 7 <= u.hour <= 12]
+        or_items = [(ny, b, av) for ny, _u, b, av in items if (ny.hour == 8 and 30 <= ny.minute < 45)]
+        post = [(ny, b, av) for ny, _u, b, av in items if (ny.hour * 60 + ny.minute) >= 8 * 60 + 45 and (ny.hour * 60 + ny.minute) < 16 * 60 + 30]
+
+        if len(or_items) >= 2 and len(post) >= 2:
+            orh = max(b[2] for _, b, _ in or_items)
+            orl = min(b[3] for _, b, _ in or_items)
+            or_rng = orh - orl
+            atr5 = or_items[-1][2]
+            asia_hi = max(b[2] for b in asia) if asia else None
+            asia_lo = min(b[3] for b in asia) if asia else None
+            lon_hi = max(b[2] for b in london) if london else None
+            lon_lo = min(b[3] for b in london) if london else None
+
+            entry_idx: int | None = None
+            sig_side: str | None = None
+            stop_hint: float | None = None
+            cutoff_min = 11 * 60 + 30
+
+            if setup in ("ny_orb", "ny_retest"):
+                if 3.0 <= or_rng <= 25.0:
+                    brk_i: int | None = None
+                    brk_side: str | None = None
+                    for k, (ny, b, _av) in enumerate(post[:-1]):
+                        if (ny.hour * 60 + ny.minute) >= cutoff_min:
+                            break
+                        if b[4] > orh:
+                            brk_i, brk_side = k, "buy"
+                            break
+                        if b[4] < orl:
+                            brk_i, brk_side = k, "sell"
+                            break
+                    if brk_i is not None and brk_side is not None:
+                        if setup == "ny_orb":
+                            entry_idx = brk_i + 1
+                            sig_side = brk_side
+                            stop_hint = (orh + orl) / 2.0
+                        else:
+                            tol = 0.35 * atr5
+                            for k in range(brk_i + 1, min(len(post) - 1, brk_i + 1 + 12)):
+                                ny, b, _av = post[k]
+                                if (ny.hour * 60 + ny.minute) >= cutoff_min:
+                                    break
+                                if brk_side == "buy":
+                                    if b[4] < orh - tol:
+                                        break
+                                    if b[3] <= orh + tol and b[4] > orh and b[4] > b[1]:
+                                        entry_idx, sig_side, stop_hint = k + 1, "buy", min(b[3], orh) - 0.30
+                                        break
+                                else:
+                                    if b[4] > orl + tol:
+                                        break
+                                    if b[2] >= orl - tol and b[4] < orl and b[4] < b[1]:
+                                        entry_idx, sig_side, stop_hint = k + 1, "sell", max(b[2], orl) + 0.30
+                                        break
+                else:
+                    _ref("or_range_out_of_bounds")
+
+            elif setup == "ny_sweep":
+                highs = [lvl for lvl in (prev_day_hi, asia_hi, lon_hi) if lvl is not None]
+                lows = [lvl for lvl in (prev_day_lo, asia_lo, lon_lo) if lvl is not None]
+                for k, (ny, b, av) in enumerate(post[:-1]):
+                    if (ny.hour * 60 + ny.minute) >= cutoff_min:
+                        break
+                    for lv in highs:
+                        if b[2] > lv and b[4] < lv and (b[2] - lv) >= 0.25 * av:
+                            entry_idx, sig_side, stop_hint = k + 1, "sell", b[2] + 0.30
+                            break
+                    if entry_idx is None:
+                        for lv in lows:
+                            if b[3] < lv and b[4] > lv and (lv - b[3]) >= 0.25 * av:
+                                entry_idx, sig_side, stop_hint = k + 1, "buy", b[3] - 0.30
+                                break
+                    if entry_idx is not None:
+                        break
+
+            if entry_idx is not None and sig_side is not None and stop_hint is not None and entry_idx < len(post):
+                _, eb, _ = post[entry_idx]
+                entry = (eb[1] + spread_price) if sig_side == "buy" else eb[1]
+                raw_risk = (entry - stop_hint) if sig_side == "buy" else (stop_hint + spread_price - entry)
+                min_risk = max(2.0, 4.0 * spread_price)
+                if raw_risk < min_risk or raw_risk > 25.0:
+                    _ref("ny_risk_out_of_bounds")
+                else:
+                    stop_px = (entry - raw_risk) if sig_side == "buy" else (entry + raw_risk)
+                    tp_px = (entry + 2.0 * raw_risk) if sig_side == "buy" else (entry - 2.0 * raw_risk)
+                    peak_margin = max(peak_margin, vol * contract_size * eb[1] / leverage)
+                    closed = False
+                    for m_idx in range(entry_idx, len(post)):
+                        _, mb, _ = post[m_idx]
+                        o, h, low = mb[1], mb[2], mb[3]
+                        if sig_side == "buy":
+                            hit_sl = low <= stop_px
+                            fill_sl = min(o if m_idx > entry_idx else entry - spread_price, stop_px)
+                            hit_tp = h >= tp_px
+                        else:
+                            hit_sl = (h + spread_price) >= stop_px
+                            fill_sl = max((o + spread_price) if m_idx > entry_idx else entry + spread_price, stop_px)
+                            hit_tp = (low + spread_price) <= tp_px
+                        if hit_sl:
+                            diff = (fill_sl - entry) if sig_side == "buy" else (entry - fill_sl)
+                            trades.append({
+                                "opened_at": eb[0],
+                                "closed_at": mb[0] + 300.0,
+                                "side": sig_side,
+                                "net_pnl_usd": round(diff * vol * multiplier - comm, 4),
+                                "exit_reason": "stop_loss",
+                            })
+                            closed = True
+                            break
+                        if hit_tp:
+                            diff = (tp_px - entry) if sig_side == "buy" else (entry - tp_px)
+                            trades.append({
+                                "opened_at": eb[0],
+                                "closed_at": mb[0] + 300.0,
+                                "side": sig_side,
+                                "net_pnl_usd": round(diff * vol * multiplier - comm, 4),
+                                "exit_reason": "target_2r",
+                            })
+                            closed = True
+                            break
+                    if not closed:
+                        _, lb, _ = post[-1]
+                        ex = lb[4] if sig_side == "buy" else (lb[4] + spread_price)
+                        diff = (ex - entry) if sig_side == "buy" else (entry - ex)
+                        trades.append({
+                            "opened_at": eb[0],
+                            "closed_at": lb[0] + 300.0,
+                            "side": sig_side,
+                            "net_pnl_usd": round(diff * vol * multiplier - comm, 4),
+                            "exit_reason": "flat_1630_ny",
+                        })
+
+        # Update strictly causal PDH/PDL AFTER today finishes
+        prev_day_hi = max(b[2] for _, _, b, _ in items)
+        prev_day_lo = min(b[3] for _, _, b, _ in items)
+
+    summary = _summarize_trades(trades, peak_margin_usd=peak_margin, refusals=refusals)
+    return summary, trades
+
+
 def evaluate_gold_lab_bakeoff(
     m5_bars: list[list[float]],
     *,
@@ -532,6 +929,41 @@ def evaluate_gold_lab_bakeoff(
             "max_mid_adx": 35.0,
         },
         {
+            "id": "TPSL_LONDON_BREAKOUT",
+            "family": "github_tpsl_london_box",
+            "label": "GitHub TradingTPSL: Classic London Breakout (03-08 Athens box, OCO, BE 1.5R, TP 2.5R)",
+            "kind": "tpsl_london_breakout",
+            "exploratory_in_sample_flag": False,
+        },
+        {
+            "id": "NY_ORB_BREAKOUT",
+            "family": "github_xauusd_day_trader",
+            "label": "GitHub Rushi-Javiya/xauusd-day-trader: NY Opening Range Breakout (08:30-08:45 NY, TP 2R)",
+            "kind": "ny_orb",
+            "exploratory_in_sample_flag": False,
+        },
+        {
+            "id": "NY_ORB_RETEST",
+            "family": "github_xauusd_day_trader",
+            "label": "GitHub Rushi-Javiya/xauusd-day-trader: NY ORB Break + Pullback Retest (TP 2R)",
+            "kind": "ny_retest",
+            "exploratory_in_sample_flag": False,
+        },
+        {
+            "id": "NY_SESSION_SWEEP",
+            "family": "github_xauusd_day_trader",
+            "label": "GitHub Rushi-Javiya & GoldAI: PDH/PDL + Asia/London Liquidity Sweep in NY Open (TP 2R)",
+            "kind": "ny_sweep",
+            "exploratory_in_sample_flag": False,
+        },
+        {
+            "id": "VOL_SQUEEZE_KELTNER",
+            "family": "github_aurum_squeeze",
+            "label": "GitHub Aurum / Carter Squeeze: Bollinger(20,2) inside Keltner(20,1.5 ATR) release",
+            "kind": "vol_squeeze_keltner",
+            "exploratory_in_sample_flag": False,
+        },
+        {
             "id": "SMC_BOS_FVG",
             "family": "ai_smc_deterministic",
             "label": "Deterministic SMC: Causal Swing BOS + Fair Value Gap Retest (H1+H4, London/NY)",
@@ -569,7 +1001,8 @@ def evaluate_gold_lab_bakeoff(
     ]
 
     def _run_one(bars: list[list[float]], eng: dict[str, Any], sp: float, comm: float) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        if eng["kind"] == "momentum":
+        kind = eng["kind"]
+        if kind == "momentum":
             res = replay_m1_momentum(
                 bars,
                 spec=spec,
@@ -596,11 +1029,21 @@ def evaluate_gold_lab_bakeoff(
             tr = res.pop("trades", [])
             summary = _summarize_trades(tr, peak_margin_usd=float(res["peak_margin_used_usd"]), refusals=res["refusal_counts"])
             return summary, tr
+        if kind == "tpsl_london_breakout":
+            return _sim_tpsl_london_breakout(
+                bars, spec=spec, spread_price=sp, commission_per_lot=comm,
+                max_lot=max_lot, leverage=leverage,
+            )
+        if kind in ("ny_orb", "ny_retest", "ny_sweep"):
+            return _sim_ny_session_xauusd(
+                bars, spec=spec, setup=kind, spread_price=sp, commission_per_lot=comm,
+                max_lot=max_lot, leverage=leverage,
+            )
         return _sim_single_position_engine(
             bars,
             spec=spec,
             htf_indices=htf_indices,
-            signal_generator=eng["kind"],
+            signal_generator=kind,
             spread_price=sp,
             commission_per_lot=comm,
             stop_usd=12.0,
