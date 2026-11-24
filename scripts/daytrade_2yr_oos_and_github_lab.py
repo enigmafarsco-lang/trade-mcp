@@ -64,12 +64,14 @@ def _paginate_period_retry(
     stop_after_consecutive_empty: int = 4,
     min_day_before_stop: int = 30,
 ) -> tuple[list[list[float]], dict[str, Any]]:
-    """Paginate MT5 chart history safely below 1450-bar ceiling with transient empty-chunk retry."""
+    """Paginate MT5 chart history safely below 1450-bar ceiling with transient/horizon recovery."""
     collected: list[list[float]] = []
     empty_chunks = 0
+    tool_error_chunks = 0
     retry_recoveries = 0
     consecutive_empty = 0
     horizon_reached = False
+    first_tool_error_day: int | None = None
 
     offset = 0
     while offset < total_days:
@@ -77,22 +79,27 @@ def _paginate_period_retry(
         chunk_end = now_label - timedelta(days=offset) + (timedelta(minutes=2) if offset == 0 else timedelta(0))
         chunk_start = now_label - timedelta(days=offset + step)
         rows: list[list[float]] = []
+        had_tool_error = False
         for attempt in range(retries + 1):
             try:
                 rows = _fetch_range(feed, period=period, start=chunk_start, end=chunk_end, limit=1450)
+                had_tool_error = False
             except Blocked as exc:
-                if exc.reason in ("empty_data", "insufficient_history"):
+                if exc.reason in ("empty_data", "insufficient_history", "tool_error", "invalid_data"):
                     rows = []
+                    if exc.reason == "tool_error":
+                        had_tool_error = True
                 else:
                     raise
             except McpError:
                 rows = []
+                had_tool_error = True
             if rows:
                 if attempt > 0:
                     retry_recoveries += 1
                 break
             if attempt < retries:
-                time.sleep(0.25 * (attempt + 1))
+                time.sleep(0.30 * (attempt + 1))
 
         if rows:
             collected.extend(rows)
@@ -100,6 +107,10 @@ def _paginate_period_retry(
         else:
             empty_chunks += 1
             consecutive_empty += 1
+            if had_tool_error:
+                tool_error_chunks += 1
+                if first_tool_error_day is None:
+                    first_tool_error_day = offset
 
         offset += step
         if offset >= min_day_before_stop and consecutive_empty >= stop_after_consecutive_empty:
@@ -111,10 +122,18 @@ def _paginate_period_retry(
     if len(cleaned) > 1:
         cleaned = cleaned[:-1]
     span = round((cleaned[-1][0] - cleaned[0][0]) / 86400.0, 2) if len(cleaned) >= 2 else 0.0
+    print(
+        f"[{period}] bars={len(cleaned)} span={span}d empty={empty_chunks} "
+        f"tool_errors={tool_error_chunks} retries={retry_recoveries} horizon={horizon_reached}",
+        file=sys.stderr,
+        flush=True,
+    )
     return cleaned, {
         "bars": len(cleaned),
         "span_days": span,
         "empty_chunks_skipped": empty_chunks,
+        "tool_error_chunks": tool_error_chunks,
+        "first_tool_error_day": first_tool_error_day,
         "retry_recoveries": retry_recoveries,
         "retention_horizon_reached": horizon_reached,
     }
@@ -132,7 +151,10 @@ def _fetch_2yr_history_mt5(
     dict[str, Any],
 ]:
     """Fetch up to `days` (default 730d) of M5, M15, and H1 independently from local MT5."""
-    clock = feed._call("get_time_information", {})
+    try:
+        clock = feed._call("get_time_information", {})
+    except Blocked as exc:
+        raise Blocked(f"get_time_information:{exc.reason}") from exc
     raw_time = find(clock, "trade_server_time")
     if raw_time is None:
         raw_time = find(clock, "trade_server_last_known_time")
@@ -146,13 +168,13 @@ def _fetch_2yr_history_mt5(
         feed, period="M5", now_label=now_label, total_days=days, chunk_days=4, stop_after_consecutive_empty=4,
     )
     if len(m5) < 200:
-        raise Blocked("insufficient_history")
+        raise Blocked("insufficient_history_m5")
 
     m15, m15_meta = _paginate_period_retry(
         feed, period="M15", now_label=now_label, total_days=days + 15, chunk_days=12, stop_after_consecutive_empty=4,
     )
     h1, h1_meta = _paginate_period_retry(
-        feed, period="H1", now_label=now_label, total_days=days + 60, chunk_days=40, stop_after_consecutive_empty=3,
+        feed, period="H1", now_label=now_label, total_days=days + 60, chunk_days=30, stop_after_consecutive_empty=3,
     )
     h4 = resample_bars_to_tf(h1, src_seconds=3600, dst_seconds=14400)
     return m5, m15, h1, h4, {
@@ -319,7 +341,10 @@ def main(argv: list[str] | None = None) -> int:
             year2_days = args.year2_days
             with loopback_native():
                 feed = ReadOnlyNativeFeed(cfg.mcp_url, cfg.mcp_token, args.symbol)
-                spec, quote = feed.connect()
+                try:
+                    spec, quote = feed.connect()
+                except Blocked as exc:
+                    raise Blocked(f"connect:{exc.reason}") from exc
                 m5, m15, h1, h4, fetch_meta = _fetch_2yr_history_mt5(feed, days=args.days)
                 tool_calls = dict(feed.tool_calls)
 

@@ -167,3 +167,42 @@ def test_cli_mock_smoke() -> None:
     finally:
         if out_file.exists():
             out_file.unlink()
+
+
+def test_paginate_period_retry_handles_tool_error_at_horizon(monkeypatch) -> None:
+    """Pagination survives MT5 tool_error beyond retention horizon without dropping earlier bars."""
+    scripts_dir = str(Path(__file__).resolve().parents[1] / "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    import daytrade_2yr_oos_and_github_lab as cli  # noqa: E402
+    from daytrade_mt5_readonly_check import Blocked  # noqa: E402
+
+    now_label = datetime(2026, 11, 24, 12, 0)
+    calls = {"n": 0}
+
+    def fake_fetch(_feed, *, period, start, end, limit=1450):
+        calls["n"] += 1
+        days_back = (now_label - start).days
+        if days_back > 12:
+            raise Blocked("tool_error")
+        ts = int(start.replace(tzinfo=timezone.utc).timestamp())
+        return [[float(ts + k * 300), 3000.0, 3001.0, 2999.0, 3000.5, 10.0] for k in range(5)]
+
+    monkeypatch.setattr(cli, "_fetch_range", fake_fetch)
+    monkeypatch.setattr(cli.time, "sleep", lambda _s: None)
+
+    bars, meta = cli._paginate_period_retry(
+        feed=None,  # type: ignore[arg-type]
+        period="M5",
+        now_label=now_label,
+        total_days=60,
+        chunk_days=4,
+        retries=1,
+        stop_after_consecutive_empty=3,
+        min_day_before_stop=16,
+    )
+    assert len(bars) >= 10
+    assert meta["retention_horizon_reached"] is True
+    assert meta["tool_error_chunks"] >= 3
+    assert meta["first_tool_error_day"] == 12
+
