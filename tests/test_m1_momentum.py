@@ -338,3 +338,91 @@ def test_replay_handles_over_10k_m1_bars_for_30day_validation():
     assert res["ok"] and res["orders_submitted"] == 0
 
 
+def test_rollover_block_min_decel_r_and_conservative_fixed_tp():
+    # Anchor timestamp inside 22:00 UTC (blocked rollover hour)
+    rollover_base = 1790035200 + 22 * 3600  # 2026-09-22T22:00:00Z
+    bars_roll = [[float(rollover_base + i * 60), 3600.0, 3600.5, 3599.5, 3600.0, 100.0] for i in range(17)]
+    bars_roll.append([float(rollover_base + 17 * 60), 3600.1, 3602.0, 3600.0, 3601.8, 250.0])
+    bars_roll.append([float(rollover_base + 18 * 60), 3601.8, 3605.0, 3601.7, 3604.8, 250.0])
+    bars_roll.append([float(rollover_base + 19 * 60), 3604.8, 3605.0, 3603.5, 3603.8, 200.0])
+    res_block = replay_m1_momentum(
+        bars_roll, spec=ALPARI_SPEC, spread_price=0.34, htf_filter="none",
+        entry_mode="impulse_close", exit_mode="decel_and_trail",
+        stop_usd=5.0, max_lot=0.01, blocked_utc_hours=(21, 22, 23),
+    )
+    assert res_block["trades_closed"] == 0
+    assert res_block["refusal_counts"].get("blocked_utc_hour", 0) >= 1
+
+    # Active hour (14:00 UTC): test min_decel_r ignores early +$1.50 pause and holds for >= 1.2R ($6+),
+    # and fixed_tp_and_be hits 1.5R cleanly (+$7.50)
+    active_base = 1790035200 + 14 * 3600
+    bars = [[float(active_base + i * 60), 3600.0, 3600.5, 3599.5, 3600.0, 100.0] for i in range(17)]
+    # Bar 17: impulse ($2.00 range) -> BUY at Bar 18 open (3601.8 + 0.34 = 3602.14, stop ~$5 below = 3597.14)
+    bars.append([float(active_base + 17 * 60), 3600.1, 3602.0, 3600.0, 3601.8, 250.0])
+    # Bar 18: moves up +$2 then slight red pause (+$1.50 profit = 0.3R < 1.2R!) -> min_decel_r=1.2 MUST HOLD!
+    bars.append([float(active_base + 18 * 60), 3601.8, 3604.2, 3601.7, 3603.7, 220.0])
+    bars.append([float(active_base + 19 * 60), 3603.7, 3603.8, 3603.3, 3603.5, 150.0])
+    # Bar 20: surges to 3611.0 (+$8.86 > 1.5R!)
+    bars.append([float(active_base + 20 * 60), 3603.5, 3611.2, 3603.4, 3610.8, 280.0])
+    # Bar 21: bearish decel bar at 3609.5 (+$7.36 >= 1.2R!)
+    bars.append([float(active_base + 21 * 60), 3610.8, 3611.0, 3609.2, 3609.5, 200.0])
+
+    res_early = replay_m1_momentum(
+        bars, spec=ALPARI_SPEC, spread_price=0.34, htf_filter="none",
+        entry_mode="impulse_close", exit_mode="decel_and_trail",
+        stop_usd=5.0, max_lot=0.01, min_decel_profit_usd=1.0,
+    )
+    res_breathe = replay_m1_momentum(
+        bars, spec=ALPARI_SPEC, spread_price=0.34, htf_filter="none",
+        entry_mode="impulse_close", exit_mode="decel_and_trail",
+        stop_usd=5.0, max_lot=0.01, min_decel_r=1.2, trail_arm_r=0.8,
+    )
+    res_tp = replay_m1_momentum(
+        bars, spec=ALPARI_SPEC, spread_price=0.34, htf_filter="none",
+        entry_mode="impulse_close", exit_mode="fixed_tp_and_be",
+        stop_usd=5.0, max_lot=0.01, fixed_tp_r=1.5, trail_arm_r=0.8,
+    )
+    assert res_breathe["realized_pnl_usd"] > res_early["realized_pnl_usd"] + 4.0
+    assert res_tp["exit_reasons"].get("target_hit", 0) == 1
+    assert abs(res_tp["realized_pnl_usd"] - 7.5) < 0.05
+
+
+def test_m5_vs_m1_validate_cli_mock_and_no_execution_imports(tmp_path, monkeypatch, capsys):
+    spec_mod = importlib.util.spec_from_file_location(
+        "daytrade_m5_vs_m1_validate", ROOT / "scripts/daytrade_m5_vs_m1_validate.py"
+    )
+    cli = importlib.util.module_from_spec(spec_mod)
+    assert spec_mod and spec_mod.loader
+    spec_mod.loader.exec_module(cli)
+
+    paper_spec = importlib.util.spec_from_file_location(
+        "daytrade_m1_paper_window", ROOT / "scripts/daytrade_m1_paper_window.py"
+    )
+    paper_cli = importlib.util.module_from_spec(paper_spec)
+    assert paper_spec and paper_spec.loader
+    paper_spec.loader.exec_module(paper_cli)
+
+    monkeypatch.setattr(paper_cli, "ROOT", tmp_path)
+    monkeypatch.setattr(cli, "_save_private_json", paper_cli._save_private_json)
+    monkeypatch.setenv("TRADE_MCP_ALLOW_TRADING", "false")
+    monkeypatch.setenv("TRADE_MCP_PAPER_TRADING", "false")
+
+    rc = cli.main(["--mock", "--out", "logs/m5-vs-m1-smoke.json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] and payload["paper"] and payload["orders_submitted"] == 0
+    assert payload["parameters"]["m5_max_lot"] == 0.01
+    assert payload["parameters"]["pricing_basis"] == "contract_size"
+    assert len(payload["m5_validation"]["candidates"]) == 6
+    assert len(payload["m1_final_validation"]["candidates"]) == 3
+    assert payload["history"]["m5_htf_coverage_pct"]["h4_pct"] == 100.0
+    assert "both_halves_positive" in payload["m5_validation"]["candidates"][0]["gates"]
+    assert payload["m5_validation"]["candidates"][0]["full_period"]["peak_margin_used_usd"] <= 10.0
+    out_file = tmp_path / "logs" / "m5-vs-m1-smoke.json"
+    assert stat.S_IMODE(out_file.stat().st_mode) == 0o600
+
+    script_text = (ROOT / "scripts/daytrade_m5_vs_m1_validate.py").read_text(encoding="utf-8")
+    assert "propose_open" not in script_text and "trade_send_market_order" not in script_text
+
+
+
