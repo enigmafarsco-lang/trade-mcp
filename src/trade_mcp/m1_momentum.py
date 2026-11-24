@@ -695,7 +695,12 @@ def replay_m1_momentum(
             "exit_reason": reason,
             "net_pnl_usd": round(net, 4),
             "entry_spread_usd": round(leg.entry_spread_usd, 4),
+            "initial_risk_usd": round(leg.initial_risk_usd, 4),
+            "initial_stop_dist_price": round(
+                leg.initial_risk_usd / max(leg.volume * leg.multiplier, 1e-9), 4
+            ),
             "opened_at": leg.opened_at,
+            "closed_at": closed_at,
             "hold_seconds": round(max(0.0, closed_at - leg.opened_at), 2),
         })
 

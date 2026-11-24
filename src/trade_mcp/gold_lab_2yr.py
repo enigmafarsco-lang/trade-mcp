@@ -211,13 +211,14 @@ def _sim_h1_donchian50_london(
     commission_per_lot: float = 0.0,
     max_lot: float = 0.01,
     leverage: float = 500.0,
+    min_h1_atr: float = 5.0,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Causal H1 Donchian(50) London Breakout (adapted from anashussain-124/quant_lab).
 
     Fixes the upstream 10x multiplier bug (uses true 100 oz/lot) and eliminates close-bar
     lookahead (signals on strictly closed H1 bar i-1, enters on next bar i open).
       - Entry: closed H1 close > max(prev 50 highs) [buy] or < min(prev 50 lows) [sell],
-               during London 08:00-16:00 UTC, when H1 ATR(14) >= $5.0.
+               during London 08:00-16:00 UTC, when H1 ATR(14) >= min_h1_atr (default $5.0).
       - Stop: 2.5 x H1 ATR(14), capped at $25 at 0.01 lot; trails via 2.5x ATR Chandelier
               once >= 1.5R in profit, or exits at max 100 H1 bars / opposite Donchian(20) close.
     """
@@ -236,6 +237,18 @@ def _sim_h1_donchian50_london(
     peak_margin = 0.0
     pos: dict[str, Any] | None = None
 
+    def _rec(p_obj: dict[str, Any], diff_px: float, closed_ts: float, reason: str) -> None:
+        trades.append({
+            "opened_at": p_obj["opened_at"],
+            "closed_at": closed_ts,
+            "side": p_obj["side"],
+            "volume": vol,
+            "entry": round(p_obj["entry"], 4),
+            "initial_stop_dist_price": round(p_obj["sdist"], 4),
+            "net_pnl_usd": round(diff_px * vol * multiplier - comm, 4),
+            "exit_reason": reason,
+        })
+
     for i in range(52, len(clean)):
         b = clean[i]
         t, o, h, low, c = b[0], b[1], b[2], b[3], b[4]
@@ -249,7 +262,7 @@ def _sim_h1_donchian50_london(
         if pos is None and atr1 is not None:
             if not (8 <= hr_open < 16):
                 pass
-            elif atr1 < 5.0:
+            elif atr1 < min_h1_atr:
                 refusals["h1_low_atr"] = refusals.get("h1_low_atr", 0) + 1
             else:
                 win50 = clean[i - 51 : i - 1]
@@ -293,13 +306,7 @@ def _sim_h1_donchian50_london(
 
             if hit_sl:
                 diff = (fill_sl - pos["entry"]) if side == "buy" else (pos["entry"] - fill_sl)
-                trades.append({
-                    "opened_at": pos["opened_at"],
-                    "closed_at": bar_end,
-                    "side": side,
-                    "net_pnl_usd": round(diff * vol * multiplier - comm, 4),
-                    "exit_reason": "chandelier_trail" if pos["trailed"] else "stop_loss",
-                })
+                _rec(pos, diff, bar_end, "chandelier_trail" if pos["trailed"] else "stop_loss")
                 pos = None
                 continue
 
@@ -307,13 +314,7 @@ def _sim_h1_donchian50_london(
                 bars_held = i - pos["opened_i"]
                 if bars_held >= 100:
                     diff = (ex_close - pos["entry"]) if side == "buy" else (pos["entry"] - ex_close)
-                    trades.append({
-                        "opened_at": pos["opened_at"],
-                        "closed_at": bar_end,
-                        "side": side,
-                        "net_pnl_usd": round(diff * vol * multiplier - comm, 4),
-                        "exit_reason": "max_100_h1_bars",
-                    })
+                    _rec(pos, diff, bar_end, "max_100_h1_bars")
                     pos = None
                     continue
 
@@ -321,13 +322,7 @@ def _sim_h1_donchian50_london(
                 win20 = clean[i - 20 : i]
                 if (side == "buy" and c < min(x[3] for x in win20)) or (side == "sell" and c > max(x[2] for x in win20)):
                     diff = (ex_close - pos["entry"]) if side == "buy" else (pos["entry"] - ex_close)
-                    trades.append({
-                        "opened_at": pos["opened_at"],
-                        "closed_at": bar_end,
-                        "side": side,
-                        "net_pnl_usd": round(diff * vol * multiplier - comm, 4),
-                        "exit_reason": "donchian20_exit",
-                    })
+                    _rec(pos, diff, bar_end, "donchian20_exit")
                     pos = None
                     continue
 
@@ -352,13 +347,7 @@ def _sim_h1_donchian50_london(
         lb = clean[-1]
         ex = lb[4] if pos["side"] == "buy" else (lb[4] + spread_price)
         diff = (ex - pos["entry"]) if pos["side"] == "buy" else (pos["entry"] - ex)
-        trades.append({
-            "opened_at": pos["opened_at"],
-            "closed_at": lb[0] + 3600.0,
-            "side": pos["side"],
-            "net_pnl_usd": round(diff * vol * multiplier - comm, 4),
-            "exit_reason": "end_of_data",
-        })
+        _rec(pos, diff, lb[0] + 3600.0, "end_of_data")
 
     return _summarize_trades(trades, peak_margin_usd=peak_margin, refusals=refusals), trades
 
