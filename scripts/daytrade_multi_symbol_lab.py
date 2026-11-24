@@ -122,17 +122,16 @@ def _parse_multisymbol_spec_and_quote(
             fx_rates[f"USD_{c_prof}"] = bid
 
     tick_value = _opt_num("trade_tick_value", "tick_value")
-    if tick_value is None or tick_value <= 0:
-        if contract_size is not None and contract_size > 0:
-            if c_prof == "USD":
-                tick_value = contract_size * tick_size
-            elif c_base == "USD" and bid > 0:
-                tick_value = (contract_size * tick_size) / bid
-            elif fx_rates and c_prof:
-                if f"{c_prof}_USD" in fx_rates:
-                    tick_value = contract_size * tick_size * fx_rates[f"{c_prof}_USD"]
-                elif f"USD_{c_prof}" in fx_rates and fx_rates[f"USD_{c_prof}"] > 0:
-                    tick_value = (contract_size * tick_size) / fx_rates[f"USD_{c_prof}"]
+    if (tick_value is None or tick_value <= 0) and contract_size is not None and contract_size > 0:
+        if c_prof == "USD":
+            tick_value = contract_size * tick_size
+        elif c_base == "USD" and bid > 0:
+            tick_value = (contract_size * tick_size) / bid
+        elif fx_rates and c_prof:
+            if f"{c_prof}_USD" in fx_rates:
+                tick_value = contract_size * tick_size * fx_rates[f"{c_prof}_USD"]
+            elif f"USD_{c_prof}" in fx_rates and fx_rates[f"USD_{c_prof}"] > 0:
+                tick_value = (contract_size * tick_size) / fx_rates[f"USD_{c_prof}"]
     if tick_value is None or tick_value <= 0:
         raise Blocked(
             f"missing_tick_value(csize={contract_size},base={c_base},prof={c_prof},tv={_opt_num('trade_tick_value', 'tick_value')})"
