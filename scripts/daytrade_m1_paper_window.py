@@ -344,8 +344,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"hard paper lot cap (<= {HARD_MAX_LOT}, default {HARD_MAX_LOT})")
     p.add_argument("--commission-per-lot", type=float, default=0.0,
                    help="optional round-trip commission USD/lot assumption (default 0.0)")
-    p.add_argument("--pricing-basis", choices=("tick_value", "contract_size"), default="tick_value",
-                   help="lot PnL multiplier basis (default: tick_value)")
+    p.add_argument("--pricing-basis", choices=("auto", "tick_value", "contract_size"), default="auto",
+                   help="lot PnL multiplier basis (default: auto = conservative max of contract_size vs tick_value)")
     p.add_argument("--small-profit-guard", action="store_true",
                    help="enable default floating small-profit guards (profit floor, 180s stale exit, opposite exit, window-end profit close)")
     p.add_argument("--protect-trigger-usd", type=float, default=None,

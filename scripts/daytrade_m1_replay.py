@@ -40,6 +40,7 @@ from trade_mcp.daytrade_paper import (  # noqa: E402
     audit_symbol_spec,
     contiguous_m1_segments,
     replay_m1_matrix,
+    resolve_pricing_basis,
 )
 from trade_mcp.mcpclient import McpError  # noqa: E402
 
@@ -157,9 +158,10 @@ def main(argv: list[str] | None = None) -> int:
             else round(max(0.0, quote["ask"] - quote["bid"]), 6)
         )
         spec_audit = audit_symbol_spec(spec)
+        primary_basis, primary_multiplier = resolve_pricing_basis(spec, "auto")
         segments = contiguous_m1_segments(closed_bars)
 
-        matrix_tick = replay_m1_matrix(
+        matrix_primary = replay_m1_matrix(
             closed_bars,
             spec=spec,
             symbol=args.symbol,
@@ -169,16 +171,14 @@ def main(argv: list[str] | None = None) -> int:
             opening_range_bars=args.opening_range_bars,
             max_lot=args.max_lot,
             commission_per_lot=args.commission_per_lot,
-            pricing_basis="tick_value",
+            pricing_basis=primary_basis,
         )
 
-        matrix_contract: list[dict[str, Any]] | None = None
-        if (
-            spec_audit.get("economics_mismatch") is True
-            and spec_audit.get("trade_contract_size") is not None
-            and str(spec_audit.get("currency_profit") or "").upper() == "USD"
-        ):
-            matrix_contract = replay_m1_matrix(
+        alternate_basis: str | None = None
+        matrix_alternate: list[dict[str, Any]] | None = None
+        if spec_audit.get("economics_mismatch") is True:
+            alternate_basis = "tick_value" if primary_basis == "contract_size" else "contract_size"
+            matrix_alternate = replay_m1_matrix(
                 closed_bars,
                 spec=spec,
                 symbol=args.symbol,
@@ -188,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
                 opening_range_bars=args.opening_range_bars,
                 max_lot=args.max_lot,
                 commission_per_lot=args.commission_per_lot,
-                pricing_basis="contract_size",
+                pricing_basis=alternate_basis,
             )
 
         warnings = [
@@ -247,9 +247,12 @@ def main(argv: list[str] | None = None) -> int:
                 "opening_range_bars": args.opening_range_bars,
                 "max_lot": args.max_lot,
                 "commission_assumption_usd_per_lot": args.commission_per_lot,
+                "primary_pricing_basis": primary_basis,
+                "primary_multiplier": primary_multiplier,
+                "alternate_pricing_basis": alternate_basis,
             },
-            "matrix_tick_value": matrix_tick,
-            "matrix_contract_size_audit": matrix_contract,
+            "matrix_primary": matrix_primary,
+            "matrix_alternate": matrix_alternate,
             "warnings": warnings,
             "private_log_file": out_path.name,
         }

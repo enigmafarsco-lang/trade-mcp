@@ -16,6 +16,7 @@ from trade_mcp.daytrade_paper import (
     plan_paper_trade,
     replay_m1_bars,
     replay_m1_matrix,
+    resolve_pricing_basis,
     small_profit_guard_defaults,
 )
 
@@ -359,9 +360,19 @@ def test_audit_symbol_spec_detects_contract_vs_tick_mismatch():
     assert bad_audit["tick_multiplier"] == 10.0
     assert bad_audit["contract_to_tick_ratio"] == 10.0
     assert bad_audit["economics_mismatch"] is True
+    assert bad_audit["recommended_basis"] == "contract_size"
     assert "10x" in str(bad_audit["warning"])
 
-    # Pricing basis switches sizing transparently between tick_value and contract_size
+    # Auto pricing basis conservatively picks contract_size=100 so lot sizing never understates risk 10x
+    basis, mult = resolve_pricing_basis(mismatch_spec, "auto")
+    assert basis == "contract_size" and mult == 100.0
+    p_auto = plan_paper_trade(
+        side="buy", bid=3620.75, ask=3621.09, range_edge=3620.00,
+        spec=mismatch_spec, stop_usd=10.0, target_usd=2.0, max_lot=0.10,
+    )
+    assert p_auto["ok"] and p_auto["pricing_basis"] == "contract_size" and p_auto["multiplier"] == 100.0
+
+    # Explicit basis can still inspect both interpretations transparently
     p_tick = plan_paper_trade(
         side="buy", bid=3620.75, ask=3621.09, range_edge=3620.00,
         spec=mismatch_spec, stop_usd=10.0, target_usd=2.0, max_lot=0.10,
@@ -498,7 +509,9 @@ def test_replay_and_guarded_paper_cli_mock_end_to_end(tmp_path, monkeypatch, cap
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] and payload["paper"] and payload["orders_submitted"] == 0
     assert payload["symbol_spec"]["commission_reported_by_symbol_info"] is False
-    assert len(payload["matrix_tick_value"]) == 4
+    assert payload["parameters"]["primary_pricing_basis"] == "tick_value"
+    assert len(payload["matrix_primary"]) == 4
+    assert all("avg_volume" in row and "avg_entry_spread_usd" in row for row in payload["matrix_primary"])
     out_file = tmp_path / "logs" / "replay-smoke.json"
     assert stat.S_IMODE(out_file.stat().st_mode) == 0o600
 

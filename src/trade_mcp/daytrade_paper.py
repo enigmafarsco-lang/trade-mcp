@@ -166,16 +166,21 @@ def audit_symbol_spec(spec: dict[str, Any]) -> dict[str, Any]:
 
     economics_mismatch: bool | None = None
     contract_to_tick_ratio: float | None = None
+    recommended_basis = "tick_value"
     warning: str | None = None
     if contract_size is not None and currency_profit and currency_profit.upper() == "USD":
         contract_to_tick_ratio = round(contract_size / tick_multiplier, 4)
         economics_mismatch = abs(contract_to_tick_ratio - 1.0) > 0.01
         if economics_mismatch:
+            if contract_size > tick_multiplier:
+                recommended_basis = "contract_size"
+            calc_note = f", trade_calc_mode={trade_calc_mode}" if trade_calc_mode else ""
             warning = (
-                f"Broker spec discrepancy: trade_contract_size={contract_size:g} (currency_profit=USD) "
+                f"Broker spec discrepancy: trade_contract_size={contract_size:g} (currency_profit=USD{calc_note}) "
                 f"differs by {contract_to_tick_ratio:g}x from trade_tick_value/trade_tick_size="
                 f"{tick_multiplier:g} (tick_value={tick_value:g}, tick_size={tick_size:g}). "
-                "Verify real MT5 PnL per 0.01 lot before trusting lot sizing on any broker account."
+                f"Under MT5 CFD Leverage, P&L scales with contract_size={contract_size:g}; "
+                f"using conservative pricing_basis='{recommended_basis}' to prevent {contract_to_tick_ratio:g}x lot oversizing."
             )
 
     return {
@@ -188,8 +193,32 @@ def audit_symbol_spec(spec: dict[str, Any]) -> dict[str, Any]:
         "trade_calc_mode": trade_calc_mode,
         "contract_to_tick_ratio": contract_to_tick_ratio,
         "economics_mismatch": economics_mismatch,
+        "recommended_basis": recommended_basis,
         "warning": warning,
     }
+
+
+def resolve_pricing_basis(spec: dict[str, Any], pricing_basis: str = "auto") -> tuple[str, float]:
+    """Resolve effective pricing basis and per-lot USD multiplier per 1.0 price unit.
+
+    In ``auto`` mode, when USD-profit ``trade_contract_size`` exceeds
+    ``trade_tick_value / trade_tick_size`` (e.g. Alpari MT5 CFD Leverage XAUUSD_i
+    with contract_size=100 vs tick_value=0.1/tick_size=0.01), this conservatively
+    selects ``contract_size`` so risk and spread are never understated.
+    """
+    if pricing_basis not in ("auto", "tick_value", "contract_size"):
+        raise ValueError("pricing_basis must be 'auto', 'tick_value', or 'contract_size'")
+    audit = audit_symbol_spec(spec)
+    if pricing_basis == "auto":
+        if audit["recommended_basis"] == "contract_size" and audit["trade_contract_size"] is not None:
+            return "contract_size", float(audit["trade_contract_size"])
+        return "tick_value", float(audit["tick_multiplier"])
+    if pricing_basis == "contract_size":
+        currency = str(spec.get("currency_profit") or "").strip().upper()
+        if currency != "USD":
+            raise ValueError("contract_size_requires_usd_profit_currency")
+        return "contract_size", _finite(spec.get("trade_contract_size"), "trade_contract_size", minimum=1e-10)
+    return "tick_value", float(audit["tick_multiplier"])
 
 
 def small_profit_guard_defaults(target_usd: float) -> dict[str, Any]:
@@ -221,13 +250,13 @@ def plan_paper_trade(
     max_lot: float = HARD_MAX_LOT,
     commission_per_lot: float = 0.0,
     max_spread_ratio: float = 0.40,
-    pricing_basis: str = "tick_value",
+    pricing_basis: str = "auto",
 ) -> dict[str, Any]:
     """Size and price one bounded paper trade from live Bid/Ask and broker spec."""
     if side not in ("buy", "sell"):
         raise ValueError("side must be buy or sell")
-    if pricing_basis not in ("tick_value", "contract_size"):
-        raise ValueError("pricing_basis must be 'tick_value' or 'contract_size'")
+    if pricing_basis not in ("auto", "tick_value", "contract_size"):
+        raise ValueError("pricing_basis must be 'auto', 'tick_value', or 'contract_size'")
     bid = _finite(bid, "bid", minimum=1e-10)
     ask = _finite(ask, "ask", minimum=bid)
     range_edge = _finite(range_edge, "range_edge", minimum=1e-10)
@@ -238,22 +267,17 @@ def plan_paper_trade(
     max_spread_ratio = _finite(max_spread_ratio, "max_spread_ratio", minimum=0.05, maximum=0.80)
 
     tick_size = _finite(spec.get("trade_tick_size"), "trade_tick_size", minimum=1e-10)
-    tick_value = _finite(spec.get("trade_tick_value"), "trade_tick_value", minimum=1e-10)
+    _finite(spec.get("trade_tick_value"), "trade_tick_value", minimum=1e-10)
     volume_min = _finite(spec.get("volume_min"), "volume_min", minimum=1e-8)
     volume_max = _finite(spec.get("volume_max"), "volume_max", minimum=volume_min)
     volume_step = _finite(spec.get("volume_step"), "volume_step", minimum=1e-8)
     point = _finite(spec.get("point"), "point", minimum=1e-10)
     stops_level = _finite(spec.get("trade_stops_level", 0.0), "trade_stops_level", minimum=0.0)
 
-    if pricing_basis == "contract_size":
-        currency = str(spec.get("currency_profit") or "").strip().upper()
-        if currency != "USD":
-            return {"ok": False, "reason": "contract_size_requires_usd_profit_currency"}
-        multiplier = _finite(spec.get("trade_contract_size"), "trade_contract_size", minimum=1e-10)
-    else:
-        multiplier = loss_per_lot(
-            {"trade_tick_size": tick_size, "trade_tick_value": tick_value, "point": point}, 1.0
-        )
+    try:
+        resolved_basis, multiplier = resolve_pricing_basis(spec, pricing_basis)
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
     if not math.isfinite(multiplier) or multiplier <= 0:
         return {"ok": False, "reason": "invalid_tick_economics"}
 
@@ -322,6 +346,7 @@ def plan_paper_trade(
         "target": target_price,
         "volume": volume,
         "multiplier": multiplier,
+        "pricing_basis": resolved_basis,
         "planned_stop_usd": round(planned_stop_usd, 4),
         "planned_target_usd": round(planned_target_usd, 4),
         "entry_spread_usd": round(entry_spread_usd, 4),
@@ -375,7 +400,7 @@ class DaytradePaperSession:
         max_spread_ratio: float = 0.40,
         initial_balance: float = 100.0,
         started_at: float = 0.0,
-        pricing_basis: str = "tick_value",
+        pricing_basis: str = "auto",
         profit_protect_trigger_usd: float | None = None,
         profit_protect_floor_usd: float | None = None,
         stale_profit_seconds: float | None = None,
@@ -392,12 +417,13 @@ class DaytradePaperSession:
             raise ValueError("opening_range_bars must be 2..15")
         if type(max_consecutive_losses) is not int or not 1 <= max_consecutive_losses <= 5:
             raise ValueError("max_consecutive_losses must be 1..5")
-        if pricing_basis not in ("tick_value", "contract_size"):
-            raise ValueError("pricing_basis must be 'tick_value' or 'contract_size'")
+        if pricing_basis not in ("auto", "tick_value", "contract_size"):
+            raise ValueError("pricing_basis must be 'auto', 'tick_value', or 'contract_size'")
         self.symbol = symbol.strip()
         self.spec = dict(spec)
         self.spec_audit = audit_symbol_spec(self.spec)
-        self.pricing_basis = pricing_basis
+        self.requested_pricing_basis = pricing_basis
+        self.pricing_basis, self.effective_multiplier = resolve_pricing_basis(self.spec, pricing_basis)
         self.duration_seconds = duration_seconds
         self.target_usd = _finite(target_usd, "target_usd", minimum=MIN_TARGET_USD, maximum=MAX_TARGET_USD)
         self.stop_usd = _finite(stop_usd, "stop_usd", minimum=1.0, maximum=HARD_MAX_STOP_USD)
@@ -841,6 +867,7 @@ class DaytradePaperSession:
                 "commission_assumption_usd_per_lot": self.commission_per_lot,
                 "initial_paper_balance_usd": self.initial_balance,
                 "pricing_basis": self.pricing_basis,
+                "effective_multiplier": round(self.effective_multiplier, 6),
                 "floating_profit_guard": {
                     "enabled": guard_active,
                     "profit_protect_trigger_usd": self.profit_protect_trigger_usd,
@@ -1017,7 +1044,7 @@ def replay_m1_bars(
     commission_per_lot: float = 0.0,
     max_consecutive_losses: int = 3,
     max_spread_ratio: float = 0.40,
-    pricing_basis: str = "tick_value",
+    pricing_basis: str = "auto",
     profit_protect_trigger_usd: float | None = None,
     profit_protect_floor_usd: float | None = None,
     stale_profit_seconds: float | None = None,
@@ -1121,7 +1148,7 @@ def replay_m1_matrix(
     opening_range_bars: int = 3,
     max_lot: float = HARD_MAX_LOT,
     commission_per_lot: float = 0.0,
-    pricing_basis: str = "tick_value",
+    pricing_basis: str = "auto",
 ) -> list[dict[str, Any]]:
     """Compare baseline vs floating small-profit guard across target USD levels."""
     rows: list[dict[str, Any]] = []
@@ -1141,13 +1168,19 @@ def replay_m1_matrix(
             **guard_cfg,
         )
         for label, res in (("no_guard", base), ("small_profit_guard", guarded)):
+            closed = res["trades"]
+            avg_vol = round(sum(t["volume"] for t in closed) / len(closed), 4) if closed else None
+            avg_spread = round(sum(t["entry_spread_usd"] for t in closed) / len(closed), 4) if closed else None
             rows.append({
                 "target_usd": float(target),
                 "stop_usd": float(stop_usd),
                 "mode": label,
-                "pricing_basis": pricing_basis,
+                "pricing_basis": res["parameters"]["pricing_basis"],
+                "effective_multiplier": res["parameters"]["effective_multiplier"],
                 "trades_opened": res["trades_opened"],
                 "trades_closed": res["trades_closed"],
+                "avg_volume": avg_vol,
+                "avg_entry_spread_usd": avg_spread,
                 "wins": res["wins"],
                 "losses": res["losses"],
                 "win_rate_pct": res["win_rate_pct"],
