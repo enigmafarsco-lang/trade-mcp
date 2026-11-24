@@ -11,8 +11,12 @@ import pytest
 
 from trade_mcp.daytrade_paper import (
     DaytradePaperSession,
+    audit_symbol_spec,
     evaluate_m1_direction,
     plan_paper_trade,
+    replay_m1_bars,
+    replay_m1_matrix,
+    small_profit_guard_defaults,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -323,4 +327,188 @@ def test_sell_lifecycle_single_position_and_readonly_boundaries():
     src_text = Path(ROOT / "src/trade_mcp/daytrade_paper.py").read_text(encoding="utf-8")
     assert "from .execution" not in src_text
     assert "propose_open" not in src_text and "trade_open" not in src_text and "trade_send_market_order" not in src_text
+
+
+def _load_replay_cli():
+    spec = importlib.util.spec_from_file_location(
+        "daytrade_m1_replay", ROOT / "scripts/daytrade_m1_replay.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_audit_symbol_spec_detects_contract_vs_tick_mismatch():
+    consistent = {**SPEC, "trade_contract_size": 100.0, "currency_profit": "USD"}
+    ok_audit = audit_symbol_spec(consistent)
+    assert ok_audit["tick_multiplier"] == 100.0
+    assert ok_audit["economics_mismatch"] is False
+    assert ok_audit["warning"] is None
+
+    # 10x discrepancy (e.g. trade_contract_size=100 USD vs tick_value=0.1 / tick_size=0.01 = 10)
+    mismatch_spec = {
+        **SPEC,
+        "trade_tick_size": 0.01,
+        "trade_tick_value": 0.1,
+        "trade_contract_size": 100.0,
+        "currency_profit": "USD",
+        "trade_calc_mode": "cfd leverage",
+    }
+    bad_audit = audit_symbol_spec(mismatch_spec)
+    assert bad_audit["tick_multiplier"] == 10.0
+    assert bad_audit["contract_to_tick_ratio"] == 10.0
+    assert bad_audit["economics_mismatch"] is True
+    assert "10x" in str(bad_audit["warning"])
+
+    # Pricing basis switches sizing transparently between tick_value and contract_size
+    p_tick = plan_paper_trade(
+        side="buy", bid=3620.75, ask=3621.09, range_edge=3620.00,
+        spec=mismatch_spec, stop_usd=10.0, target_usd=2.0, max_lot=0.10,
+        pricing_basis="tick_value",
+    )
+    p_contract = plan_paper_trade(
+        side="buy", bid=3620.75, ask=3621.09, range_edge=3620.00,
+        spec=mismatch_spec, stop_usd=10.0, target_usd=2.0, max_lot=0.10,
+        pricing_basis="contract_size",
+    )
+    assert p_tick["ok"] and p_tick["multiplier"] == 10.0 and p_tick["entry_spread_usd"] == pytest.approx(0.34, abs=1e-4)
+    assert p_contract["ok"] and p_contract["multiplier"] == 100.0
+    assert p_contract["volume"] < p_tick["volume"] or p_contract["entry_spread_usd"] > p_tick["entry_spread_usd"]
+
+
+def test_floating_small_profit_guards_and_honest_losses():
+    buy_bars = [
+        [1700000040, 2650.4, 2650.9, 2650.1, 2650.5, 100.0],
+        [1700000100, 2650.5, 2651.0, 2650.2, 2650.6, 100.0],
+        [1700000160, 2650.6, 2650.9, 2650.0, 2650.4, 100.0],
+        [1700000220, 2650.4, 2651.4, 2650.3, 2651.2, 140.0],
+        [1700000280, 2651.2, 2651.3, 2651.1, 2651.2, 20.0],
+    ]
+
+    # 1) Profit-protect floor arms at +$1.00 and exits on pullback to <= +$0.50
+    s1 = DaytradePaperSession(
+        symbol="XAUUSD_i", spec=SPEC, duration_seconds=600,
+        target_usd=4.0, stop_usd=10.0, started_at=1000.0,
+        profit_protect_trigger_usd=1.0, profit_protect_floor_usd=0.5,
+    )
+    ev = s1.on_bars(bars=buy_bars, bid=2651.20, ask=2651.40, now=1010.0)
+    assert ev["opened"] and ev["trade"]["volume"] == 0.07
+    # +$0.20 * 7 = +$1.40 -> arms floor (does not yet hit $4 target)
+    m_arm = s1.mark_quote(bid=2651.60, ask=2651.80, now=1020.0)
+    assert m_arm["open"] and not m_arm["closed"] and m_arm["profit_floor_armed"] is True
+    # Pullback to +$0.05 * 7 = +$0.35 <= $0.50 floor -> closes with profit_floor_hit
+    m_close = s1.mark_quote(bid=2651.45, ask=2651.65, now=1030.0)
+    assert m_close["closed"] and m_close["trade"]["exit_reason"] == "profit_floor_hit"
+    assert m_close["trade"]["net_pnl_usd"] == pytest.approx(0.35, abs=1e-4)
+
+    # 2) Stale-time guard closes after 180s ONLY when net P&L >= stale_min_profit_usd (never closes losses)
+    s2 = DaytradePaperSession(
+        symbol="XAUUSD_i", spec=SPEC, duration_seconds=600,
+        target_usd=4.0, stop_usd=10.0, started_at=1000.0,
+        stale_profit_seconds=180.0, stale_min_profit_usd=0.5,
+    )
+    assert s2.on_bars(bars=buy_bars, bid=2651.20, ask=2651.40, now=1010.0)["opened"]
+    # At 200s open, still in loss (-$0.70) -> MUST NOT close!
+    m_loss = s2.mark_quote(bid=2651.30, ask=2651.50, now=1210.0)
+    assert m_loss["open"] and not m_loss["closed"]
+    # At 210s open, rebounds to +$0.10 * 7 = +$0.70 >= $0.50 -> closes stale_small_profit
+    m_stale = s2.mark_quote(bid=2651.50, ask=2651.70, now=1220.0)
+    assert m_stale["closed"] and m_stale["trade"]["exit_reason"] == "stale_small_profit"
+    assert m_stale["trade"]["net_pnl_usd"] == pytest.approx(0.7, abs=1e-4)
+
+    # 3) Opposite-signal profit exit closes profitable long when SELL breakout fires
+    s3 = DaytradePaperSession(
+        symbol="XAUUSD_i", spec=SPEC, duration_seconds=600,
+        target_usd=4.0, stop_usd=10.0, started_at=1000.0,
+        exit_on_opposite_if_profit=True, stale_min_profit_usd=0.5,
+    )
+    assert s3.on_bars(bars=buy_bars, bid=2651.20, ask=2651.40, now=1010.0)["opened"]
+    opp_sell_bars = [
+        [1700000280, 2652.0, 2652.4, 2651.8, 2652.1, 100.0],
+        [1700000340, 2652.1, 2652.5, 2651.9, 2652.2, 100.0],
+        [1700000400, 2652.2, 2652.4, 2651.8, 2652.0, 100.0],
+        [1700000460, 2652.0, 2652.1, 2651.5, 2651.6, 130.0],  # breaks below 2651.8 -> SELL
+        [1700000520, 2651.6, 2651.7, 2651.5, 2651.6, 20.0],
+    ]
+    # Current Bid 2651.60 -> +$0.20 * 7 = +$1.40 >= $0.50 -> closes opposite_signal_profit
+    ev_opp = s3.on_bars(bars=opp_sell_bars, bid=2651.60, ask=2651.80, now=1200.0)
+    assert ev_opp.get("closed_by_opposite") is True
+    assert ev_opp["trade"]["exit_reason"] == "opposite_signal_profit"
+    assert ev_opp["trade"]["net_pnl_usd"] == pytest.approx(1.4, abs=1e-4)
+
+    # 4) Window-end guard closes profitable trade, leaves losing trade honestly open
+    s4_win = DaytradePaperSession(
+        symbol="XAUUSD_i", spec=SPEC, duration_seconds=600,
+        target_usd=4.0, stop_usd=10.0, started_at=1000.0,
+        close_profitable_at_end=True, stale_min_profit_usd=0.5,
+    )
+    assert s4_win.on_bars(bars=buy_bars, bid=2651.20, ask=2651.40, now=1010.0)["opened"]
+    fin_win = s4_win.finalize_window(bid=2651.60, ask=2651.80, now=1600.0)
+    assert fin_win["closed"] and fin_win["trade"]["exit_reason"] == "window_end_profit"
+
+    s4_loss = DaytradePaperSession(
+        symbol="XAUUSD_i", spec=SPEC, duration_seconds=600,
+        target_usd=4.0, stop_usd=10.0, started_at=1000.0,
+        close_profitable_at_end=True, stale_min_profit_usd=0.5,
+    )
+    assert s4_loss.on_bars(bars=buy_bars, bid=2651.20, ask=2651.40, now=1010.0)["opened"]
+    fin_loss = s4_loss.finalize_window(bid=2651.00, ask=2651.20, now=1600.0)
+    assert fin_loss["closed"] is False and s4_loss.position is not None
+    assert s4_loss.summary(ended_at=1600.0)["unrealized_pnl_usd"] < 0
+
+
+def test_replay_m1_conservative_tiebreak_and_matrix():
+    # Bar 3 breaks out upward; Bar 4 touches BOTH SL (low=2648.0) and TP (high=2655.0) -> SL MUST WIN
+    bars = [
+        [1700000040, 2650.4, 2650.9, 2650.1, 2650.5, 100.0],
+        [1700000100, 2650.5, 2651.0, 2650.2, 2650.6, 100.0],
+        [1700000160, 2650.6, 2650.9, 2650.0, 2650.4, 100.0],
+        [1700000220, 2650.4, 2651.4, 2650.3, 2651.2, 140.0],
+        [1700000280, 2651.2, 2655.0, 2648.0, 2654.0, 200.0],
+    ]
+    res = replay_m1_bars(
+        bars, spec=SPEC, spread_price=0.20, target_usd=2.0, stop_usd=10.0,
+    )
+    assert res["orders_submitted"] == 0
+    assert res["trades_closed"] == 1
+    assert res["losses"] == 1 and res["wins"] == 0
+    assert res["exit_reasons"] == {"stop_hit": 1}
+
+    # Matrix compares no_guard vs small_profit_guard across targets
+    defaults = small_profit_guard_defaults(2.0)
+    assert defaults["profit_protect_floor_usd"] < defaults["profit_protect_trigger_usd"] < 2.0
+    cli_replay = _load_replay_cli()
+    spec, quote, hist = cli_replay._mock_history("XAUUSD_i")
+    matrix = replay_m1_matrix(
+        hist, spec=spec, spread_price=quote["ask"] - quote["bid"], targets=(2.0, 4.0),
+    )
+    assert len(matrix) == 4
+    assert {r["mode"] for r in matrix} == {"no_guard", "small_profit_guard"}
+
+
+def test_replay_and_guarded_paper_cli_mock_end_to_end(tmp_path, monkeypatch, capsys):
+    replay_cli = _load_replay_cli()
+    paper_cli = _load_cli()
+    monkeypatch.setattr(paper_cli, "ROOT", tmp_path)
+    monkeypatch.setattr(replay_cli, "_save_private_json", paper_cli._save_private_json)
+
+    rc = replay_cli.main(["--mock", "--targets", "2,4", "--out", "logs/replay-smoke.json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] and payload["paper"] and payload["orders_submitted"] == 0
+    assert payload["symbol_spec"]["commission_reported_by_symbol_info"] is False
+    assert len(payload["matrix_tick_value"]) == 4
+    out_file = tmp_path / "logs" / "replay-smoke.json"
+    assert stat.S_IMODE(out_file.stat().st_mode) == 0o600
+
+    # Paper CLI with --small-profit-guard parses & sets guard kwargs cleanly
+    args = paper_cli.build_parser().parse_args(["--mock", "--target-usd", "4", "--small-profit-guard"])
+    gk = paper_cli._guard_kwargs_from_args(args)
+    assert gk["profit_protect_trigger_usd"] == 2.0
+    assert gk["profit_protect_floor_usd"] == 0.8
+    assert gk["stale_profit_seconds"] == 180.0
+    assert gk["exit_on_opposite_if_profit"] is True
+    assert gk["close_profitable_at_end"] is True
+
 

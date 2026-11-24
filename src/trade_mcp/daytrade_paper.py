@@ -143,22 +143,91 @@ def evaluate_m1_direction(
     }
 
 
+def audit_symbol_spec(spec: dict[str, Any]) -> dict[str, Any]:
+    """Audit broker symbol sizing fields and flag contract-vs-tick discrepancies."""
+    tick_size = _finite(spec.get("trade_tick_size"), "trade_tick_size", minimum=1e-10)
+    tick_value = _finite(spec.get("trade_tick_value"), "trade_tick_value", minimum=1e-10)
+    point = _finite(spec.get("point"), "point", minimum=1e-10)
+    tick_multiplier = loss_per_lot(
+        {"trade_tick_size": tick_size, "trade_tick_value": tick_value, "point": point}, 1.0
+    )
+
+    contract_raw = spec.get("trade_contract_size")
+    contract_size: float | None = None
+    if isinstance(contract_raw, (int, float)) and not isinstance(contract_raw, bool):
+        cval = float(contract_raw)
+        if math.isfinite(cval) and cval > 0:
+            contract_size = cval
+
+    currency_raw = spec.get("currency_profit")
+    currency_profit = str(currency_raw).strip() if currency_raw is not None and str(currency_raw).strip() else None
+    calc_raw = spec.get("trade_calc_mode")
+    trade_calc_mode = str(calc_raw).strip() if calc_raw is not None and str(calc_raw).strip() else None
+
+    economics_mismatch: bool | None = None
+    contract_to_tick_ratio: float | None = None
+    warning: str | None = None
+    if contract_size is not None and currency_profit and currency_profit.upper() == "USD":
+        contract_to_tick_ratio = round(contract_size / tick_multiplier, 4)
+        economics_mismatch = abs(contract_to_tick_ratio - 1.0) > 0.01
+        if economics_mismatch:
+            warning = (
+                f"Broker spec discrepancy: trade_contract_size={contract_size:g} (currency_profit=USD) "
+                f"differs by {contract_to_tick_ratio:g}x from trade_tick_value/trade_tick_size="
+                f"{tick_multiplier:g} (tick_value={tick_value:g}, tick_size={tick_size:g}). "
+                "Verify real MT5 PnL per 0.01 lot before trusting lot sizing on any broker account."
+            )
+
+    return {
+        "trade_tick_size": tick_size,
+        "trade_tick_value": tick_value,
+        "point": point,
+        "tick_multiplier": round(tick_multiplier, 6),
+        "trade_contract_size": contract_size,
+        "currency_profit": currency_profit,
+        "trade_calc_mode": trade_calc_mode,
+        "contract_to_tick_ratio": contract_to_tick_ratio,
+        "economics_mismatch": economics_mismatch,
+        "warning": warning,
+    }
+
+
+def small_profit_guard_defaults(target_usd: float) -> dict[str, Any]:
+    """Return sensible floating small-profit guard defaults scaled to target_usd."""
+    target = _finite(target_usd, "target_usd", minimum=MIN_TARGET_USD, maximum=MAX_TARGET_USD)
+    trigger = round(target * 0.5, 2)
+    floor = round(max(0.5, target * 0.2), 2)
+    if floor >= trigger:
+        floor = round(trigger * 0.5, 2)
+    return {
+        "profit_protect_trigger_usd": trigger,
+        "profit_protect_floor_usd": floor,
+        "stale_profit_seconds": 180.0,
+        "stale_min_profit_usd": 0.5,
+        "exit_on_opposite_if_profit": True,
+        "close_profitable_at_end": True,
+    }
+
+
 def plan_paper_trade(
     *,
     side: str,
     bid: float,
     ask: float,
     range_edge: float,
-    spec: dict[str, float],
+    spec: dict[str, Any],
     stop_usd: float = 10.0,
     target_usd: float = 2.0,
     max_lot: float = HARD_MAX_LOT,
     commission_per_lot: float = 0.0,
     max_spread_ratio: float = 0.40,
+    pricing_basis: str = "tick_value",
 ) -> dict[str, Any]:
     """Size and price one bounded paper trade from live Bid/Ask and broker spec."""
     if side not in ("buy", "sell"):
         raise ValueError("side must be buy or sell")
+    if pricing_basis not in ("tick_value", "contract_size"):
+        raise ValueError("pricing_basis must be 'tick_value' or 'contract_size'")
     bid = _finite(bid, "bid", minimum=1e-10)
     ask = _finite(ask, "ask", minimum=bid)
     range_edge = _finite(range_edge, "range_edge", minimum=1e-10)
@@ -176,9 +245,15 @@ def plan_paper_trade(
     point = _finite(spec.get("point"), "point", minimum=1e-10)
     stops_level = _finite(spec.get("trade_stops_level", 0.0), "trade_stops_level", minimum=0.0)
 
-    multiplier = loss_per_lot(
-        {"trade_tick_size": tick_size, "trade_tick_value": tick_value, "point": point}, 1.0
-    )
+    if pricing_basis == "contract_size":
+        currency = str(spec.get("currency_profit") or "").strip().upper()
+        if currency != "USD":
+            return {"ok": False, "reason": "contract_size_requires_usd_profit_currency"}
+        multiplier = _finite(spec.get("trade_contract_size"), "trade_contract_size", minimum=1e-10)
+    else:
+        multiplier = loss_per_lot(
+            {"trade_tick_size": tick_size, "trade_tick_value": tick_value, "point": point}, 1.0
+        )
     if not math.isfinite(multiplier) or multiplier <= 0:
         return {"ok": False, "reason": "invalid_tick_economics"}
 
@@ -274,20 +349,22 @@ class PaperPosition:
     unrealized_pnl_usd: float = 0.0
     max_favorable_usd: float = 0.0
     max_adverse_usd: float = 0.0
+    profit_floor_armed: bool = False
 
 
 class DaytradePaperSession:
     """In-memory bounded Paper trading session for live M1 quotes and bars.
 
     Enforces single open position, $10 max planned stop, $2-$10 profit target,
-    realistic Bid/Ask spread accounting, and a 3-consecutive-loss latch.
+    realistic Bid/Ask spread accounting, optional floating small-profit guards,
+    and a 3-consecutive-loss latch.
     """
 
     def __init__(
         self,
         *,
         symbol: str,
-        spec: dict[str, float],
+        spec: dict[str, Any],
         duration_seconds: int = 600,
         target_usd: float = 2.0,
         stop_usd: float = 10.0,
@@ -298,6 +375,14 @@ class DaytradePaperSession:
         max_spread_ratio: float = 0.40,
         initial_balance: float = 100.0,
         started_at: float = 0.0,
+        pricing_basis: str = "tick_value",
+        profit_protect_trigger_usd: float | None = None,
+        profit_protect_floor_usd: float | None = None,
+        stale_profit_seconds: float | None = None,
+        stale_min_profit_usd: float = 0.50,
+        exit_on_opposite_if_profit: bool = False,
+        close_profitable_at_end: bool = False,
+        enable_loss_latch: bool = True,
     ):
         if not isinstance(symbol, str) or not symbol.strip():
             raise ValueError("symbol is required")
@@ -307,8 +392,12 @@ class DaytradePaperSession:
             raise ValueError("opening_range_bars must be 2..15")
         if type(max_consecutive_losses) is not int or not 1 <= max_consecutive_losses <= 5:
             raise ValueError("max_consecutive_losses must be 1..5")
+        if pricing_basis not in ("tick_value", "contract_size"):
+            raise ValueError("pricing_basis must be 'tick_value' or 'contract_size'")
         self.symbol = symbol.strip()
         self.spec = dict(spec)
+        self.spec_audit = audit_symbol_spec(self.spec)
+        self.pricing_basis = pricing_basis
         self.duration_seconds = duration_seconds
         self.target_usd = _finite(target_usd, "target_usd", minimum=MIN_TARGET_USD, maximum=MAX_TARGET_USD)
         self.stop_usd = _finite(stop_usd, "stop_usd", minimum=1.0, maximum=HARD_MAX_STOP_USD)
@@ -319,6 +408,32 @@ class DaytradePaperSession:
         self.max_spread_ratio = _finite(max_spread_ratio, "max_spread_ratio", minimum=0.05, maximum=0.80)
         self.initial_balance = _finite(initial_balance, "initial_balance", minimum=10.0)
         self.started_at = float(started_at)
+        self.enable_loss_latch = bool(enable_loss_latch)
+
+        if (profit_protect_trigger_usd is None) != (profit_protect_floor_usd is None):
+            raise ValueError("profit_protect_trigger_usd and profit_protect_floor_usd must be set together")
+        if profit_protect_trigger_usd is not None and profit_protect_floor_usd is not None:
+            self.profit_protect_trigger_usd: float | None = _finite(
+                profit_protect_trigger_usd, "profit_protect_trigger_usd", minimum=0.05, maximum=self.target_usd,
+            )
+            self.profit_protect_floor_usd: float | None = _finite(
+                profit_protect_floor_usd, "profit_protect_floor_usd", minimum=0.01,
+            )
+            if self.profit_protect_floor_usd >= self.profit_protect_trigger_usd:
+                raise ValueError("profit_protect_floor_usd must be < profit_protect_trigger_usd")
+        else:
+            self.profit_protect_trigger_usd = None
+            self.profit_protect_floor_usd = None
+
+        self.stale_profit_seconds: float | None = (
+            _finite(stale_profit_seconds, "stale_profit_seconds", minimum=30.0)
+            if stale_profit_seconds is not None else None
+        )
+        self.stale_min_profit_usd = _finite(
+            stale_min_profit_usd, "stale_min_profit_usd", minimum=0.01, maximum=self.target_usd,
+        )
+        self.exit_on_opposite_if_profit = bool(exit_on_opposite_if_profit)
+        self.close_profitable_at_end = bool(close_profitable_at_end)
 
         self.balance = self.initial_balance
         self.peak_equity = self.initial_balance
@@ -326,6 +441,8 @@ class DaytradePaperSession:
         self.position: PaperPosition | None = None
         self.last_evaluated_bar_time: int | None = None
         self.loss_streak = 0
+        self.max_loss_streak = 0
+        self.latch_triggers = 0
         self.latched = False
 
         self.polls = 0
@@ -349,23 +466,9 @@ class DaytradePaperSession:
         if dd > self.max_drawdown_usd:
             self.max_drawdown_usd = dd
 
-    def seed_baseline(self, bars: list[list[float]]) -> int | None:
-        """Mark already-closed M1 bars before window start so stale bars do not fire."""
-        tail = contiguous_m1_tail(bars)
-        if len(tail) >= 2:
-            self.last_evaluated_bar_time = int(tail[-2][0])
-        return self.last_evaluated_bar_time
-
-    def mark_quote(self, *, bid: float, ask: float, now: float) -> dict[str, Any]:
-        """Mark open paper position against live Bid/Ask and auto-close on SL/TP."""
-        bid = _finite(bid, "bid", minimum=1e-10)
-        ask = _finite(ask, "ask", minimum=bid)
-        self.polls += 1
+    def _close_position(self, *, exit_price: float, exit_reason: str, now: float) -> dict[str, Any]:
         pos = self.position
-        if pos is None:
-            return {"ok": True, "paper": True, "open": False, "closed": False}
-
-        exit_price = bid if pos.side == "buy" else ask
+        assert pos is not None
         sign = 1.0 if pos.side == "buy" else -1.0
         gross_pnl = (exit_price - pos.entry) * sign * pos.volume * pos.multiplier
         net_pnl = gross_pnl - pos.commission_usd
@@ -374,36 +477,15 @@ class DaytradePaperSession:
         pos.max_favorable_usd = max(pos.max_favorable_usd, net_pnl)
         pos.max_adverse_usd = min(pos.max_adverse_usd, net_pnl)
 
-        target_hit = (
-            net_pnl >= self.target_usd - 1e-9
-            or (pos.side == "buy" and exit_price >= pos.target)
-            or (pos.side == "sell" and exit_price <= pos.target)
-        )
-        stop_hit = (
-            net_pnl <= -self.stop_usd + 1e-9
-            or (pos.side == "buy" and exit_price <= pos.stop)
-            or (pos.side == "sell" and exit_price >= pos.stop)
-        )
-
-        # Conservative tie-break if a quote somehow satisfies both (should never happen).
-        exit_reason = "stop_hit" if stop_hit else ("target_hit" if target_hit else None)
-        if exit_reason is None:
-            self._update_drawdown()
-            return {
-                "ok": True,
-                "paper": True,
-                "open": True,
-                "closed": False,
-                "trade_id": pos.trade_id,
-                "side": pos.side,
-                "unrealized_pnl_usd": round(net_pnl, 4),
-            }
-
         self.balance += net_pnl
         if net_pnl < 0:
             self.loss_streak += 1
+            if self.loss_streak > self.max_loss_streak:
+                self.max_loss_streak = self.loss_streak
             if self.loss_streak >= self.max_consecutive_losses:
-                self.latched = True
+                self.latch_triggers += 1
+                if self.enable_loss_latch:
+                    self.latched = True
         else:
             self.loss_streak = 0
 
@@ -425,6 +507,7 @@ class DaytradePaperSession:
             "entry_spread_usd": round(pos.entry_spread_usd, 4),
             "max_favorable_usd": round(pos.max_favorable_usd, 4),
             "max_adverse_usd": round(pos.max_adverse_usd, 4),
+            "profit_floor_armed": pos.profit_floor_armed,
             "hold_seconds": hold_seconds,
             "opened_at": pos.opened_at,
             "closed_at": float(now),
@@ -436,6 +519,80 @@ class DaytradePaperSession:
         self.events.append({"event": "close", **record})
         self.position = None
         self._update_drawdown()
+        return record
+
+    def seed_baseline(self, bars: list[list[float]]) -> int | None:
+        """Mark already-closed M1 bars before window start so stale bars do not fire."""
+        tail = contiguous_m1_tail(bars)
+        if len(tail) >= 2:
+            self.last_evaluated_bar_time = int(tail[-2][0])
+        return self.last_evaluated_bar_time
+
+    def mark_quote(self, *, bid: float, ask: float, now: float) -> dict[str, Any]:
+        """Mark open paper position against live Bid/Ask and auto-close on SL/TP/guards."""
+        bid = _finite(bid, "bid", minimum=1e-10)
+        ask = _finite(ask, "ask", minimum=bid)
+        self.polls += 1
+        pos = self.position
+        if pos is None:
+            return {"ok": True, "paper": True, "open": False, "closed": False}
+
+        exit_price = bid if pos.side == "buy" else ask
+        sign = 1.0 if pos.side == "buy" else -1.0
+        gross_pnl = (exit_price - pos.entry) * sign * pos.volume * pos.multiplier
+        net_pnl = gross_pnl - pos.commission_usd
+        pos.last_mark_price = exit_price
+        pos.unrealized_pnl_usd = net_pnl
+        pos.max_favorable_usd = max(pos.max_favorable_usd, net_pnl)
+        pos.max_adverse_usd = min(pos.max_adverse_usd, net_pnl)
+
+        if self.profit_protect_trigger_usd is not None and net_pnl >= self.profit_protect_trigger_usd - 1e-9:
+            pos.profit_floor_armed = True
+
+        target_hit = (
+            net_pnl >= self.target_usd - 1e-9
+            or (pos.side == "buy" and exit_price >= pos.target)
+            or (pos.side == "sell" and exit_price <= pos.target)
+        )
+        stop_hit = (
+            net_pnl <= -self.stop_usd + 1e-9
+            or (pos.side == "buy" and exit_price <= pos.stop)
+            or (pos.side == "sell" and exit_price >= pos.stop)
+        )
+
+        # Conservative precedence: real stop always wins; then full target; then floating small-profit guards.
+        exit_reason: str | None = None
+        if stop_hit:
+            exit_reason = "stop_hit"
+        elif target_hit:
+            exit_reason = "target_hit"
+        elif (
+            pos.profit_floor_armed
+            and self.profit_protect_floor_usd is not None
+            and net_pnl <= self.profit_protect_floor_usd + 1e-9
+        ):
+            exit_reason = "profit_floor_hit"
+        elif (
+            self.stale_profit_seconds is not None
+            and max(0.0, float(now) - pos.opened_at) >= self.stale_profit_seconds
+            and net_pnl >= self.stale_min_profit_usd - 1e-9
+        ):
+            exit_reason = "stale_small_profit"
+
+        if exit_reason is None:
+            self._update_drawdown()
+            return {
+                "ok": True,
+                "paper": True,
+                "open": True,
+                "closed": False,
+                "trade_id": pos.trade_id,
+                "side": pos.side,
+                "unrealized_pnl_usd": round(net_pnl, 4),
+                "profit_floor_armed": pos.profit_floor_armed,
+            }
+
+        record = self._close_position(exit_price=exit_price, exit_reason=exit_reason, now=now)
         return {
             "ok": True,
             "paper": True,
@@ -445,12 +602,54 @@ class DaytradePaperSession:
             "latched": self.latched,
         }
 
-    def on_bars(self, *, bars: list[list[float]], bid: float, ask: float, now: float) -> dict[str, Any]:
+    def finalize_window(self, *, bid: float, ask: float, now: float) -> dict[str, Any]:
+        """At window end, close an open position ONLY if profitable and guard is enabled.
+
+        Losing positions are never closed at a fabricated profit; they stay honestly
+        marked as open unrealized losses.
+        """
+        bid = _finite(bid, "bid", minimum=1e-10)
+        ask = _finite(ask, "ask", minimum=bid)
+        if self.position is None:
+            return {"ok": True, "paper": True, "closed": False}
+        mark = self.mark_quote(bid=bid, ask=ask, now=now)
+        if mark.get("closed"):
+            return mark
+        if not self.close_profitable_at_end or self.position is None:
+            return {"ok": True, "paper": True, "closed": False, "open": self.position is not None}
+        pos = self.position
+        exit_price = bid if pos.side == "buy" else ask
+        sign = 1.0 if pos.side == "buy" else -1.0
+        net_pnl = (exit_price - pos.entry) * sign * pos.volume * pos.multiplier - pos.commission_usd
+        if net_pnl >= self.stale_min_profit_usd - 1e-9:
+            record = self._close_position(exit_price=exit_price, exit_reason="window_end_profit", now=now)
+            return {
+                "ok": True,
+                "paper": True,
+                "open": False,
+                "closed": True,
+                "trade": record,
+                "latched": self.latched,
+            }
+        return {"ok": True, "paper": True, "closed": False, "open": True}
+
+    def on_bars(
+        self,
+        *,
+        bars: list[list[float]],
+        bid: float,
+        ask: float,
+        now: float,
+        include_patterns: bool = True,
+    ) -> dict[str, Any]:
         """Evaluate newly closed M1 bars and open at most one paper position."""
         bid = _finite(bid, "bid", minimum=1e-10)
         ask = _finite(ask, "ask", minimum=bid)
         sig = evaluate_m1_direction(
-            bars, symbol=self.symbol, opening_range_bars=self.opening_range_bars,
+            bars,
+            symbol=self.symbol,
+            opening_range_bars=self.opening_range_bars,
+            include_patterns=include_patterns,
         )
         closed_time = sig.get("closed_bar_time")
         if closed_time is None:
@@ -471,18 +670,37 @@ class DaytradePaperSession:
             return {"ok": True, "paper": True, "opened": False, "action": "wait",
                     "reason": sig.get("reason"), "closed_bar_time": closed_time}
 
+        if self.position is not None:
+            if self.exit_on_opposite_if_profit and action != self.position.side:
+                pos = self.position
+                exit_price = bid if pos.side == "buy" else ask
+                sign = 1.0 if pos.side == "buy" else -1.0
+                net_pnl = (exit_price - pos.entry) * sign * pos.volume * pos.multiplier - pos.commission_usd
+                if net_pnl >= self.stale_min_profit_usd - 1e-9:
+                    record = self._close_position(
+                        exit_price=exit_price, exit_reason="opposite_signal_profit", now=now,
+                    )
+                    return {
+                        "ok": True,
+                        "paper": True,
+                        "opened": False,
+                        "closed_by_opposite": True,
+                        "action": action,
+                        "reason": "opposite_signal_profit",
+                        "trade": record,
+                    }
+            self._refuse("position_already_open")
+            return {"ok": True, "paper": True, "opened": False, "action": action, "reason": "position_already_open"}
+
         if self.latched:
             self._refuse("loss_latch_active")
             return {"ok": True, "paper": True, "opened": False, "action": action, "reason": "loss_latch_active"}
-        if self.position is not None:
-            self._refuse("position_already_open")
-            return {"ok": True, "paper": True, "opened": False, "action": action, "reason": "position_already_open"}
 
         plan = plan_paper_trade(
             side=action, bid=bid, ask=ask, range_edge=float(sig["range_edge"]),
             spec=self.spec, stop_usd=self.stop_usd, target_usd=self.target_usd,
             max_lot=self.max_lot, commission_per_lot=self.commission_per_lot,
-            max_spread_ratio=self.max_spread_ratio,
+            max_spread_ratio=self.max_spread_ratio, pricing_basis=self.pricing_basis,
         )
         if not plan.get("ok"):
             reason = str(plan.get("reason") or "sizing_refused")
@@ -548,6 +766,15 @@ class DaytradePaperSession:
         win_rate = round(wins / len(self.closed_trades) * 100.0, 2) if self.closed_trades else None
         breakeven_wr = round(self.stop_usd / (self.stop_usd + self.target_usd) * 100.0, 2)
 
+        exit_reasons: dict[str, int] = {}
+        for t in self.closed_trades:
+            r = str(t["exit_reason"])
+            exit_reasons[r] = exit_reasons.get(r, 0) + 1
+
+        gross_wins = sum(t["net_pnl_usd"] for t in self.closed_trades if t["net_pnl_usd"] > 0)
+        gross_losses = abs(sum(t["net_pnl_usd"] for t in self.closed_trades if t["net_pnl_usd"] < 0))
+        profit_factor = round(gross_wins / gross_losses, 3) if gross_losses > 0 else None
+
         sanitized_trades = [
             {
                 "trade_id": t["trade_id"],
@@ -569,8 +796,16 @@ class DaytradePaperSession:
                 "unrealized_pnl_usd": round(self.position.unrealized_pnl_usd, 4),
                 "entry_spread_usd": round(self.position.entry_spread_usd, 4),
                 "hold_seconds": round(max(0.0, float(ended_at) - self.position.opened_at), 2),
+                "profit_floor_armed": self.position.profit_floor_armed,
                 "closed_at_window_end": False,
             }
+
+        guard_active = any([
+            self.profit_protect_trigger_usd is not None,
+            self.stale_profit_seconds is not None,
+            self.exit_on_opposite_if_profit,
+            self.close_profitable_at_end,
+        ])
 
         warnings = [
             "Paper simulation only: zero broker orders were created or submitted.",
@@ -580,6 +815,13 @@ class DaytradePaperSession:
         ]
         if self.commission_per_lot == 0.0:
             warnings.append("Commission is modeled as 0.0 USD/lot (simulation assumption, not verified broker commission).")
+        if self.spec_audit.get("warning"):
+            warnings.append(str(self.spec_audit["warning"]))
+        if guard_active:
+            warnings.append(
+                "Floating small-profit guard only protects trades that reach positive P&L; "
+                "trades moving straight into loss still hit the -$10 stop or stay negative."
+            )
 
         return {
             "ok": True,
@@ -598,7 +840,18 @@ class DaytradePaperSession:
                 "max_consecutive_losses": self.max_consecutive_losses,
                 "commission_assumption_usd_per_lot": self.commission_per_lot,
                 "initial_paper_balance_usd": self.initial_balance,
+                "pricing_basis": self.pricing_basis,
+                "floating_profit_guard": {
+                    "enabled": guard_active,
+                    "profit_protect_trigger_usd": self.profit_protect_trigger_usd,
+                    "profit_protect_floor_usd": self.profit_protect_floor_usd,
+                    "stale_profit_seconds": self.stale_profit_seconds,
+                    "stale_min_profit_usd": self.stale_min_profit_usd if guard_active else None,
+                    "exit_on_opposite_if_profit": self.exit_on_opposite_if_profit,
+                    "close_profitable_at_end": self.close_profitable_at_end,
+                },
             },
+            "spec_audit": dict(self.spec_audit),
             "polls": self.polls,
             "m1_bars_evaluated": self.m1_bars_evaluated,
             "signals": {
@@ -607,12 +860,14 @@ class DaytradePaperSession:
                 "wait": self.signals_wait,
             },
             "refusal_counts": dict(self.refusal_counts),
+            "exit_reasons": exit_reasons,
             "trades_opened": self._next_trade_id,
             "trades_closed": len(self.closed_trades),
             "wins": wins,
             "losses": losses,
             "breakeven": breakeven,
             "win_rate_pct": win_rate,
+            "profit_factor": profit_factor,
             "required_breakeven_win_rate_pct": breakeven_wr,
             "realized_pnl_usd": realized,
             "open_position_at_end": self.position is not None,
@@ -622,7 +877,290 @@ class DaytradePaperSession:
             "ending_paper_balance_usd": round(self.balance, 4),
             "max_drawdown_usd": round(self.max_drawdown_usd, 4),
             "loss_streak": self.loss_streak,
+            "max_loss_streak": self.max_loss_streak,
+            "latch_triggers": self.latch_triggers,
             "latched": self.latched,
             "trades": sanitized_trades,
             "warnings": warnings,
         }
+
+
+def contiguous_m1_segments(bars: list[list[float]]) -> list[list[list[float]]]:
+    """Split sorted M1 bars into contiguous 60-second segments."""
+    clean = m1_rows(bars)
+    if not clean:
+        return []
+    segments: list[list[list[float]]] = [[clean[0]]]
+    for row in clean[1:]:
+        if int(row[0] - segments[-1][-1][0]) == M1_SECONDS:
+            segments[-1].append(row)
+        else:
+            segments.append([row])
+    return segments
+
+
+def _floor_price_for_pnl(pos: PaperPosition, floor_usd: float) -> float:
+    sign = 1.0 if pos.side == "buy" else -1.0
+    delta = (floor_usd + pos.commission_usd) / (pos.volume * pos.multiplier)
+    return pos.entry + sign * delta
+
+
+def _simulate_m1_bar_intrabar(
+    session: DaytradePaperSession,
+    bar: list[float],
+    *,
+    spread_price: float,
+) -> None:
+    """Conservatively step an open paper position across one M1 OHLC bar.
+
+    Uses Bid OHLC with constant ``spread_price`` added for Ask. If a bar's
+    range touches both SL and TP/profit-floor, SL ALWAYS wins (conservative).
+    """
+    pos = session.position
+    if pos is None:
+        return
+
+    t, o, h, low, c = float(bar[0]), float(bar[1]), float(bar[2]), float(bar[3]), float(bar[4])
+    bar_end = t + M1_SECONDS
+    sign = 1.0 if pos.side == "buy" else -1.0
+    scale = pos.volume * pos.multiplier
+
+    if pos.side == "buy":
+        open_exit = o
+        worst_exit = low
+        best_exit = h
+        close_exit = c
+    else:
+        open_exit = o + spread_price
+        worst_exit = h + spread_price
+        best_exit = low + spread_price
+        close_exit = c + spread_price
+
+    worst_pnl = (worst_exit - pos.entry) * sign * scale - pos.commission_usd
+    best_pnl = (best_exit - pos.entry) * sign * scale - pos.commission_usd
+    close_pnl = (close_exit - pos.entry) * sign * scale - pos.commission_usd
+
+    pos.max_adverse_usd = min(pos.max_adverse_usd, worst_pnl)
+    pos.max_favorable_usd = max(pos.max_favorable_usd, best_pnl)
+
+    # 1. Conservative stop check first (catches intrabar adverse move and gap opens).
+    stop_hit = (
+        worst_pnl <= -session.stop_usd + 1e-9
+        or (pos.side == "buy" and worst_exit <= pos.stop)
+        or (pos.side == "sell" and worst_exit >= pos.stop)
+    )
+    if stop_hit:
+        fill = min(open_exit, pos.stop) if pos.side == "buy" else max(open_exit, pos.stop)
+        session._close_position(exit_price=fill, exit_reason="stop_hit", now=bar_end)
+        return
+
+    # 2. If profit floor was ALREADY armed before this bar, check adverse floor breach BEFORE TP.
+    if pos.profit_floor_armed and session.profit_protect_floor_usd is not None:
+        floor_px = _floor_price_for_pnl(pos, session.profit_protect_floor_usd)
+        floor_hit = (
+            worst_pnl <= session.profit_protect_floor_usd + 1e-9
+            or (pos.side == "buy" and worst_exit <= floor_px)
+            or (pos.side == "sell" and worst_exit >= floor_px)
+        )
+        if floor_hit:
+            fill = min(open_exit, floor_px) if pos.side == "buy" else max(open_exit, floor_px)
+            session._close_position(exit_price=fill, exit_reason="profit_floor_hit", now=bar_end)
+            return
+
+    # 3. Full target check (fills conservatively at planned target, or open if gapped past target).
+    target_hit = (
+        best_pnl >= session.target_usd - 1e-9
+        or (pos.side == "buy" and best_exit >= pos.target)
+        or (pos.side == "sell" and best_exit <= pos.target)
+    )
+    if target_hit:
+        fill = max(open_exit, pos.target) if pos.side == "buy" else min(open_exit, pos.target)
+        session._close_position(exit_price=fill, exit_reason="target_hit", now=bar_end)
+        return
+
+    # 4. Arm profit floor if bar's favorable excursion reached trigger; check close pullback.
+    if (
+        not pos.profit_floor_armed
+        and session.profit_protect_trigger_usd is not None
+        and session.profit_protect_floor_usd is not None
+        and best_pnl >= session.profit_protect_trigger_usd - 1e-9
+    ):
+        pos.profit_floor_armed = True
+        if close_pnl <= session.profit_protect_floor_usd + 1e-9:
+            session._close_position(exit_price=close_exit, exit_reason="profit_floor_hit", now=bar_end)
+            return
+
+    # 5. Stale-time small-profit exit at bar close.
+    pos.last_mark_price = close_exit
+    pos.unrealized_pnl_usd = close_pnl
+    if (
+        session.stale_profit_seconds is not None
+        and max(0.0, bar_end - pos.opened_at) >= session.stale_profit_seconds
+        and close_pnl >= session.stale_min_profit_usd - 1e-9
+    ):
+        session._close_position(exit_price=close_exit, exit_reason="stale_small_profit", now=bar_end)
+        return
+
+    session._update_drawdown()
+
+
+def replay_m1_bars(
+    bars: list[list[float]],
+    *,
+    spec: dict[str, Any],
+    symbol: str = "XAUUSD_i",
+    spread_price: float = 0.0,
+    target_usd: float = 2.0,
+    stop_usd: float = 10.0,
+    opening_range_bars: int = 3,
+    max_lot: float = HARD_MAX_LOT,
+    commission_per_lot: float = 0.0,
+    max_consecutive_losses: int = 3,
+    max_spread_ratio: float = 0.40,
+    pricing_basis: str = "tick_value",
+    profit_protect_trigger_usd: float | None = None,
+    profit_protect_floor_usd: float | None = None,
+    stale_profit_seconds: float | None = None,
+    stale_min_profit_usd: float = 0.50,
+    exit_on_opposite_if_profit: bool = False,
+    close_profitable_at_end: bool = False,
+    enable_loss_latch: bool = False,
+) -> dict[str, Any]:
+    """Replay historical M1 OHLC bars with zero lookahead and conservative intrabar order.
+
+    This is an offline simulation helper only: never calls MT5 or submits orders.
+    """
+    spread_price = _finite(spread_price, "spread_price", minimum=0.0)
+    segments = contiguous_m1_segments(bars)
+    usable_segments = [s for s in segments if len(s) >= opening_range_bars + 2]
+    started_at = float(usable_segments[0][0][0]) if usable_segments else 0.0
+
+    session = DaytradePaperSession(
+        symbol=symbol,
+        spec=spec,
+        duration_seconds=MAX_DURATION_SECONDS,
+        target_usd=target_usd,
+        stop_usd=stop_usd,
+        opening_range_bars=opening_range_bars,
+        max_lot=max_lot,
+        commission_per_lot=commission_per_lot,
+        max_consecutive_losses=max_consecutive_losses,
+        max_spread_ratio=max_spread_ratio,
+        started_at=started_at,
+        pricing_basis=pricing_basis,
+        profit_protect_trigger_usd=profit_protect_trigger_usd,
+        profit_protect_floor_usd=profit_protect_floor_usd,
+        stale_profit_seconds=stale_profit_seconds,
+        stale_min_profit_usd=stale_min_profit_usd,
+        exit_on_opposite_if_profit=exit_on_opposite_if_profit,
+        close_profitable_at_end=close_profitable_at_end,
+        enable_loss_latch=enable_loss_latch,
+    )
+
+    last_bar: list[float] | None = None
+    needed = opening_range_bars + 2
+    for seg in usable_segments:
+        # If a position carried across a gap into a new segment, mark early bars first.
+        for j in range(min(needed - 1, len(seg))):
+            if session.position is not None:
+                _simulate_m1_bar_intrabar(session, seg[j], spread_price=spread_price)
+                last_bar = seg[j]
+        for i in range(needed - 1, len(seg)):
+            bar = seg[i]
+            t, o = float(bar[0]), float(bar[1])
+            bid_open = o
+            ask_open = o + spread_price
+            window = seg[i - (needed - 1) : i + 1]
+            # 1. At bar open (right after seg[i-1] closed), evaluate signal with zero lookahead.
+            session.on_bars(
+                bars=window,
+                bid=bid_open,
+                ask=ask_open,
+                now=t,
+                include_patterns=False,
+            )
+            # 2. Step through bar[i]'s OHLC conservatively.
+            _simulate_m1_bar_intrabar(session, bar, spread_price=spread_price)
+            last_bar = bar
+
+    ended_at = float(last_bar[0]) + M1_SECONDS if last_bar is not None else started_at
+    if last_bar is not None and session.position is not None:
+        c = float(last_bar[4])
+        session.finalize_window(bid=c, ask=c + spread_price, now=ended_at)
+
+    out = session.summary(ended_at=ended_at)
+    out["mode"] = "historical_m1_ohlc_replay"
+    out["replay_bars_total"] = sum(len(s) for s in segments)
+    out["replay_segments_total"] = len(segments)
+    out["replay_segments_used"] = len(usable_segments)
+    out["spread_price_assumption"] = spread_price
+    out["loss_latch_enforced"] = enable_loss_latch
+    out["warnings"] = [
+        "Historical M1 OHLC replay only: zero broker orders were created or submitted.",
+        "Intrabar tick order is approximated conservatively from M1 OHLC (SL checked before TP on ambiguous bars).",
+        "Constant spread assumption applied from observed quote; real spreads widen around news and rollovers.",
+        f"A +${target_usd:g} target vs -${stop_usd:g} stop requires >{out['required_breakeven_win_rate_pct']}% win rate to break even before costs.",
+    ]
+    if commission_per_lot == 0.0:
+        out["warnings"].append(
+            "Commission is modeled as 0.0 USD/lot (simulation assumption, not verified broker commission)."
+        )
+    if session.spec_audit.get("warning"):
+        out["warnings"].append(str(session.spec_audit["warning"]))
+    return out
+
+
+def replay_m1_matrix(
+    bars: list[list[float]],
+    *,
+    spec: dict[str, Any],
+    symbol: str = "XAUUSD_i",
+    spread_price: float = 0.0,
+    targets: list[float] | tuple[float, ...] = (2.0, 4.0, 6.0, 10.0),
+    stop_usd: float = 10.0,
+    opening_range_bars: int = 3,
+    max_lot: float = HARD_MAX_LOT,
+    commission_per_lot: float = 0.0,
+    pricing_basis: str = "tick_value",
+) -> list[dict[str, Any]]:
+    """Compare baseline vs floating small-profit guard across target USD levels."""
+    rows: list[dict[str, Any]] = []
+    for target in targets:
+        base = replay_m1_bars(
+            bars, spec=spec, symbol=symbol, spread_price=spread_price,
+            target_usd=float(target), stop_usd=stop_usd,
+            opening_range_bars=opening_range_bars, max_lot=max_lot,
+            commission_per_lot=commission_per_lot, pricing_basis=pricing_basis,
+        )
+        guard_cfg = small_profit_guard_defaults(float(target))
+        guarded = replay_m1_bars(
+            bars, spec=spec, symbol=symbol, spread_price=spread_price,
+            target_usd=float(target), stop_usd=stop_usd,
+            opening_range_bars=opening_range_bars, max_lot=max_lot,
+            commission_per_lot=commission_per_lot, pricing_basis=pricing_basis,
+            **guard_cfg,
+        )
+        for label, res in (("no_guard", base), ("small_profit_guard", guarded)):
+            rows.append({
+                "target_usd": float(target),
+                "stop_usd": float(stop_usd),
+                "mode": label,
+                "pricing_basis": pricing_basis,
+                "trades_opened": res["trades_opened"],
+                "trades_closed": res["trades_closed"],
+                "wins": res["wins"],
+                "losses": res["losses"],
+                "win_rate_pct": res["win_rate_pct"],
+                "required_breakeven_win_rate_pct": res["required_breakeven_win_rate_pct"],
+                "realized_pnl_usd": res["realized_pnl_usd"],
+                "unrealized_pnl_usd": res["unrealized_pnl_usd"],
+                "total_marked_pnl_usd": res["total_marked_pnl_usd"],
+                "max_drawdown_usd": res["max_drawdown_usd"],
+                "profit_factor": res["profit_factor"],
+                "max_loss_streak": res["max_loss_streak"],
+                "latch_triggers": res["latch_triggers"],
+                "exit_reasons": res["exit_reasons"],
+                "refusal_counts": res["refusal_counts"],
+            })
+    return rows
+

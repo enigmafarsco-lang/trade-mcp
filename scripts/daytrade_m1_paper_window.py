@@ -45,6 +45,7 @@ from trade_mcp.daytrade_paper import (  # noqa: E402
     MIN_DURATION_SECONDS,
     MIN_TARGET_USD,
     DaytradePaperSession,
+    small_profit_guard_defaults,
 )
 from trade_mcp.mcpclient import McpError, McpHttpClient  # noqa: E402
 
@@ -54,6 +55,24 @@ ALLOWED_READ_TOOLS = frozenset({
     "get_marketwatch_symbols",
     "get_chart_history",
 })
+
+
+def enrich_spec(base: dict[str, float], row: dict[str, Any]) -> dict[str, Any]:
+    """Attach optional read-only symbol economics fields reported by MT5."""
+    spec: dict[str, Any] = dict(base)
+    optional = {
+        "trade_contract_size": ("trade_contract_size", "contract_size"),
+        "currency_profit": ("currency_profit", "profit_currency"),
+        "trade_calc_mode": ("trade_calc_mode", "calc_mode", "calculation_mode"),
+        "digits": ("digits",),
+        "swap_long": ("swap_long",),
+        "swap_short": ("swap_short",),
+    }
+    for key, aliases in optional.items():
+        val = find(row, *aliases)
+        if val is not None:
+            spec[key] = val
+    return spec
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -87,7 +106,7 @@ class ReadOnlyNativeFeed:
             raise Blocked("invalid_data")
         return body
 
-    def connect(self) -> tuple[dict[str, float], dict[str, float]]:
+    def connect(self) -> tuple[dict[str, Any], dict[str, float]]:
         self.client.connect()
         info = self._call("terminal_get_info", {})
         if terminal_connection(info) is not True:
@@ -96,7 +115,7 @@ class ReadOnlyNativeFeed:
             self._call("get_marketwatch_symbols", {"symbol": self.symbol, "limit": 10, "include_hidden": True}),
             self.symbol,
         )
-        return reported_spec(row), parse_quote(row)
+        return enrich_spec(reported_spec(row), row), parse_quote(row)
 
     def fetch_quote(self) -> dict[str, float]:
         row = exact_symbol(
@@ -105,7 +124,7 @@ class ReadOnlyNativeFeed:
         )
         return parse_quote(row)
 
-    def fetch_m1_bars(self) -> list[list[float]]:
+    def fetch_m1_bars(self, *, minutes: int = 90, limit: int = 120) -> list[list[float]]:
         now = time.monotonic()
         if self._clock_cache is None or now - self._clock_cache[0] >= 30.0:
             self._clock_cache = (now, self._call("get_time_information", {}))
@@ -117,13 +136,13 @@ class ReadOnlyNativeFeed:
         if dt is None:
             raise Blocked("timestamp_unverified")
         label = dt.replace(tzinfo=None)
-        start, end = label - timedelta(minutes=90), label + timedelta(minutes=2)
+        start, end = label - timedelta(minutes=minutes), label + timedelta(minutes=2)
         data = self._call("get_chart_history", {
             "symbol": self.symbol,
             "period": "M1",
             "datetime_from": start.isoformat(timespec="seconds"),
             "datetime_to": end.isoformat(timespec="seconds"),
-            "limit": 120,
+            "limit": limit,
         })
         bars, _ = compact_bars(data)
         return bars
@@ -136,9 +155,12 @@ class MockFeed:
         self.symbol = symbol
         self.step = 0
         self.base_time = 1700000040
-        self.spec = {
+        self.spec: dict[str, Any] = {
             "trade_tick_size": 0.01,
             "trade_tick_value": 1.0,
+            "trade_contract_size": 100.0,
+            "currency_profit": "USD",
+            "trade_calc_mode": "cfd",
             "volume_step": 0.01,
             "volume_min": 0.01,
             "volume_max": 10.0,
@@ -153,7 +175,7 @@ class MockFeed:
         self.bid = 2650.50
         self.ask = 2650.70
 
-    def connect(self) -> tuple[dict[str, float], dict[str, float]]:
+    def connect(self) -> tuple[dict[str, Any], dict[str, float]]:
         return dict(self.spec), {"bid": self.bid, "ask": self.ask}
 
     def fetch_quote(self) -> dict[str, float]:
@@ -169,7 +191,7 @@ class MockFeed:
             self.bid, self.ask = 2651.90, 2652.10
         return {"bid": self.bid, "ask": self.ask}
 
-    def fetch_m1_bars(self) -> list[list[float]]:
+    def fetch_m1_bars(self, *, minutes: int = 90, limit: int = 120) -> list[list[float]]:
         return [list(r) for r in self.bars]
 
 
@@ -208,14 +230,25 @@ def run_window_loop(
     deadline = start + session.duration_seconds
     baseline = session.seed_baseline(feed.fetch_m1_bars())
     if not quiet:
+        guard_tag = ""
+        if session.profit_protect_trigger_usd is not None or session.stale_profit_seconds is not None:
+            guard_tag = (
+                f" guard[trig={session.profit_protect_trigger_usd} "
+                f"floor={session.profit_protect_floor_usd} "
+                f"stale={session.stale_profit_seconds}s@>=${session.stale_min_profit_usd:g} "
+                f"opp={session.exit_on_opposite_if_profit} end={session.close_profitable_at_end}]"
+            )
         _log(
             f"Paper M1 window started: symbol={session.symbol} duration={session.duration_seconds}s "
             f"target=+${session.target_usd:g} stop=-${session.stop_usd:g} "
             f"range={session.opening_range_bars}m max_lot={session.max_lot} "
-            f"baseline_bar={baseline} (NO broker orders)"
+            f"basis={session.pricing_basis} baseline_bar={baseline}{guard_tag} (NO broker orders)"
         )
+        if session.spec_audit.get("warning"):
+            _log(f"SPEC WARNING: {session.spec_audit['warning']}")
 
     last_bars_at = start - bars_poll_seconds
+    last_quote: dict[str, float] | None = None
     consecutive_errors = 0
     interrupted = False
     stop_reason = "completed"
@@ -226,6 +259,7 @@ def run_window_loop(
             now_wall = wall()
             try:
                 q = feed.fetch_quote()
+                last_quote = q
                 mark = session.mark_quote(bid=q["bid"], ask=q["ask"], now=now_wall)
                 if mark.get("closed") and not quiet:
                     tr = mark["trade"]
@@ -246,6 +280,13 @@ def run_window_loop(
                             f"PAPER OPEN  #{tr['trade_id']} {tr['side'].upper()} {tr['volume']} lot "
                             f"entry={tr['entry']} SL={tr['stop']} TP={tr['target']} "
                             f"spread=${tr['entry_spread_usd']:.2f} ({tr['signal_reason']})"
+                        )
+                    elif ev.get("closed_by_opposite") and not quiet:
+                        tr = ev["trade"]
+                        _log(
+                            f"PAPER CLOSE #{tr['trade_id']} {tr['side'].upper()} {tr['volume']} lot "
+                            f"reason={tr['exit_reason']} net=${tr['net_pnl_usd']:+.2f} "
+                            f"hold={tr['hold_seconds']}s balance=${session.balance:.2f}"
                         )
                     elif ev.get("action") in ("buy", "sell") and not ev.get("opened") and not quiet:
                         _log(f"SIGNAL SKIPPED {ev['action'].upper()}: {ev.get('reason')}")
@@ -271,7 +312,18 @@ def run_window_loop(
         if not quiet:
             _log("Stopped early by Ctrl-C; writing paper summary.")
 
-    summary = session.summary(ended_at=wall())
+    ended_wall = wall()
+    if session.position is not None and session.close_profitable_at_end and last_quote is not None:
+        fin = session.finalize_window(bid=last_quote["bid"], ask=last_quote["ask"], now=ended_wall)
+        if fin.get("closed") and not quiet:
+            tr = fin["trade"]
+            _log(
+                f"PAPER CLOSE #{tr['trade_id']} {tr['side'].upper()} {tr['volume']} lot "
+                f"reason={tr['exit_reason']} net=${tr['net_pnl_usd']:+.2f} "
+                f"hold={tr['hold_seconds']}s balance=${session.balance:.2f}"
+            )
+
+    summary = session.summary(ended_at=ended_wall)
     summary["stop_reason"] = stop_reason
     summary["interrupted"] = interrupted
     return summary
@@ -292,11 +344,55 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"hard paper lot cap (<= {HARD_MAX_LOT}, default {HARD_MAX_LOT})")
     p.add_argument("--commission-per-lot", type=float, default=0.0,
                    help="optional round-trip commission USD/lot assumption (default 0.0)")
+    p.add_argument("--pricing-basis", choices=("tick_value", "contract_size"), default="tick_value",
+                   help="lot PnL multiplier basis (default: tick_value)")
+    p.add_argument("--small-profit-guard", action="store_true",
+                   help="enable default floating small-profit guards (profit floor, 180s stale exit, opposite exit, window-end profit close)")
+    p.add_argument("--protect-trigger-usd", type=float, default=None,
+                   help="arm profit floor once floating net P&L reaches this USD amount")
+    p.add_argument("--protect-floor-usd", type=float, default=None,
+                   help="close if armed profit pulls back to or below this USD floor")
+    p.add_argument("--stale-seconds", type=float, default=None,
+                   help="after this many seconds open, close if floating net P&L >= --stale-min-profit-usd")
+    p.add_argument("--stale-min-profit-usd", type=float, default=None,
+                   help="minimum small net profit USD for stale/opposite/window-end exits (default 0.50)")
+    p.add_argument("--exit-on-opposite-if-profit", action="store_true",
+                   help="close profitable floating trade when an opposite M1 breakout fires")
+    p.add_argument("--close-profitable-at-end", action="store_true",
+                   help="close profitable floating trade at window end (losing trades remain honestly open)")
     p.add_argument("--poll", type=float, default=2.0, help="quote poll interval seconds (1..10, default 2)")
     p.add_argument("--bars-poll", type=float, default=5.0, help="M1 bar poll interval seconds (2..30, default 5)")
     p.add_argument("--out", default="", help="optional .json filename inside ignored logs/")
     p.add_argument("--mock", action="store_true", help="run offline smoke test with synthetic M1 feed")
     return p
+
+
+def _guard_kwargs_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    cfg: dict[str, Any] = (
+        small_profit_guard_defaults(args.target_usd)
+        if args.small_profit_guard
+        else {
+            "profit_protect_trigger_usd": None,
+            "profit_protect_floor_usd": None,
+            "stale_profit_seconds": None,
+            "stale_min_profit_usd": 0.5,
+            "exit_on_opposite_if_profit": False,
+            "close_profitable_at_end": False,
+        }
+    )
+    if args.protect_trigger_usd is not None:
+        cfg["profit_protect_trigger_usd"] = args.protect_trigger_usd
+    if args.protect_floor_usd is not None:
+        cfg["profit_protect_floor_usd"] = args.protect_floor_usd
+    if args.stale_seconds is not None:
+        cfg["stale_profit_seconds"] = args.stale_seconds
+    if args.stale_min_profit_usd is not None:
+        cfg["stale_min_profit_usd"] = args.stale_min_profit_usd
+    if args.exit_on_opposite_if_profit:
+        cfg["exit_on_opposite_if_profit"] = True
+    if args.close_profitable_at_end:
+        cfg["close_profitable_at_end"] = True
+    return cfg
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -311,6 +407,7 @@ def main(argv: list[str] | None = None) -> int:
     os.environ["TRADE_MCP_PAPER_TRADING"] = "true"
 
     out_path = Path(args.out) if args.out else Path("logs") / f"daytrade-paper-{uuid.uuid4().hex[:12]}.json"
+    guard_kwargs = _guard_kwargs_from_args(args)
 
     try:
         if args.mock:
@@ -325,7 +422,9 @@ def main(argv: list[str] | None = None) -> int:
                 opening_range_bars=args.opening_range_bars,
                 max_lot=args.max_lot,
                 commission_per_lot=args.commission_per_lot,
+                pricing_basis=args.pricing_basis,
                 started_at=time.time(),
+                **guard_kwargs,
             )
             summary = run_window_loop(
                 feed=feed, session=session,
@@ -348,7 +447,9 @@ def main(argv: list[str] | None = None) -> int:
                     opening_range_bars=args.opening_range_bars,
                     max_lot=args.max_lot,
                     commission_per_lot=args.commission_per_lot,
+                    pricing_basis=args.pricing_basis,
                     started_at=time.time(),
+                    **guard_kwargs,
                 )
                 summary = run_window_loop(
                     feed=feed, session=session,
