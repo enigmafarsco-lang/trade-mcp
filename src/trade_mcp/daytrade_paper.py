@@ -15,7 +15,7 @@ from typing import Any
 
 from .daytrade import M1_SECONDS, entry_signal, m1_rows
 from .daytrade_extra import scan_setups
-from .risk import loss_per_lot, round_to_step
+from .risk import round_to_step
 
 HARD_MAX_LOT = 0.10
 HARD_MAX_STOP_USD = 10.0
@@ -148,9 +148,8 @@ def audit_symbol_spec(spec: dict[str, Any]) -> dict[str, Any]:
     tick_size = _finite(spec.get("trade_tick_size"), "trade_tick_size", minimum=1e-10)
     tick_value = _finite(spec.get("trade_tick_value"), "trade_tick_value", minimum=1e-10)
     point = _finite(spec.get("point"), "point", minimum=1e-10)
-    tick_multiplier = loss_per_lot(
-        {"trade_tick_size": tick_size, "trade_tick_value": tick_value, "point": point}, 1.0
-    )
+    # Compute raw tick multiplier directly so broker discrepancies are always audited.
+    tick_multiplier = tick_value / tick_size
 
     contract_raw = spec.get("trade_contract_size")
     contract_size: float | None = None

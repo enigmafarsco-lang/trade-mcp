@@ -41,6 +41,40 @@ def normalise_volume(volume: float, info: dict[str, Any]) -> tuple[float, list[s
     return round(vol, 8), warnings
 
 
+def cfd_contract_size_mismatch(info: dict[str, Any]) -> dict[str, Any] | None:
+    """Detect USD-profit CFD symbols where trade_contract_size exceeds tick_value/tick_size.
+
+    Example: Alpari MT5 ``XAUUSD_i`` reports ``trade_contract_size=100``,
+    ``currency_profit=USD``, ``trade_calc_mode="CFD Leverage"`` while reporting
+    ``trade_tick_size=0.01`` and ``trade_tick_value=0.1`` (10x smaller than real
+    CFD Leverage P&L). Returns mismatch details when conservative contract_size
+    override is required, otherwise None.
+    """
+    tick_size = _f(info.get("trade_tick_size")) or _f(info.get("point"), 0.0)
+    tick_value = _f(info.get("trade_tick_value"))
+    contract = _f(info.get("trade_contract_size"))
+    currency_profit = str(info.get("currency_profit") or "").strip().upper()
+    calc_mode = str(info.get("trade_calc_mode") or "").strip().lower()
+    if (
+        not all(math.isfinite(v) and v > 0 for v in (tick_size, tick_value, contract))
+        or currency_profit != "USD"
+    ):
+        return None
+    raw_per_unit = tick_value / tick_size
+    if not math.isfinite(raw_per_unit) or raw_per_unit <= 0:
+        return None
+    ratio = contract / raw_per_unit
+    threshold = 1.5 if "cfd" in calc_mode else 2.0
+    if ("cfd" in calc_mode or not calc_mode) and ratio >= threshold:
+        return {
+            "raw_tick_multiplier": round(raw_per_unit, 6),
+            "contract_size": contract,
+            "ratio": round(ratio, 4),
+            "trade_calc_mode": calc_mode or None,
+        }
+    return None
+
+
 def loss_per_lot(info: dict[str, Any], stop_distance: float) -> float:
     """Account-currency loss for one lot when price travels ``stop_distance``."""
     tick_size = _f(info.get("trade_tick_size")) or _f(info.get("point"), 0.0)
@@ -48,6 +82,9 @@ def loss_per_lot(info: dict[str, Any], stop_distance: float) -> float:
     if tick_size <= 0 or tick_value <= 0:
         contract = _f(info.get("trade_contract_size"), 100000.0)
         return abs(stop_distance) * contract
+    mismatch = cfd_contract_size_mismatch(info)
+    if mismatch is not None:
+        return abs(stop_distance) * mismatch["contract_size"]
     return abs(stop_distance) / tick_size * tick_value
 
 
@@ -225,6 +262,15 @@ def validate_order(
         add("warning", "no_tp", "no take profit set")
 
     if stop and entry:
+        mismatch = cfd_contract_size_mismatch(info)
+        if mismatch is not None:
+            add(
+                "warning",
+                "cfd_contract_size_override",
+                f"Using conservative trade_contract_size={mismatch['contract_size']:g} "
+                f"instead of tick_value/tick_size={mismatch['raw_tick_multiplier']:g} "
+                f"({mismatch['ratio']:g}x mismatch)",
+            )
         per_lot = loss_per_lot(info, abs(entry - stop))
         risk = per_lot * volume
         if not math.isfinite(risk) or per_lot <= 0:

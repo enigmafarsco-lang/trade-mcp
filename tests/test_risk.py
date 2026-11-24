@@ -1,5 +1,6 @@
 from trade_mcp.config import Config
 from trade_mcp.risk import (
+    cfd_contract_size_mismatch,
     has_blockers,
     loss_per_lot,
     lots_for_risk,
@@ -136,3 +137,47 @@ def test_blocked_sizing_explains_minimum_lot_cost():
     assert result['minimum_volume_loss'] == 20
     assert result['stop_distance'] == 20
     assert result['raw_volume'] == .0005
+
+
+def test_cfd_leverage_contract_size_guard_prevents_10x_oversizing():
+    # Alpari MT5 XAUUSD_i exact Specification: contract_size=100, profit_currency=USD,
+    # calc_mode="CFD Leverage", tick_size=0.01, tick_value=0.1 (10x understated).
+    alpari_gold = {
+        **GOLD,
+        "trade_tick_size": 0.01,
+        "trade_tick_value": 0.1,
+        "trade_contract_size": 100.0,
+        "currency_profit": "USD",
+        "trade_calc_mode": "CFD Leverage",
+    }
+    mismatch = cfd_contract_size_mismatch(alpari_gold)
+    assert mismatch is not None and mismatch["ratio"] == 10.0 and mismatch["contract_size"] == 100.0
+    assert loss_per_lot(alpari_gold, 1.0) == 100.0
+    assert loss_per_lot(alpari_gold, 10.0) == 1000.0
+
+    # Under $10 demo cash policy, 0.10 lot with $10 stop is $100 real loss -> MUST be blocked!
+    cfg = Config(allow_trading=True, demo_cash_policy=True, training_budget=1000, max_lot=0.1, max_risk_percent=1.0)
+    demo_account = {"balance": 1000.0, "equity": 1000.0, "margin_free": 900.0, "trade_mode": "demo", "currency": "USD"}
+    issues = validate_order(
+        cfg=cfg, info=alpari_gold, symbol="XAUUSD_i", side="buy",
+        volume=0.10, entry=3621.92, stop=3611.92, take_profit=3623.92, account=demo_account,
+    )
+    codes = {i["code"] for i in issues}
+    assert "cash_loss_limit" in codes
+    assert "cfd_contract_size_override" in codes
+
+    # Non-USD profit currency (USDJPY) or mild FX conversion (<1.5x) must NOT be overridden
+    usdjpy = {
+        "point": 0.001, "trade_tick_size": 0.001, "trade_tick_value": 0.65,
+        "trade_contract_size": 100000.0, "currency_profit": "JPY", "trade_calc_mode": "Forex",
+    }
+    assert cfd_contract_size_mismatch(usdjpy) is None
+    assert loss_per_lot(usdjpy, 1.0) == 650.0
+
+    eur_acct_gold = {
+        **GOLD, "trade_tick_value": 0.91, "trade_contract_size": 100.0,
+        "currency_profit": "USD", "trade_calc_mode": "CFD Leverage",
+    }
+    assert cfd_contract_size_mismatch(eur_acct_gold) is None
+    assert loss_per_lot(eur_acct_gold, 1.0) == 91.0
+

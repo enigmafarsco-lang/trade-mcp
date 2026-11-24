@@ -11,7 +11,7 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Any
 
 from .engines.technical import validate_ohlcv
-from .risk import loss_per_lot
+from .risk import cfd_contract_size_mismatch, loss_per_lot
 from .risk_manager import HARD_MAX_RISK_PERCENT
 from .training import risk_plan
 
@@ -301,9 +301,21 @@ def sizing_preview(plan: dict[str, Any], sizing: Any, cfg: Any) -> dict[str, Any
              for name in names}
     clean["trade_stops_level"] = _number(spec.get("trade_stops_level"), "trade_stops_level",
                                           minimum=0, maximum=1e12)
+    if spec.get("trade_contract_size") is not None:
+        clean["trade_contract_size"] = _number(spec.get("trade_contract_size"), "trade_contract_size",
+                                               minimum=MIN_PRICE, maximum=MAX_PRICE)
+    if spec.get("currency_profit") is not None:
+        clean["currency_profit"] = str(spec.get("currency_profit")).strip()
+    if spec.get("trade_calc_mode") is not None:
+        clean["trade_calc_mode"] = str(spec.get("trade_calc_mode")).strip()
     if clean["volume_min"] > clean["volume_max"] or not _on_grid(
             clean["volume_min"], clean["volume_step"]):
         raise ValueError("Inconsistent broker volume minimum, maximum or step")
+    mismatch = cfd_contract_size_mismatch(clean)
+    per_unit_multiplier = loss_per_lot(clean, 1.0)
+    effective_spec = dict(clean)
+    if mismatch is not None:
+        effective_spec["trade_tick_value"] = per_unit_multiplier * clean["trade_tick_size"]
     budget = _number(sizing.get("budget"), "budget", minimum=MIN_PRICE, maximum=MAX_PRICE)
     requested = _number(sizing.get("risk_percent"), "risk_percent", minimum=MIN_PRICE, maximum=100)
     max_risk = _number(cfg.max_risk_percent, "configured max risk", minimum=MIN_PRICE, maximum=100)
@@ -317,6 +329,16 @@ def sizing_preview(plan: dict[str, Any], sizing: Any, cfg: Any) -> dict[str, Any
         effective_budget = min(effective_budget, 10.0 * 100.0 / applied)
     money_limit = effective_budget * applied / 100.0
     gross_min_loss = loss_per_lot(clean, plan["risk_distance"]) * clean["volume_min"]
+    sizing_warnings = [
+        "No equity, margin, account type, current spread or order guards were checked.",
+        "The supplied commission and slippage are assumptions, not observed costs.",
+        "Entry is assumed already priced on the executable side; financing/swap is omitted.",
+    ]
+    if mismatch is not None:
+        sizing_warnings.append(
+            f"Conservative CFD contract_size override active: using {mismatch['contract_size']:g} "
+            f"instead of raw tick_value/tick_size={mismatch['raw_tick_multiplier']:g}."
+        )
     result: dict[str, Any] = {
         "executable": False, "execution_authorized": False,
         "requested_budget": budget, "hypothetical_budget_after_caps": effective_budget,
@@ -324,9 +346,7 @@ def sizing_preview(plan: dict[str, Any], sizing: Any, cfg: Any) -> dict[str, Any
         "hypothetical_risk_limit": money_limit, "configured_max_lot": max_lot,
         "gross_loss_at_stop_for_minimum_lot": gross_min_loss,
         "account_currency": "not verified", "account_and_broker_validated": False,
-        "warnings": ["No equity, margin, account type, current spread or order guards were checked.",
-                     "The supplied commission and slippage are assumptions, not observed costs.",
-                     "Entry is assumed already priced on the executable side; financing/swap is omitted."],
+        "warnings": sizing_warnings,
     }
     missing = [name for name in ("commission_per_lot", "slippage_price") if sizing.get(name) is None]
     if missing:
@@ -335,7 +355,7 @@ def sizing_preview(plan: dict[str, Any], sizing: Any, cfg: Any) -> dict[str, Any
     commission = _number(sizing["commission_per_lot"], "commission_per_lot", minimum=0,
                          maximum=MAX_PRICE)
     slip = _number(sizing["slippage_price"], "slippage_price", minimum=0, maximum=MAX_PRICE)
-    calculated = risk_plan(spec=clean, budget=effective_budget, risk_percent=applied,
+    calculated = risk_plan(spec=effective_spec, budget=effective_budget, risk_percent=applied,
                            distance=plan["risk_distance"], target=plan["reward_distance"],
                            commission=commission, slippage=slip)
     cap = float(_grid(_d(min(max_lot, clean["volume_max"])),
@@ -350,8 +370,8 @@ def sizing_preview(plan: dict[str, Any], sizing: Any, cfg: Any) -> dict[str, Any
         blockers.append("Stop or target is not on the supplied broker tick-size grid.")
     if plan["reward_distance"] < clean["trade_stops_level"] * clean["point"]:
         blockers.append("Target is closer than the supplied broker stop distance.")
-    per_lot_loss = (plan["risk_distance"] + slip) / clean["trade_tick_size"] * clean["trade_tick_value"] + commission
-    per_lot_profit = (plan["reward_distance"] - slip) / clean["trade_tick_size"] * clean["trade_tick_value"] - commission
+    per_lot_loss = (plan["risk_distance"] + slip) * per_unit_multiplier + commission
+    per_lot_profit = (plan["reward_distance"] - slip) * per_unit_multiplier - commission
     if candidate * per_lot_loss > money_limit + 1e-8:
         blockers.append("Estimated loss exceeds the hypothetical risk limit.")
     volume = candidate if not blockers else 0.0

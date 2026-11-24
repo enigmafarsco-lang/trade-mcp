@@ -539,10 +539,29 @@ class NativeBridge:
                         "trade_contract_size": "default"}[field]
             provenance[field] = {"source": "reported" if valid else fallback,
                                  "reported_value": value if value is not None and math.isfinite(value) else None}
+        tick_value_val = as_float(find(record, "trade_tick_value", "tick_value"))
+        tick_size_val = as_float(find(record, "trade_tick_size", "tick_size")) or point
+        contract_size_val = as_float(find(record, "trade_contract_size", "contract_size"), 1.0)
+        currency_profit_val = as_text(find(record, "currency_profit", "profit_currency"))
+        trade_calc_mode_val = as_text(find(record, "trade_calc_mode", "calc_mode", "calculation_mode"))
+        warnings_list: list[str] = []
+        if provenance["trade_tick_size"]["source"] != "reported":
+            warnings_list.append("Tick size was substituted from point; verify broker specification before trading.")
+        if (
+            tick_size_val > 0
+            and tick_value_val > 0
+            and contract_size_val > 0
+            and currency_profit_val.upper() == "USD"
+            and (not trade_calc_mode_val or "cfd" in trade_calc_mode_val.lower())
+            and contract_size_val / (tick_value_val / tick_size_val) >= (1.5 if "cfd" in trade_calc_mode_val.lower() else 2.0)
+        ):
+            warnings_list.append(
+                f"trade_contract_size ({contract_size_val:g}) exceeds tick_value/tick_size "
+                f"({tick_value_val / tick_size_val:g}); risk calculations conservatively use contract_size."
+            )
         return {
             "sizing_field_provenance": provenance,
-            "sizing_metadata_warning": ("Tick size was substituted from point; verify broker specification before trading."
-                                        if provenance["trade_tick_size"]["source"] != "reported" else None),
+            "sizing_metadata_warning": " ".join(warnings_list) if warnings_list else None,
             "name": name,
             "symbol": name,
             "description": as_text(find(record, "description", "display_name")),
@@ -554,9 +573,10 @@ class NativeBridge:
             "spread_float": 0.0,
             "trade_stops_level": as_int(find(record, "trade_stops_level", "stops_level")),
             "trade_freeze_level": as_int(find(record, "trade_freeze_level", "freeze_level")),
-            "trade_tick_value": as_float(find(record, "trade_tick_value", "tick_value")),
-            "trade_tick_size": as_float(find(record, "trade_tick_size", "tick_size")) or point,
-            "trade_contract_size": as_float(find(record, "trade_contract_size", "contract_size"), 1.0),
+            "trade_tick_value": tick_value_val,
+            "trade_tick_size": tick_size_val,
+            "trade_contract_size": contract_size_val,
+            "trade_calc_mode": trade_calc_mode_val,
             "volume_min": as_float(find(record, "volume_min", "min_volume"), 0.01),
             "volume_max": as_float(find(record, "volume_max", "max_volume"), 100.0),
             "volume_step": as_float(find(record, "volume_step", "volume_step_size"), 0.01),
@@ -565,7 +585,7 @@ class NativeBridge:
             "bid": bid,
             "ask": ask,
             "currency_base": as_text(find(record, "currency_base", "base_currency")),
-            "currency_profit": as_text(find(record, "currency_profit", "profit_currency")),
+            "currency_profit": currency_profit_val,
             "currency_margin": as_text(find(record, "currency_margin", "margin_currency")),
             "visible": as_bool(find(record, "visible", "in_market_watch", "selected"), True),
             "trade_mode": as_text(find(record, "trade_mode"), "full"),

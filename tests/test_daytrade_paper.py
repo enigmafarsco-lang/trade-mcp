@@ -503,6 +503,8 @@ def test_replay_and_guarded_paper_cli_mock_end_to_end(tmp_path, monkeypatch, cap
     paper_cli = _load_cli()
     monkeypatch.setattr(paper_cli, "ROOT", tmp_path)
     monkeypatch.setattr(replay_cli, "_save_private_json", paper_cli._save_private_json)
+    monkeypatch.setenv("TRADE_MCP_ALLOW_TRADING", "false")
+    monkeypatch.setenv("TRADE_MCP_PAPER_TRADING", "false")
 
     rc = replay_cli.main(["--mock", "--targets", "2,4", "--out", "logs/replay-smoke.json"])
     assert rc == 0
