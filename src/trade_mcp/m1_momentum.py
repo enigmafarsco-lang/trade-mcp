@@ -412,6 +412,7 @@ def htf_allows_signal(
     h1: HTFContext | None,
     min_m5_adx: float = 18.0,
     min_mid_adx: float | None = None,
+    max_mid_adx: float | None = None,
 ) -> tuple[bool, str | None]:
     """Check whether strictly closed HTF context permits an impulse entry.
 
@@ -444,11 +445,13 @@ def htf_allows_signal(
 
     if m15 is None or m15.ema_slow is None:
         return False, f"htf_{m_lbl}_unavailable"
-    if min_mid_adx is not None and min_mid_adx > 0:
+    if (min_mid_adx is not None and min_mid_adx > 0) or (max_mid_adx is not None and max_mid_adx > 0):
         if m15.adx is None:
             return False, f"htf_{m_lbl}_adx_unavailable"
-        if m15.adx < min_mid_adx:
+        if min_mid_adx is not None and min_mid_adx > 0 and m15.adx < min_mid_adx:
             return False, f"htf_{m_lbl}_low_adx_chop"
+        if max_mid_adx is not None and max_mid_adx > 0 and m15.adx > max_mid_adx:
+            return False, f"htf_{m_lbl}_exhausted_adx"
     if side == "buy" and m15.close < m15.ema_slow:
         return False, f"htf_{m_lbl}_bias_mismatch"
     if side == "sell" and m15.close > m15.ema_slow:
@@ -526,6 +529,7 @@ def replay_m1_momentum(
     commission_per_lot: float = 0.0,
     min_m5_adx: float = 18.0,
     min_mid_adx: float | None = None,
+    max_mid_adx: float | None = None,
     trail_arm_usd: float = 1.5,
     min_decel_profit_usd: float = 1.0,
     fast_invalidation_cut: bool = True,
@@ -815,7 +819,7 @@ def replay_m1_momentum(
                     h1 = lookup_htf(h1_t, h1_ctx, int(t))
                     allowed, deny_reason = htf_allows_signal(
                         side=sig["side"], htf_filter=htf_filter, m5=m5, m15=m15, h1=h1,
-                        min_m5_adx=min_m5_adx, min_mid_adx=min_mid_adx,
+                        min_m5_adx=min_m5_adx, min_mid_adx=min_mid_adx, max_mid_adx=max_mid_adx,
                     )
                     if not allowed:
                         _refuse(str(deny_reason))

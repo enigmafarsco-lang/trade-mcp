@@ -414,6 +414,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
             if path == "/api/journal":
                 return self._json(self._journal())
+            if path == "/api/daytrade/m5-live-signal":
+                return self._json(self._daytrade_m5_live_signal(query))
             self._json({"ok": False, "error": "not_found"}, 404)
         except Exception as exc:  # noqa: BLE001 - always answer with JSON
             self._error(exc)
@@ -428,7 +430,8 @@ class Handler(BaseHTTPRequestHandler):
         daytrade_paths = {"/api/daytrade/entry", "/api/daytrade/plan", "/api/daytrade/history",
                           "/api/daytrade/time-machine", "/api/daytrade/alerts", "/api/daytrade/scan",
                           "/api/daytrade/alert-rules", "/api/daytrade/review", "/api/daytrade/news",
-                          "/api/daytrade/stock-facts", "/api/daytrade/stock-disclosures"}
+                          "/api/daytrade/stock-facts", "/api/daytrade/stock-disclosures",
+                          "/api/daytrade/m5-signal"}
         if path in daytrade_paths:
             try:
                 length = int(self.headers.get("Content-Length") or 0)
@@ -438,6 +441,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": False, "error": "daytrade_body_too_large"}, 413)
         payload = self._body()
         try:
+            if path == "/api/daytrade/m5-signal":
+                from .gold_lab import evaluate_live_m5_snapshot
+                return self._json(evaluate_live_m5_snapshot(
+                    payload.get("m5") or [],
+                    symbol=str(payload.get("symbol") or self.state.cfg.default_symbol),
+                    bid=float(payload.get("bid") or 0.0),
+                    ask=float(payload.get("ask") or 0.0),
+                    m15_bars=payload.get("m15"),
+                    h1_bars=payload.get("h1"),
+                    h4_bars=payload.get("h4"),
+                ))
             if path in daytrade_paths:
                 from .daytrade import run_request
                 operation = path.rsplit("/", 1)[-1]
@@ -966,6 +980,52 @@ class Handler(BaseHTTPRequestHandler):
             resolved = self.state.app.mt5.resolve_symbol(symbol)
             bars = self.state.app.mt5.candles(resolved, tf, count)
         return {"ok": True, "symbol": resolved, "timeframe": tf, "bars": bars}
+
+    def _daytrade_m5_live_signal(self, query: dict[str, str]) -> dict[str, Any]:
+        """Strictly read-only multi-engine M5/M15/H1/H4 snapshot for 5-min n8n workflows."""
+        from .gold_lab import evaluate_live_m5_snapshot
+        from .m1_momentum import resample_bars_to_tf
+
+        cfg = self.state.cfg
+        symbol = query.get("symbol") or cfg.default_symbol
+
+        def _to_rows(raw_bars: list[dict[str, Any]]) -> list[list[float]]:
+            # Drop the last (potentially still-forming) candle so all signals are strictly closed.
+            closed = raw_bars[:-1] if len(raw_bars) > 1 else raw_bars
+            out: list[list[float]] = []
+            for b in closed:
+                ts = b.get("time_utc") if b.get("time_utc") is not None else b.get("time")
+                if ts is None:
+                    continue
+                out.append([
+                    float(ts),
+                    float(b.get("open") or 0.0),
+                    float(b.get("high") or 0.0),
+                    float(b.get("low") or 0.0),
+                    float(b.get("close") or 0.0),
+                    float(b.get("tick_volume") or 0.0),
+                ])
+            return out
+
+        with self.state.lock:
+            resolved = self.state.app.mt5.resolve_symbol(symbol)
+            tick = self.state.app.mt5.tick(resolved)
+            m5_raw = self.state.app.mt5.candles(resolved, "M5", 120)
+            m15_raw = self.state.app.mt5.candles(resolved, "M15", 120)
+            h1_raw = self.state.app.mt5.candles(resolved, "H1", 240)
+        m5_rows = _to_rows(m5_raw)
+        m15_rows = _to_rows(m15_raw)
+        h1_rows = _to_rows(h1_raw)
+        h4_rows = resample_bars_to_tf(h1_rows, src_seconds=3600, dst_seconds=14400) if h1_rows else None
+        return evaluate_live_m5_snapshot(
+            m5_rows,
+            symbol=resolved,
+            bid=float(tick.get("bid") or 0.0),
+            ask=float(tick.get("ask") or 0.0),
+            m15_bars=m15_rows or None,
+            h1_bars=h1_rows or None,
+            h4_bars=h4_rows or None,
+        )
 
     def _journal(self) -> dict[str, Any]:
         return {
