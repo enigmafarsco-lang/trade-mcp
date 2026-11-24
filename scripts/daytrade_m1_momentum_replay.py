@@ -45,13 +45,13 @@ from trade_mcp.daytrade_paper import (  # noqa: E402
     HARD_MAX_LOT,
     HARD_MAX_STOP_USD,
     audit_symbol_spec,
-    contiguous_m1_segments,
     resolve_pricing_basis,
 )
 from trade_mcp.m1_momentum import (  # noqa: E402
     clean_ohlcv_bars,
     replay_m1_momentum_matrix,
     resample_m1_to_tf,
+    split_contiguous_m1,
 )
 from trade_mcp.mcpclient import McpError  # noqa: E402
 
@@ -240,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         spec_audit = audit_symbol_spec(spec)
         primary_basis, primary_mult = resolve_pricing_basis(spec, "auto")
-        segments = contiguous_m1_segments(m1)
+        segments = split_contiguous_m1(m1)
 
         matrix = replay_m1_momentum_matrix(
             m1,

@@ -10,14 +10,19 @@ from pathlib import Path
 import pytest
 
 from trade_mcp.m1_momentum import (
+    DEFAULT_VALIDATION_CANDIDATES,
     adx_series,
     atr_series,
     build_htf_index,
+    compute_htf_coverage,
     detect_m1_impulse,
     htf_allows_signal,
     lookup_htf,
     replay_m1_momentum,
     replay_m1_momentum_matrix,
+    split_m1_weekly_windows,
+    summarize_sessions_utc,
+    validate_m1_momentum_candidates,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -201,3 +206,135 @@ def test_cli_mock_multiday_replay_and_no_execution_imports(tmp_path, monkeypatch
     )
     assert len(rows) == 10
     assert any(r["max_legs"] == 2 for r in rows)
+
+
+def _load_validate_cli():
+    spec = importlib.util.spec_from_file_location(
+        "daytrade_m1_momentum_validate", ROOT / "scripts/daytrade_m1_momentum_validate.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_pullback_or_2bar_causal_fallback_when_impulse_runs_away():
+    base = 1700000040
+    # 16 calm bars (~$1 range)
+    bars = [[float(base + i * 60), 3600.0, 3600.5, 3599.5, 3600.0, 100.0] for i in range(16)]
+    # Bar 16: bullish impulse ($2.00 range, body $1.70 -> pullback trigger at 3601.8 - 0.51 = 3601.29)
+    bars.append([float(base + 16 * 60), 3600.1, 3602.0, 3600.0, 3601.8, 250.0])
+    # Bar 17: runs away upward WITHOUT pulling back to 3601.29 (low is 3601.70) -> pure pullback misses it!
+    bars.append([float(base + 17 * 60), 3601.8, 3603.4, 3601.7, 3603.2, 260.0])
+    # Bar 18..20: continues up then decelerates on bar 20 -> pullback_or_2bar catches bar 18 open via 2-bar fallback!
+    bars.append([float(base + 18 * 60), 3603.2, 3606.0, 3603.1, 3605.8, 240.0])
+    bars.append([float(base + 19 * 60), 3605.8, 3608.5, 3605.7, 3608.2, 240.0])
+    bars.append([float(base + 20 * 60), 3608.2, 3608.4, 3607.0, 3607.2, 200.0])
+
+    pb_only = replay_m1_momentum(
+        bars, spec=ALPARI_SPEC, spread_price=0.34, htf_filter="none",
+        entry_mode="impulse_pullback", exit_mode="decel_and_trail",
+        stop_usd=5.0, max_lot=0.01,
+    )
+    hybrid = replay_m1_momentum(
+        bars, spec=ALPARI_SPEC, spread_price=0.34, htf_filter="none",
+        entry_mode="pullback_or_2bar", exit_mode="decel_and_trail",
+        stop_usd=5.0, max_lot=0.01,
+    )
+    # Bar 17 missed the 30% pullback; hybrid catches the runaway via 2-bar fallback on bar 18 open!
+    assert hybrid["trades_closed"] >= 1
+    assert hybrid["realized_pnl_usd"] > pb_only["realized_pnl_usd"]
+    assert hybrid["refusal_counts"].get("pullback_unfilled", 0) >= 1
+
+
+def test_weekly_splitter_htf_coverage_and_validation_gates():
+    cli = _load_validate_cli()
+    spec, quote, m1, m5, m15, h1 = cli._mock_multiweek()
+
+    windows = split_m1_weekly_windows(m1, window_days=7, min_bars_per_window=500)
+    assert len(windows) == 4
+    assert [w["week"] for w in windows] == ["W1", "W2", "W3", "W4"]
+    assert windows[0]["start_epoch"] < windows[-1]["start_epoch"]
+
+    htf_indices = (
+        build_htf_index(m5, period_seconds=300, ema_fast=9, ema_slow=21),
+        build_htf_index(m15, period_seconds=900, ema_fast=9, ema_slow=21),
+        build_htf_index(h1, period_seconds=3600, ema_fast=20, ema_slow=50),
+    )
+    cov = compute_htf_coverage(m1, htf_indices=htf_indices)
+    assert cov["m5_pct"] == 100.0 and cov["m15_pct"] == 100.0 and cov["h1_pct"] == 100.0
+
+    # Session summary sanity check
+    sess = summarize_sessions_utc([
+        {"opened_at": 1790035200 + 8 * 3600, "net_pnl_usd": 4.0},
+        {"opened_at": 1790035200 + 13 * 3600, "net_pnl_usd": -2.0},
+    ])
+    assert sess["london_07_12"]["trades"] == 1 and sess["london_07_12"]["pnl_usd"] == 4.0
+    assert sess["ny_overlap_12_16"]["trades"] == 1 and sess["ny_overlap_12_16"]["pnl_usd"] == -2.0
+
+    val = validate_m1_momentum_candidates(
+        m1, spec=spec, spread_price=round(quote["ask"] - quote["bid"], 2),
+        m5_bars=m5, m15_bars=m15, h1_bars=h1, max_lot=0.02,
+    )
+    assert val["ok"] and val["orders_submitted"] == 0
+    assert len(val["candidates"]) == len(DEFAULT_VALIDATION_CANDIDATES) == 8
+    c0 = val["candidates"][0]
+    assert c0["weekly_walkforward"]["total_weeks"] == 4
+    assert set(c0["cost_stress"].keys()) == {
+        "base_live_spread", "stress_spread_050", "stress_spread_050_comm5", "stress_spread_070_comm7"
+    }
+    assert len(c0["adx_sensitivity"]["sweeps"]) == 4
+    assert "overall_pass" in c0 and "gates" in c0
+    assert val["verdict"]["status"] in {
+        "PASS_READY_FOR_BOUNDED_LIVE_PAPER",
+        "FAIL_DO_NOT_PROMOTE_TO_DEMO_OR_LIVE",
+    }
+
+
+def test_validate_cli_mock_4week_and_no_execution_imports(tmp_path, monkeypatch, capsys):
+    cli = _load_validate_cli()
+    paper_spec = importlib.util.spec_from_file_location(
+        "daytrade_m1_paper_window", ROOT / "scripts/daytrade_m1_paper_window.py"
+    )
+    paper_cli = importlib.util.module_from_spec(paper_spec)
+    assert paper_spec and paper_spec.loader
+    paper_spec.loader.exec_module(paper_cli)
+
+    monkeypatch.setattr(paper_cli, "ROOT", tmp_path)
+    monkeypatch.setattr(cli, "_save_private_json", paper_cli._save_private_json)
+    monkeypatch.setenv("TRADE_MCP_ALLOW_TRADING", "false")
+    monkeypatch.setenv("TRADE_MCP_PAPER_TRADING", "false")
+
+    rc = cli.main(["--mock", "--out", "logs/m1-validate-smoke.json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] and payload["paper"] and payload["orders_submitted"] == 0
+    assert payload["parameters"]["pricing_basis"] == "contract_size"
+    assert payload["parameters"]["effective_multiplier"] == 100.0
+    assert payload["parameters"]["max_legs"] == 1
+    assert payload["history"]["htf_coverage_pct"]["h1_pct"] == 100.0
+    assert len(payload["history"]["weekly_windows"]) == 4
+    assert len(payload["candidates"]) == 8
+    out_file = tmp_path / "logs" / "m1-validate-smoke.json"
+    assert stat.S_IMODE(out_file.stat().st_mode) == 0o600
+
+    script_text = (ROOT / "scripts/daytrade_m1_momentum_validate.py").read_text(encoding="utf-8")
+    assert "execution" not in script_text.replace("execution_authorized", "")
+    assert "propose_open" not in script_text and "trade_send_market_order" not in script_text
+
+
+def test_replay_handles_over_10k_m1_bars_for_30day_validation():
+    base = 1790000040
+    # 11,000 contiguous M1 bars (> daytrade.m1_rows 10,000 cap)
+    bars = [
+        [float(base + i * 60), 3600.0, 3600.6, 3599.4, 3600.1, 100.0]
+        for i in range(11_000)
+    ]
+    res = replay_m1_momentum(
+        bars, spec=ALPARI_SPEC, spread_price=0.34, htf_filter="none",
+        entry_mode="impulse_close", exit_mode="decel_and_trail",
+        stop_usd=5.0, max_lot=0.01,
+    )
+    assert res["ok"] and res["orders_submitted"] == 0
+
+

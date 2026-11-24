@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 from bisect import bisect_right
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from .daytrade import M1_SECONDS
@@ -18,7 +19,6 @@ from .daytrade_paper import (
     HARD_MAX_LOT,
     HARD_MAX_STOP_USD,
     audit_symbol_spec,
-    contiguous_m1_segments,
     resolve_pricing_basis,
 )
 from .risk import round_to_step
@@ -59,6 +59,20 @@ def clean_ohlcv_bars(bars: list[list[float]]) -> list[list[float]]:
             continue
         seen[t] = [float(t), o, h, low, c, max(0.0, v)]
     return [seen[k] for k in sorted(seen)]
+
+
+def split_contiguous_m1(m1_bars: list[list[float]]) -> list[list[list[float]]]:
+    """Split arbitrarily long M1 OHLCV history into strictly contiguous 60s segments."""
+    clean = clean_ohlcv_bars(m1_bars)
+    if not clean:
+        return []
+    segments: list[list[list[float]]] = [[clean[0]]]
+    for row in clean[1:]:
+        if int(row[0]) - int(segments[-1][-1][0]) == M1_SECONDS:
+            segments[-1].append(row)
+        else:
+            segments.append([row])
+    return segments
 
 
 def resample_m1_to_tf(m1_bars: list[list[float]], period_seconds: int) -> list[list[float]]:
@@ -465,6 +479,12 @@ def replay_m1_momentum(
     leverage: float = 500.0,
     max_margin_usd: float = 25.0,
     pricing_basis: str = "auto",
+    htf_indices: tuple[
+        tuple[list[int], list[HTFContext]],
+        tuple[list[int], list[HTFContext]],
+        tuple[list[int], list[HTFContext]],
+    ] | None = None,
+    include_trades: bool = False,
 ) -> dict[str, Any]:
     """Replay M1 acceleration + HTF filter + uncapped deceleration/trailing exits.
 
@@ -472,6 +492,8 @@ def replay_m1_momentum(
     updates or deceleration exits; pullbacks that touch stop on the entry bar count
     as stop losses. Zero lookahead across M1, M5, M15, and H1.
     """
+    if entry_mode not in ("impulse_close", "impulse_2bar", "impulse_pullback", "pullback_or_2bar"):
+        raise ValueError("entry_mode must be impulse_close, impulse_2bar, impulse_pullback, or pullback_or_2bar")
     if exit_mode not in ("decel_and_trail", "trail_only"):
         raise ValueError("exit_mode must be 'decel_and_trail' or 'trail_only'")
     spread_price = _finite(spread_price, "spread_price", minimum=0.0)
@@ -489,16 +511,19 @@ def replay_m1_momentum(
     tick_size = _finite(spec.get("trade_tick_size"), "trade_tick_size", minimum=1e-10)
     contract_size = float(spec_audit.get("trade_contract_size") or multiplier)
 
-    segments = contiguous_m1_segments(m1_bars)
+    segments = split_contiguous_m1(m1_bars)
     usable = [s for s in segments if len(s) >= 20]
 
-    # Build strictly closed HTF indices (use explicit broker bars when supplied, else resample M1).
-    m5_src = m5_bars if m5_bars else resample_m1_to_tf(m1_bars, 300)
-    m15_src = m15_bars if m15_bars else resample_m1_to_tf(m1_bars, 900)
-    h1_src = h1_bars if h1_bars else resample_m1_to_tf(m1_bars, 3600)
-    m5_t, m5_ctx = build_htf_index(m5_src, period_seconds=300, ema_fast=9, ema_slow=21)
-    m15_t, m15_ctx = build_htf_index(m15_src, period_seconds=900, ema_fast=9, ema_slow=21)
-    h1_t, h1_ctx = build_htf_index(h1_src, period_seconds=3600, ema_fast=20, ema_slow=50)
+    # Build strictly closed HTF indices (or reuse precomputed indices for fast walk-forward sweeps).
+    if htf_indices is not None:
+        (m5_t, m5_ctx), (m15_t, m15_ctx), (h1_t, h1_ctx) = htf_indices
+    else:
+        m5_src = m5_bars if m5_bars else resample_m1_to_tf(m1_bars, 300)
+        m15_src = m15_bars if m15_bars else resample_m1_to_tf(m1_bars, 900)
+        h1_src = h1_bars if h1_bars else resample_m1_to_tf(m1_bars, 3600)
+        m5_t, m5_ctx = build_htf_index(m5_src, period_seconds=300, ema_fast=9, ema_slow=21)
+        m15_t, m15_ctx = build_htf_index(m15_src, period_seconds=900, ema_fast=9, ema_slow=21)
+        h1_t, h1_ctx = build_htf_index(h1_src, period_seconds=3600, ema_fast=20, ema_slow=50)
 
     open_legs: list[MomentumLeg] = []
     closed_trades: list[dict[str, Any]] = []
@@ -553,6 +578,7 @@ def replay_m1_momentum(
             "exit_reason": reason,
             "net_pnl_usd": round(net, 4),
             "entry_spread_usd": round(leg.entry_spread_usd, 4),
+            "opened_at": leg.opened_at,
             "hold_seconds": round(max(0.0, closed_at - leg.opened_at), 2),
         })
 
@@ -621,6 +647,7 @@ def replay_m1_momentum(
     last_bar: list[float] | None = None
     for seg in usable:
         atr_vals = atr_series(seg, period=14)
+        pending_unfilled_pb_time: int | None = None
         for i in range(15, len(seg)):
             bar = seg[i]
             t, o, h, low, c = bar[0], bar[1], bar[2], bar[3], bar[4]
@@ -628,9 +655,22 @@ def replay_m1_momentum(
             atr_now = atr_vals[i] or atr_vals[i - 1] or max(h - low, tick_size)
 
             # 1) Detect M1 impulse from strictly closed bars <= i-1 (zero lookahead).
-            sig = detect_m1_impulse(
-                seg, atr_vals, i, entry_mode=entry_mode, spread_price=spread_price,
-            )
+            sig: dict[str, Any] | None = None
+            if entry_mode == "pullback_or_2bar":
+                if pending_unfilled_pb_time is not None and pending_unfilled_pb_time == int(seg[i - 2][0]):
+                    sig = detect_m1_impulse(
+                        seg, atr_vals, i, entry_mode="impulse_2bar", spread_price=spread_price,
+                    )
+                pending_unfilled_pb_time = None
+                if sig is None:
+                    sig = detect_m1_impulse(
+                        seg, atr_vals, i, entry_mode="impulse_pullback", spread_price=spread_price,
+                    )
+            else:
+                sig = detect_m1_impulse(
+                    seg, atr_vals, i, entry_mode=entry_mode, spread_price=spread_price,
+                )
+
             opened_this_bar: MomentumLeg | None = None
             if sig is not None:
                 signals_detected += 1
@@ -660,7 +700,7 @@ def replay_m1_momentum(
                         _refuse("position_already_open")
 
                     if can_enter:
-                        if entry_mode == "impulse_pullback" and sig["limit_trigger_bid"] is not None:
+                        if sig["limit_trigger_bid"] is not None:
                             trig = float(sig["limit_trigger_bid"])
                             filled = (low <= trig) if sig["side"] == "buy" else (h >= trig)
                             if filled:
@@ -670,6 +710,8 @@ def replay_m1_momentum(
                                 )
                             else:
                                 _refuse("pullback_unfilled")
+                                if entry_mode == "pullback_or_2bar":
+                                    pending_unfilled_pb_time = int(sig["bar_time"])
                         else:
                             entry_px = (o + spread_price) if sig["side"] == "buy" else o
                             opened_this_bar = _try_open_leg(
@@ -788,7 +830,7 @@ def replay_m1_momentum(
         r = str(t["exit_reason"])
         exit_reasons[r] = exit_reasons.get(r, 0) + 1
 
-    return {
+    out: dict[str, Any] = {
         "ok": True,
         "paper": True,
         "executable": False,
@@ -828,6 +870,9 @@ def replay_m1_momentum(
         "exit_reasons": exit_reasons,
         "refusal_counts": refusals,
     }
+    if include_trades:
+        out["trades"] = closed_trades
+    return out
 
 
 def replay_m1_momentum_matrix(
@@ -845,6 +890,15 @@ def replay_m1_momentum_matrix(
     leverage: float = 500.0,
 ) -> list[dict[str, Any]]:
     """Run a structured comparison grid answering entry, HTF, exit, and pyramiding questions."""
+    m5_src = m5_bars if m5_bars else resample_m1_to_tf(m1_bars, 300)
+    m15_src = m15_bars if m15_bars else resample_m1_to_tf(m1_bars, 900)
+    h1_src = h1_bars if h1_bars else resample_m1_to_tf(m1_bars, 3600)
+    htf_indices = (
+        build_htf_index(m5_src, period_seconds=300, ema_fast=9, ema_slow=21),
+        build_htf_index(m15_src, period_seconds=900, ema_fast=9, ema_slow=21),
+        build_htf_index(h1_src, period_seconds=3600, ema_fast=20, ema_slow=50),
+    )
+
     configs: list[tuple[str, dict[str, Any]]] = [
         # 1) Compare entry points under M5+M15 filter + deceleration & trail
         ("impulse_close | htf=none | decel+trail | 1-leg",
@@ -877,9 +931,7 @@ def replay_m1_momentum_matrix(
             spec=spec,
             symbol=symbol,
             spread_price=spread_price,
-            m5_bars=m5_bars,
-            m15_bars=m15_bars,
-            h1_bars=h1_bars,
+            htf_indices=htf_indices,
             stop_usd=stop_usd,
             max_lot=max_lot,
             commission_per_lot=commission_per_lot,
@@ -888,3 +940,426 @@ def replay_m1_momentum_matrix(
         )
         rows.append({"scenario": label, **res})
     return rows
+
+
+def _iso_utc(epoch: int | float) -> str:
+    return datetime.fromtimestamp(float(epoch), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def split_m1_weekly_windows(
+    m1_bars: list[list[float]],
+    *,
+    window_days: int = 7,
+    min_bars_per_window: int = 500,
+) -> list[dict[str, Any]]:
+    """Split sorted M1 bars into non-overlapping chronological weekly slices.
+
+    Slices are anchored backward from the newest bar so the most recent slice always
+    covers a complete ``window_days`` calendar span, then returned oldest -> newest.
+    Partial edge fragments with fewer than ``min_bars_per_window`` bars are excluded.
+    """
+    clean = clean_ohlcv_bars(m1_bars)
+    if not clean:
+        return []
+    win_sec = window_days * 86400
+    last_ts = int(clean[-1][0])
+    first_ts = int(clean[0][0])
+
+    raw_slices: list[list[list[float]]] = []
+    end_ts = last_ts + M1_SECONDS
+    while end_ts > first_ts:
+        start_ts = end_ts - win_sec
+        chunk = [b for b in clean if start_ts <= int(b[0]) < end_ts]
+        if len(chunk) >= min_bars_per_window:
+            raw_slices.append(chunk)
+        end_ts = start_ts
+
+    raw_slices.reverse()
+    windows: list[dict[str, Any]] = []
+    for idx, chunk in enumerate(raw_slices, start=1):
+        s_ep = int(chunk[0][0])
+        e_ep = int(chunk[-1][0])
+        windows.append({
+            "week": f"W{idx}",
+            "start_epoch": s_ep,
+            "end_epoch": e_ep,
+            "start_utc": _iso_utc(s_ep),
+            "end_utc": _iso_utc(e_ep),
+            "m1_bars": len(chunk),
+            "bars": chunk,
+        })
+    return windows
+
+
+def compute_htf_coverage(
+    m1_bars: list[list[float]],
+    *,
+    htf_indices: tuple[
+        tuple[list[int], list[HTFContext]],
+        tuple[list[int], list[HTFContext]],
+        tuple[list[int], list[HTFContext]],
+    ],
+) -> dict[str, float]:
+    """Measure what % of M1 timestamps have fully warmed-up causal M5/M15/H1 indicators."""
+    clean = clean_ohlcv_bars(m1_bars)
+    if not clean:
+        return {"m5_pct": 0.0, "m15_pct": 0.0, "h1_pct": 0.0}
+    (m5_t, m5_ctx), (m15_t, m15_ctx), (h1_t, h1_ctx) = htf_indices
+    n = len(clean)
+    ok_m5 = ok_m15 = ok_h1 = 0
+    for row in clean:
+        ts = int(row[0])
+        c5 = lookup_htf(m5_t, m5_ctx, ts)
+        if c5 is not None and c5.adx is not None and c5.ema_fast is not None and c5.ema_slow is not None:
+            ok_m5 += 1
+        c15 = lookup_htf(m15_t, m15_ctx, ts)
+        if c15 is not None and c15.ema_slow is not None:
+            ok_m15 += 1
+        ch1 = lookup_htf(h1_t, h1_ctx, ts)
+        if ch1 is not None and ch1.ema_fast is not None and ch1.ema_slow is not None:
+            ok_h1 += 1
+    return {
+        "m5_pct": round(100.0 * ok_m5 / n, 2),
+        "m15_pct": round(100.0 * ok_m15 / n, 2),
+        "h1_pct": round(100.0 * ok_h1 / n, 2),
+    }
+
+
+def _session_bucket_utc(epoch: float) -> str:
+    hr = datetime.fromtimestamp(float(epoch), tz=timezone.utc).hour
+    if 0 <= hr < 7:
+        return "asia_00_07"
+    if 7 <= hr < 12:
+        return "london_07_12"
+    if 12 <= hr < 16:
+        return "ny_overlap_12_16"
+    if 16 <= hr < 21:
+        return "ny_late_16_21"
+    return "rollover_21_24"
+
+
+def summarize_sessions_utc(trades: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Aggregate closed trades by UTC session window (diagnostic only)."""
+    buckets: dict[str, list[dict[str, Any]]] = {
+        "asia_00_07": [],
+        "london_07_12": [],
+        "ny_overlap_12_16": [],
+        "ny_late_16_21": [],
+        "rollover_21_24": [],
+    }
+    for tr in trades:
+        b = _session_bucket_utc(float(tr.get("opened_at", 0.0)))
+        buckets[b].append(tr)
+    out: dict[str, dict[str, Any]] = {}
+    for name, rows in buckets.items():
+        if not rows:
+            out[name] = {"trades": 0, "win_rate_pct": None, "pnl_usd": 0.0, "profit_factor": None}
+            continue
+        wins = [r for r in rows if r["net_pnl_usd"] > 0]
+        losses = [r for r in rows if r["net_pnl_usd"] < 0]
+        gw = sum(r["net_pnl_usd"] for r in wins)
+        gl = abs(sum(r["net_pnl_usd"] for r in losses))
+        out[name] = {
+            "trades": len(rows),
+            "win_rate_pct": round(100.0 * len(wins) / len(rows), 2),
+            "pnl_usd": round(sum(r["net_pnl_usd"] for r in rows), 4),
+            "profit_factor": round(gw / gl, 3) if gl > 0 else None,
+        }
+    return out
+
+
+DEFAULT_VALIDATION_CANDIDATES: list[dict[str, Any]] = [
+    {
+        "id": "C1",
+        "label": "pullback | M5+M15 | decel+trail | $5",
+        "entry_mode": "impulse_pullback",
+        "htf_filter": "m5_m15",
+        "exit_mode": "decel_and_trail",
+        "stop_usd": 5.0,
+    },
+    {
+        "id": "C2",
+        "label": "pullback | M5+M15+H1 | decel+trail | $5",
+        "entry_mode": "impulse_pullback",
+        "htf_filter": "m5_m15_h1",
+        "exit_mode": "decel_and_trail",
+        "stop_usd": 5.0,
+    },
+    {
+        "id": "C3",
+        "label": "close | M5+M15+H1 | decel+trail | $5",
+        "entry_mode": "impulse_close",
+        "htf_filter": "m5_m15_h1",
+        "exit_mode": "decel_and_trail",
+        "stop_usd": 5.0,
+    },
+    {
+        "id": "C4",
+        "label": "pullback_or_2bar | M5+M15+H1 | decel+trail | $5",
+        "entry_mode": "pullback_or_2bar",
+        "htf_filter": "m5_m15_h1",
+        "exit_mode": "decel_and_trail",
+        "stop_usd": 5.0,
+    },
+    {
+        "id": "C5",
+        "label": "2bar | M5+M15 | decel+trail | $8",
+        "entry_mode": "impulse_2bar",
+        "htf_filter": "m5_m15",
+        "exit_mode": "decel_and_trail",
+        "stop_usd": 8.0,
+    },
+    {
+        "id": "C6",
+        "label": "2bar | M5+M15+H1 | decel+trail | $8",
+        "entry_mode": "impulse_2bar",
+        "htf_filter": "m5_m15_h1",
+        "exit_mode": "decel_and_trail",
+        "stop_usd": 8.0,
+    },
+    {
+        "id": "C7",
+        "label": "close | M5+M15+H1 | trail_only | $8",
+        "entry_mode": "impulse_close",
+        "htf_filter": "m5_m15_h1",
+        "exit_mode": "trail_only",
+        "stop_usd": 8.0,
+    },
+    {
+        "id": "C8",
+        "label": "pullback_or_2bar | M5+M15+H1 | trail_only | $8",
+        "entry_mode": "pullback_or_2bar",
+        "htf_filter": "m5_m15_h1",
+        "exit_mode": "trail_only",
+        "stop_usd": 8.0,
+    },
+]
+
+
+def validate_m1_momentum_candidates(
+    m1_bars: list[list[float]],
+    *,
+    spec: dict[str, Any],
+    symbol: str = "XAUUSD_i",
+    spread_price: float = 0.34,
+    m5_bars: list[list[float]] | None = None,
+    m15_bars: list[list[float]] | None = None,
+    h1_bars: list[list[float]] | None = None,
+    max_lot: float = 0.02,
+    leverage: float = 500.0,
+    candidates: list[dict[str, Any]] | None = None,
+    window_days: int = 7,
+    min_bars_per_window: int = 500,
+    adx_thresholds: tuple[float, ...] = (14.0, 18.0, 22.0, 25.0),
+) -> dict[str, Any]:
+    """Run multi-week walk-forward, cost-stress, and ADX-sensitivity validation.
+
+    Strictly single-leg (max_legs=1), small-capital bounded (max_margin_usd=25),
+    conservative pricing_basis='auto', and strictly causal across M1/M5/M15/H1.
+    """
+    clean_m1 = clean_ohlcv_bars(m1_bars)
+    m5_src = m5_bars if m5_bars else resample_m1_to_tf(clean_m1, 300)
+    m15_src = m15_bars if m15_bars else resample_m1_to_tf(clean_m1, 900)
+    h1_src = h1_bars if h1_bars else resample_m1_to_tf(clean_m1, 3600)
+    htf_indices = (
+        build_htf_index(m5_src, period_seconds=300, ema_fast=9, ema_slow=21),
+        build_htf_index(m15_src, period_seconds=900, ema_fast=9, ema_slow=21),
+        build_htf_index(h1_src, period_seconds=3600, ema_fast=20, ema_slow=50),
+    )
+    coverage = compute_htf_coverage(clean_m1, htf_indices=htf_indices)
+    weekly_windows = split_m1_weekly_windows(
+        clean_m1, window_days=window_days, min_bars_per_window=min_bars_per_window,
+    )
+
+    cost_scenarios: list[tuple[str, float, float]] = [
+        ("base_live_spread", spread_price, 0.0),
+        ("stress_spread_050", max(spread_price, 0.50), 0.0),
+        ("stress_spread_050_comm5", max(spread_price, 0.50), 5.0),
+        ("stress_spread_070_comm7", max(spread_price, 0.70), 7.0),
+    ]
+
+    cand_list = candidates if candidates is not None else DEFAULT_VALIDATION_CANDIDATES
+    results: list[dict[str, Any]] = []
+
+    for c in cand_list:
+        base_kw = {
+            "spec": spec,
+            "symbol": symbol,
+            "htf_indices": htf_indices,
+            "entry_mode": c["entry_mode"],
+            "htf_filter": c["htf_filter"],
+            "exit_mode": c["exit_mode"],
+            "stop_usd": float(c["stop_usd"]),
+            "max_lot": max_lot,
+            "max_legs": 1,
+            "leverage": leverage,
+            "max_margin_usd": 25.0,
+        }
+
+        # 1) Full-period baseline + UTC session breakdown
+        full = replay_m1_momentum(
+            clean_m1, spread_price=spread_price, commission_per_lot=0.0,
+            min_m5_adx=18.0, include_trades=True, **base_kw,
+        )
+        trades = full.pop("trades", [])
+        sessions = summarize_sessions_utc(trades)
+
+        # 2) Independent non-overlapping weekly walk-forward slices
+        weeks_out: list[dict[str, Any]] = []
+        for win in weekly_windows:
+            w_res = replay_m1_momentum(
+                win["bars"], spread_price=spread_price, commission_per_lot=0.0,
+                min_m5_adx=18.0, **base_kw,
+            )
+            weeks_out.append({
+                "week": win["week"],
+                "start_utc": win["start_utc"],
+                "end_utc": win["end_utc"],
+                "m1_bars": win["m1_bars"],
+                "trades": w_res["trades_closed"],
+                "win_rate_pct": w_res["win_rate_pct"],
+                "pnl_usd": w_res["total_marked_pnl_usd"],
+                "max_dd_usd": w_res["max_drawdown_usd"],
+                "pf": w_res["profit_factor"],
+            })
+
+        total_weeks = len(weeks_out)
+        pos_weeks = sum(1 for w in weeks_out if w["pnl_usd"] > 0)
+        pf11_weeks = sum(1 for w in weeks_out if (w["pf"] or 0.0) >= 1.10)
+        worst_week_pnl = round(min((w["pnl_usd"] for w in weeks_out), default=0.0), 4)
+
+        # 3) Spread + commission stress ladder
+        stress_out: dict[str, dict[str, Any]] = {}
+        for s_name, s_sp, s_comm in cost_scenarios:
+            if s_name == "base_live_spread":
+                s_res = full
+            else:
+                s_res = replay_m1_momentum(
+                    clean_m1, spread_price=s_sp, commission_per_lot=s_comm,
+                    min_m5_adx=18.0, **base_kw,
+                )
+            stress_out[s_name] = {
+                "spread_price": round(s_sp, 4),
+                "commission_per_lot": round(s_comm, 2),
+                "trades": s_res["trades_closed"],
+                "pnl_usd": s_res["total_marked_pnl_usd"],
+                "max_dd_usd": s_res["max_drawdown_usd"],
+                "pf": s_res["profit_factor"],
+            }
+
+        # 4) ADX threshold sensitivity sweep
+        adx_out: list[dict[str, Any]] = []
+        for adx_th in adx_thresholds:
+            if abs(adx_th - 18.0) < 1e-9:
+                a_res = full
+            else:
+                a_res = replay_m1_momentum(
+                    clean_m1, spread_price=spread_price, commission_per_lot=0.0,
+                    min_m5_adx=adx_th, **base_kw,
+                )
+            adx_out.append({
+                "min_m5_adx": adx_th,
+                "trades": a_res["trades_closed"],
+                "pnl_usd": a_res["total_marked_pnl_usd"],
+                "max_dd_usd": a_res["max_drawdown_usd"],
+                "pf": a_res["profit_factor"],
+            })
+        adx_pos = sum(1 for a in adx_out if a["pnl_usd"] > 0 and (a["pf"] or 0.0) >= 1.05)
+
+        # 5) Objective anti-overfitting gate checklist
+        s050 = stress_out["stress_spread_050"]
+        gates = {
+            "sample_ge_40": full["trades_closed"] >= 40,
+            "full_pnl_positive_and_pf_ge_1_15": (
+                full["total_marked_pnl_usd"] > 0 and (full["profit_factor"] or 0.0) >= 1.15
+            ),
+            "drawdown_le_50": full["max_drawdown_usd"] <= 50.0,
+            "margin_le_25": full["peak_margin_used_usd"] <= 25.0,
+            "weekly_consistency": (
+                total_weeks >= 3
+                and (pos_weeks / total_weeks) >= 0.75
+                and worst_week_pnl >= -25.0
+            ),
+            "survives_spread_050": (
+                s050["pnl_usd"] > 0 and (s050["pf"] or 0.0) >= 1.05
+            ),
+            "adx_sensitivity_stable": adx_pos >= max(3, len(adx_thresholds) - 1),
+        }
+        failed_gates = [k for k, ok in gates.items() if not ok]
+        overall_pass = len(failed_gates) == 0
+
+        results.append({
+            "id": c["id"],
+            "label": c["label"],
+            "config": {
+                "entry_mode": c["entry_mode"],
+                "htf_filter": c["htf_filter"],
+                "exit_mode": c["exit_mode"],
+                "stop_usd": float(c["stop_usd"]),
+                "max_lot": max_lot,
+                "max_legs": 1,
+            },
+            "full_period": full,
+            "weekly_walkforward": {
+                "total_weeks": total_weeks,
+                "positive_weeks": pos_weeks,
+                "weeks_pf_ge_1_10": pf11_weeks,
+                "worst_week_pnl_usd": worst_week_pnl,
+                "weeks": weeks_out,
+            },
+            "cost_stress": stress_out,
+            "adx_sensitivity": {
+                "stable_thresholds_count": adx_pos,
+                "total_thresholds": len(adx_thresholds),
+                "sweeps": adx_out,
+            },
+            "sessions_utc": sessions,
+            "gates": gates,
+            "failed_gates": failed_gates,
+            "overall_pass": overall_pass,
+        })
+
+    passed = [r for r in results if r["overall_pass"]]
+    passed.sort(
+        key=lambda r: (
+            r["cost_stress"]["stress_spread_050"]["pf"] or 0.0,
+            r["full_period"]["total_marked_pnl_usd"],
+        ),
+        reverse=True,
+    )
+    # Also identify best-performing candidate for diagnostic review even if none passed all gates.
+    ranked_all = sorted(
+        results,
+        key=lambda r: (
+            1 if r["overall_pass"] else 0,
+            sum(1 for ok in r["gates"].values() if ok),
+            r["full_period"]["profit_factor"] or 0.0,
+            r["full_period"]["total_marked_pnl_usd"],
+        ),
+        reverse=True,
+    )
+
+    return {
+        "ok": True,
+        "paper": True,
+        "executable": False,
+        "execution_authorized": False,
+        "orders_submitted": 0,
+        "htf_coverage_pct": coverage,
+        "weekly_windows_meta": [
+            {k: v for k, v in w.items() if k != "bars"} for w in weekly_windows
+        ],
+        "candidates": results,
+        "verdict": {
+            "any_candidate_passed": len(passed) > 0,
+            "passed_ids": [r["id"] for r in passed],
+            "recommended_for_live_paper": passed[0]["id"] if passed else None,
+            "best_diagnostic_id": ranked_all[0]["id"] if ranked_all else None,
+            "status": (
+                "PASS_READY_FOR_BOUNDED_LIVE_PAPER"
+                if passed
+                else "FAIL_DO_NOT_PROMOTE_TO_DEMO_OR_LIVE"
+            ),
+        },
+    }
+
