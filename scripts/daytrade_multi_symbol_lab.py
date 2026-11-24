@@ -44,10 +44,8 @@ from daytrade_mt5_readonly_check import (  # noqa: E402
     Blocked,
     exact_symbol,
     loopback_native,
-    reported_spec,
     timestamp,
 )
-from daytrade_mt5_readonly_check import quote as parse_quote  # noqa: E402
 
 from trade_mcp.bridge.native import find, records  # noqa: E402
 from trade_mcp.config import Config, load_dotenv  # noqa: E402
@@ -76,31 +74,120 @@ def _discover_marketwatch_symbols(feed: ReadOnlyNativeFeed, *, max_symbols: int)
     return picked, len(names)
 
 
-def _inspect_symbol_live(feed: ReadOnlyNativeFeed, sym: str) -> tuple[dict[str, Any], dict[str, float]]:
+def _parse_multisymbol_spec_and_quote(
+    row: dict[str, Any],
+    *,
+    fx_rates: dict[str, float] | None = None,
+) -> tuple[dict[str, Any], dict[str, float]]:
+    """Parse broker spec & live quote cleanly across Metals, Forex, Indices & Oil.
+
+    Prefers MT5-reported trade_tick_value; falls back cleanly to exact contract_size + FX conversion
+    only when MT5 omits/zeros tick_value right after Market Watch subscription.
+    """
+    def _opt_num(*aliases: str) -> float | None:
+        raw = find(row, *aliases)
+        if raw is None or isinstance(raw, bool):
+            return None
+        try:
+            v = float(raw)
+            return v if math.isfinite(v) else None
+        except (TypeError, ValueError):
+            return None
+
+    bid = _opt_num("bid")
+    ask = _opt_num("ask")
+    if bid is None or ask is None or not (0.0 < bid <= ask <= 1e12):
+        raise Blocked(f"no_live_quote(bid={bid},ask={ask})")
+
+    point = _opt_num("point")
+    if point is None or point <= 0:
+        digits = _opt_num("digits")
+        point = (10.0 ** (-int(digits))) if (digits is not None and digits >= 0) else None
+    if point is None or point <= 0:
+        raise Blocked("missing_point")
+
+    tick_size = _opt_num("trade_tick_size", "tick_size")
+    if tick_size is None or tick_size <= 0:
+        tick_size = point
+
+    contract_size = _opt_num("trade_contract_size", "contract_size")
+    c_prof = str(find(row, "currency_profit", "profit_currency") or "").strip().upper()
+    c_base = str(find(row, "currency_base", "base_currency") or "").strip().upper()
+
+    # Record live USD conversion rate when available (e.g., EURUSD -> EUR_TO_USD, USDJPY -> USD_TO_JPY)
+    if fx_rates is not None and c_base and c_prof:
+        if c_prof == "USD" and c_base in {"EUR", "GBP", "AUD", "NZD"}:
+            fx_rates[f"{c_base}_USD"] = bid
+        elif c_base == "USD" and c_prof in {"JPY", "CAD", "CHF"}:
+            fx_rates[f"USD_{c_prof}"] = bid
+
+    tick_value = _opt_num("trade_tick_value", "tick_value")
+    if tick_value is None or tick_value <= 0:
+        if contract_size is not None and contract_size > 0:
+            if c_prof == "USD":
+                tick_value = contract_size * tick_size
+            elif c_base == "USD" and bid > 0:
+                tick_value = (contract_size * tick_size) / bid
+            elif fx_rates and c_prof:
+                if f"{c_prof}_USD" in fx_rates:
+                    tick_value = contract_size * tick_size * fx_rates[f"{c_prof}_USD"]
+                elif f"USD_{c_prof}" in fx_rates and fx_rates[f"USD_{c_prof}"] > 0:
+                    tick_value = (contract_size * tick_size) / fx_rates[f"USD_{c_prof}"]
+    if tick_value is None or tick_value <= 0:
+        raise Blocked(
+            f"missing_tick_value(csize={contract_size},base={c_base},prof={c_prof},tv={_opt_num('trade_tick_value', 'tick_value')})"
+        )
+
+    vol_min = _opt_num("volume_min", "min_volume") or 0.01
+    vol_step = _opt_num("volume_step", "volume_step_size") or 0.01
+    vol_max = _opt_num("volume_max", "max_volume") or 50.0
+    stops_lvl = _opt_num("trade_stops_level", "stops_level")
+    if stops_lvl is None or stops_lvl < 0:
+        stops_lvl = 0.0
+
+    base_spec: dict[str, float] = {
+        "point": point,
+        "trade_tick_size": tick_size,
+        "trade_tick_value": tick_value,
+        "volume_min": vol_min,
+        "volume_step": vol_step,
+        "volume_max": vol_max,
+        "trade_stops_level": stops_lvl,
+    }
+    spec = enrich_spec(base_spec, row)
+    if c_base:
+        spec["currency_base"] = c_base
+    if c_prof:
+        spec["currency_profit"] = c_prof
+    if contract_size is not None and contract_size > 0:
+        spec["trade_contract_size"] = contract_size
+    return spec, {"bid": bid, "ask": ask}
+
+
+def _inspect_symbol_live(
+    feed: ReadOnlyNativeFeed,
+    sym: str,
+    *,
+    fx_rates: dict[str, float] | None = None,
+) -> tuple[dict[str, Any], dict[str, float]]:
     """Read live spec & quote; if symbol is hidden in MT5 Market Watch, subscribe it cleanly first."""
     def _read_once() -> tuple[dict[str, Any], dict[str, float]]:
         row = exact_symbol(
             feed._call("get_marketwatch_symbols", {"symbol": sym, "limit": 15, "include_hidden": True}),
             sym,
         )
-        spec = enrich_spec(reported_spec(row), row)
-        c_base = find(row, "currency_base", "base_currency")
-        if c_base is not None:
-            spec["currency_base"] = c_base
-        return spec, parse_quote(row)
+        return _parse_multisymbol_spec_and_quote(row, fx_rates=fx_rates)
 
     try:
         return _read_once()
     except Blocked as exc:
-        if exc.reason not in ("missing_broker_spec", "invalid_data"):
-            raise
-        # Symbol is hidden / not yet subscribed in MT5 Market Watch -> add to Market Watch (non-trading)
+        # Symbol may be hidden / not yet subscribed in MT5 Market Watch -> subscribe (non-trading)
         try:
             feed.client.call_tool("add_marketwatch_symbol", {"symbol": sym})
         except McpError:
             raise exc from None
         last_err: Blocked = exc
-        for delay in (0.6, 1.0, 1.4):
+        for delay in (0.7, 1.1, 1.5):
             time.sleep(delay)
             try:
                 return _read_once()
@@ -214,7 +301,11 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"ok": False, "orders_submitted": 0, "error": f"max_lot must be <= {HARD_MAX_LOT}"}))
         return 2
 
-    out_path = Path(args.out) if args.out else (ROOT / "logs" / "multi_symbol_lab.json")
+    ts_tag = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out_path = Path(args.out) if args.out else (ROOT / "logs" / f"multi_symbol_lab_{ts_tag}.json")
+    if out_path.exists():
+        stem, suf = out_path.stem, out_path.suffix or ".json"
+        out_path = out_path.with_name(f"{stem}_{ts_tag}{suf}")
 
     try:
         sym_results: list[dict[str, Any]] = []
@@ -268,10 +359,11 @@ def main(argv: list[str] | None = None) -> int:
                     flush=True,
                 )
 
+                fx_rates: dict[str, float] = {}
                 for sym in candidates:
                     feed.symbol = sym
                     try:
-                        spec, quote = _inspect_symbol_live(feed, sym)
+                        spec, quote = _inspect_symbol_live(feed, sym, fx_rates=fx_rates)
                         spread = round(max(0.0, quote["ask"] - quote["bid"]), 6)
                         h1, _ = _paginate_period_retry(
                             feed, period="H1", now_label=now_label, total_days=args.h1_days, chunk_days=30, stop_after_consecutive_empty=3,

@@ -115,3 +115,39 @@ def test_inspect_symbol_live_subscribes_hidden_symbol(monkeypatch) -> None:
     assert q["bid"] == 1.0810
     assert spec["currency_base"] == "EUR"
 
+
+def test_parse_multisymbol_tolerant_fx_and_indices() -> None:
+    scripts_dir = str(Path(__file__).resolve().parents[1] / "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    import daytrade_multi_symbol_lab as cli  # noqa: E402
+
+    fx: dict[str, float] = {}
+    # EURUSD with omitted trade_stops_level & trade_tick_value=0 -> derives exact USD tick_value
+    eur_spec, _ = cli._parse_multisymbol_spec_and_quote(
+        {"name": "EURUSD_i", "bid": 1.0800, "ask": 1.0801, "point": 0.00001, "trade_contract_size": 100000.0, "currency_base": "EUR", "currency_profit": "USD", "trade_tick_value": 0.0},
+        fx_rates=fx,
+    )
+    assert abs(eur_spec["trade_tick_value"] - 1.0) < 1e-6
+    assert fx["EUR_USD"] == 1.0800
+
+    # GER40 (EUR profit currency) uses cached EUR_USD rate cleanly
+    ger_spec, _ = cli._parse_multisymbol_spec_and_quote(
+        {"name": "GER40_i", "bid": 19500.0, "ask": 19501.5, "point": 0.01, "trade_contract_size": 1.0, "currency_base": "GER40", "currency_profit": "EUR", "trade_tick_value": 0.0},
+        fx_rates=fx,
+    )
+    assert abs(ger_spec["trade_tick_value"] - 0.0108) < 1e-6
+
+    # USDJPY -> GBPJPY via USD_JPY rate
+    jpy_spec, _ = cli._parse_multisymbol_spec_and_quote(
+        {"name": "USDJPY_i", "bid": 154.0, "ask": 154.02, "point": 0.001, "trade_contract_size": 100000.0, "currency_base": "USD", "currency_profit": "JPY", "trade_tick_value": 0.0},
+        fx_rates=fx,
+    )
+    assert abs(jpy_spec["trade_tick_value"] - (100.0 / 154.0)) < 1e-4
+    gj_spec, _ = cli._parse_multisymbol_spec_and_quote(
+        {"name": "GBPJPY_i", "bid": 195.0, "ask": 195.03, "point": 0.001, "trade_contract_size": 100000.0, "currency_base": "GBP", "currency_profit": "JPY", "trade_tick_value": 0.0},
+        fx_rates=fx,
+    )
+    assert abs(gj_spec["trade_tick_value"] - (100.0 / 154.0)) < 1e-4
+
+
