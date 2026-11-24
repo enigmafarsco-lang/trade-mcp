@@ -583,6 +583,119 @@ def test_m5_risk_brakes_365d_cli_mock_and_no_execution_imports(tmp_path, monkeyp
     assert "propose_open" not in script_text and "trade_send_market_order" not in script_text
 
 
+def test_min_mid_adx_filters_choppy_h1_regimes():
+    from trade_mcp.m1_momentum import HTFContext, htf_allows_signal
+
+    m15_ok = HTFContext(close_time=1000, close=3620.0, ema_fast=3618.0, ema_slow=3615.0,
+                        adx=26.0, atr=4.0, donchian_pos=0.6, bias="buy")
+    h1_weak = HTFContext(close_time=1000, close=3620.0, ema_fast=3615.0, ema_slow=3610.0,
+                         adx=14.0, atr=10.0, donchian_pos=0.5, bias="buy")
+    h1_strong = HTFContext(close_time=1000, close=3620.0, ema_fast=3615.0, ema_slow=3610.0,
+                           adx=24.0, atr=10.0, donchian_pos=0.5, bias="buy")
+    h4_ok = HTFContext(close_time=1000, close=3620.0, ema_fast=3610.0, ema_slow=3600.0,
+                       adx=28.0, atr=20.0, donchian_pos=0.6, bias="buy")
+
+    ok0, r0 = htf_allows_signal(side="buy", htf_filter="m15_h1_h4", m5=m15_ok, m15=h1_weak, h1=h4_ok,
+                                min_m5_adx=18.0, min_mid_adx=None)
+    assert ok0 and r0 is None
+
+    ok1, r1 = htf_allows_signal(side="buy", htf_filter="m15_h1_h4", m5=m15_ok, m15=h1_weak, h1=h4_ok,
+                                min_m5_adx=18.0, min_mid_adx=20.0)
+    assert not ok1 and r1 == "htf_h1_low_adx_chop"
+
+    ok2, r2 = htf_allows_signal(side="buy", htf_filter="m15_h1_h4", m5=m15_ok, m15=h1_strong, h1=h4_ok,
+                                min_m5_adx=18.0, min_mid_adx=20.0)
+    assert ok2 and r2 is None
+
+
+def test_m5_regime_365d_cli_mock_and_no_execution_imports(tmp_path, monkeypatch, capsys):
+    spec_mod = importlib.util.spec_from_file_location(
+        "daytrade_m5_regime_365d", ROOT / "scripts/daytrade_m5_regime_365d.py"
+    )
+    cli = importlib.util.module_from_spec(spec_mod)
+    assert spec_mod and spec_mod.loader
+    spec_mod.loader.exec_module(cli)
+
+    paper_spec = importlib.util.spec_from_file_location(
+        "daytrade_m1_paper_window", ROOT / "scripts/daytrade_m1_paper_window.py"
+    )
+    paper_cli = importlib.util.module_from_spec(paper_spec)
+    assert paper_spec and paper_spec.loader
+    paper_spec.loader.exec_module(paper_cli)
+
+    monkeypatch.setattr(paper_cli, "ROOT", tmp_path)
+    monkeypatch.setattr(cli, "_save_private_json", paper_cli._save_private_json)
+    monkeypatch.setenv("TRADE_MCP_ALLOW_TRADING", "false")
+    monkeypatch.setenv("TRADE_MCP_PAPER_TRADING", "false")
+
+    rc = cli.main(["--mock", "--out", "logs/m5-regime-365d-smoke.json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] and payload["paper"] and payload["orders_submitted"] == 0
+    rv = payload["regime_validation"]
+    assert rv["split"]["has_dual_halves"] is True
+    assert "by_utc_session" in rv["baseline_regime_anatomy"]
+    assert "by_closed_h1_adx" in rv["baseline_regime_anatomy"]
+    assert [v["id"] for v in rv["variants"]] == [
+        "G0_BASE", "G1_LONDON_NY", "G2_LONDON_NY_CORE",
+        "G3_H1_ADX20", "G4_H1_ADX25", "G5_LONDON_NY_H1_ADX20", "G6_LONDON_NY_H1_ADX20_R2",
+    ]
+    out_file = tmp_path / "logs" / "m5-regime-365d-smoke.json"
+    assert stat.S_IMODE(out_file.stat().st_mode) == 0o600
+
+    # Also exercise --summary formatting cleanly
+    rc2 = cli.main(["--mock", "--summary", "--out", "logs/m5-regime-365d-summary.json"])
+    assert rc2 == 0
+    summary_out = capsys.readouterr().out
+    assert "G0_BASE ANATOMY" in summary_out and "G6_LONDON_NY_H1_ADX20_R2" in summary_out
+
+    script_text = (ROOT / "scripts/daytrade_m5_regime_365d.py").read_text(encoding="utf-8")
+    assert "propose_open" not in script_text and "trade_send_market_order" not in script_text
+
+
+def test_manual_deals_audit_cli_mock_and_multiplier_math(tmp_path, monkeypatch, capsys):
+    spec_mod = importlib.util.spec_from_file_location(
+        "daytrade_manual_deals_audit", ROOT / "scripts/daytrade_manual_deals_audit.py"
+    )
+    cli = importlib.util.module_from_spec(spec_mod)
+    assert spec_mod and spec_mod.loader
+    spec_mod.loader.exec_module(cli)
+
+    paper_spec = importlib.util.spec_from_file_location(
+        "daytrade_m1_paper_window", ROOT / "scripts/daytrade_m1_paper_window.py"
+    )
+    paper_cli = importlib.util.module_from_spec(paper_spec)
+    assert paper_spec and paper_spec.loader
+    paper_spec.loader.exec_module(paper_cli)
+
+    monkeypatch.setattr(paper_cli, "ROOT", tmp_path)
+    monkeypatch.setattr(cli, "_save_private_json", paper_cli._save_private_json)
+    monkeypatch.setenv("TRADE_MCP_ALLOW_TRADING", "false")
+    monkeypatch.setenv("TRADE_MCP_PAPER_TRADING", "false")
+
+    rc = cli.main(["--mock", "--out", "logs/manual-audit-smoke.json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] and payload["paper"] and payload["orders_submitted"] == 0
+    a = payload["analysis"]
+    assert a["trades_closed"] == 2
+    assert a["wins"] == 1 and a["losses"] == 1
+    assert a["net_pnl_usd"] == 0.60
+    assert a["empirical_contract_multiplier_median"] == 100.0
+    assert a["hold_seconds_stats"]["min_sec"] == 2
+    assert a["hold_seconds_stats"]["max_sec"] == 4
+    out_file = tmp_path / "logs" / "manual-audit-smoke.json"
+    assert stat.S_IMODE(out_file.stat().st_mode) == 0o600
+
+    rc2 = cli.main(["--mock", "--summary", "--out", "logs/manual-audit-summary.json"])
+    assert rc2 == 0
+    assert "EMPIRICAL_BROKER: multiplier=100.0" in capsys.readouterr().out
+
+    script_text = (ROOT / "scripts/daytrade_manual_deals_audit.py").read_text(encoding="utf-8")
+    assert "propose_open" not in script_text and "trade_send_market_order" not in script_text
+
+
+
 
 
 

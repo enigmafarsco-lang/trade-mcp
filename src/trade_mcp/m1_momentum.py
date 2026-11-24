@@ -411,6 +411,7 @@ def htf_allows_signal(
     m15: HTFContext | None,
     h1: HTFContext | None,
     min_m5_adx: float = 18.0,
+    min_mid_adx: float | None = None,
 ) -> tuple[bool, str | None]:
     """Check whether strictly closed HTF context permits an impulse entry.
 
@@ -443,6 +444,11 @@ def htf_allows_signal(
 
     if m15 is None or m15.ema_slow is None:
         return False, f"htf_{m_lbl}_unavailable"
+    if min_mid_adx is not None and min_mid_adx > 0:
+        if m15.adx is None:
+            return False, f"htf_{m_lbl}_adx_unavailable"
+        if m15.adx < min_mid_adx:
+            return False, f"htf_{m_lbl}_low_adx_chop"
     if side == "buy" and m15.close < m15.ema_slow:
         return False, f"htf_{m_lbl}_bias_mismatch"
     if side == "sell" and m15.close > m15.ema_slow:
@@ -519,6 +525,7 @@ def replay_m1_momentum(
     max_legs: int = 1,
     commission_per_lot: float = 0.0,
     min_m5_adx: float = 18.0,
+    min_mid_adx: float | None = None,
     trail_arm_usd: float = 1.5,
     min_decel_profit_usd: float = 1.0,
     fast_invalidation_cut: bool = True,
@@ -808,7 +815,7 @@ def replay_m1_momentum(
                     h1 = lookup_htf(h1_t, h1_ctx, int(t))
                     allowed, deny_reason = htf_allows_signal(
                         side=sig["side"], htf_filter=htf_filter, m5=m5, m15=m15, h1=h1,
-                        min_m5_adx=min_m5_adx,
+                        min_m5_adx=min_m5_adx, min_mid_adx=min_mid_adx,
                     )
                     if not allowed:
                         _refuse(str(deny_reason))
@@ -2559,6 +2566,457 @@ def evaluate_m5_risk_brakes(
             ),
         },
     }
+
+
+LONDON_NY_BLOCKED_UTC_HOURS: tuple[int, ...] = (0, 1, 2, 3, 4, 5, 6, 21, 22, 23)
+LONDON_NY_CORE_BLOCKED_UTC_HOURS: tuple[int, ...] = (0, 1, 2, 3, 4, 5, 6, 17, 18, 19, 20, 21, 22, 23)
+
+M5_REGIME_VARIANTS: list[dict[str, Any]] = [
+    {
+        "id": "G0_BASE",
+        "label": "Locked M5_5 baseline (22h except rollover 21-22 UTC, no H1 ADX gate)",
+        "blocked_utc_hours": ROLLOVER_BLOCKED_UTC_HOURS,
+        "min_mid_adx": None,
+        "daily_loss_limit_usd": None,
+        "weekly_loss_limit_usd": None,
+    },
+    {
+        "id": "G1_LONDON_NY",
+        "label": "Active London+NY only (07:00-20:59 UTC; blocks Asia/rollover)",
+        "blocked_utc_hours": LONDON_NY_BLOCKED_UTC_HOURS,
+        "min_mid_adx": None,
+        "daily_loss_limit_usd": None,
+        "weekly_loss_limit_usd": None,
+    },
+    {
+        "id": "G2_LONDON_NY_CORE",
+        "label": "Core London+NY overlap (07:00-16:59 UTC; peak gold liquidity)",
+        "blocked_utc_hours": LONDON_NY_CORE_BLOCKED_UTC_HOURS,
+        "min_mid_adx": None,
+        "daily_loss_limit_usd": None,
+        "weekly_loss_limit_usd": None,
+    },
+    {
+        "id": "G3_H1_ADX20",
+        "label": "22h + H1 trend strength gate (closed H1 ADX >= 20)",
+        "blocked_utc_hours": ROLLOVER_BLOCKED_UTC_HOURS,
+        "min_mid_adx": 20.0,
+        "daily_loss_limit_usd": None,
+        "weekly_loss_limit_usd": None,
+    },
+    {
+        "id": "G4_H1_ADX25",
+        "label": "22h + strong H1 trend gate (closed H1 ADX >= 25)",
+        "blocked_utc_hours": ROLLOVER_BLOCKED_UTC_HOURS,
+        "min_mid_adx": 25.0,
+        "daily_loss_limit_usd": None,
+        "weekly_loss_limit_usd": None,
+    },
+    {
+        "id": "G5_LONDON_NY_H1_ADX20",
+        "label": "Active London+NY (07-20 UTC) + H1 ADX >= 20",
+        "blocked_utc_hours": LONDON_NY_BLOCKED_UTC_HOURS,
+        "min_mid_adx": 20.0,
+        "daily_loss_limit_usd": None,
+        "weekly_loss_limit_usd": None,
+    },
+    {
+        "id": "G6_LONDON_NY_H1_ADX20_R2",
+        "label": "Active London+NY (07-20 UTC) + H1 ADX >= 20 + R2 (-$15d / -$25w)",
+        "blocked_utc_hours": LONDON_NY_BLOCKED_UTC_HOURS,
+        "min_mid_adx": 20.0,
+        "daily_loss_limit_usd": 15.0,
+        "weekly_loss_limit_usd": 25.0,
+    },
+]
+
+
+def _utc_session_label(hour: int) -> str:
+    if 0 <= hour <= 6:
+        return "asia_00_06_utc"
+    if 7 <= hour <= 11:
+        return "london_07_11_utc"
+    if 12 <= hour <= 16:
+        return "overlap_12_16_utc"
+    if 17 <= hour <= 20:
+        return "late_ny_17_20_utc"
+    return "late_evening_21_23_utc"
+
+
+def _adx_bucket_label(adx: float | None) -> str:
+    if adx is None:
+        return "unavailable"
+    if adx < 15.0:
+        return "adx_lt_15_flat"
+    if adx < 20.0:
+        return "adx_15_20_weak"
+    if adx < 25.0:
+        return "adx_20_25_emerging"
+    if adx < 35.0:
+        return "adx_25_35_trending"
+    return "adx_ge_35_strong"
+
+
+def _bucket_trade_stats(items: list[dict[str, Any]]) -> dict[str, Any]:
+    wins = [t for t in items if float(t["net_pnl_usd"]) > 0]
+    losses = [t for t in items if float(t["net_pnl_usd"]) <= 0]
+    gp = sum(float(t["net_pnl_usd"]) for t in wins)
+    gl = abs(sum(float(t["net_pnl_usd"]) for t in losses))
+    net = gp - gl
+    pf = round(gp / gl, 3) if gl > 0 else (99.0 if gp > 0 else None)
+    return {
+        "trades": len(items),
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate_pct": round(100.0 * len(wins) / len(items), 1) if items else 0.0,
+        "net_pnl_usd": round(net, 2),
+        "profit_factor": pf,
+    }
+
+
+def _diagnose_baseline_regimes(
+    trades: list[dict[str, Any]],
+    *,
+    h1_index: tuple[list[int], list[HTFContext]],
+    cutoff_ts: int,
+) -> dict[str, Any]:
+    """Anatomy of baseline trades by UTC session and closed H1 ADX across both halves."""
+    h1_t, h1_ctx = h1_index
+    sessions_order = [
+        "asia_00_06_utc",
+        "london_07_11_utc",
+        "overlap_12_16_utc",
+        "late_ny_17_20_utc",
+        "late_evening_21_23_utc",
+    ]
+    adx_order = [
+        "adx_lt_15_flat",
+        "adx_15_20_weak",
+        "adx_20_25_emerging",
+        "adx_25_35_trending",
+        "adx_ge_35_strong",
+        "unavailable",
+    ]
+
+    by_sess: dict[str, dict[str, list[dict[str, Any]]]] = {
+        k: {"full": [], "half1": [], "half2": []} for k in sessions_order
+    }
+    by_adx: dict[str, dict[str, list[dict[str, Any]]]] = {
+        k: {"full": [], "half1": [], "half2": []} for k in adx_order
+    }
+
+    for tr in trades:
+        ts = int(tr["opened_at"])
+        half = "half1" if ts < cutoff_ts else "half2"
+        sess = _utc_session_label((ts // 3600) % 24)
+        by_sess[sess]["full"].append(tr)
+        by_sess[sess][half].append(tr)
+
+        ctx = lookup_htf(h1_t, h1_ctx, ts)
+        ab = _adx_bucket_label(ctx.adx if ctx is not None else None)
+        by_adx[ab]["full"].append(tr)
+        by_adx[ab][half].append(tr)
+
+    return {
+        "by_utc_session": {
+            k: {
+                "full": _bucket_trade_stats(v["full"]),
+                "half1_older": _bucket_trade_stats(v["half1"]),
+                "half2_recent": _bucket_trade_stats(v["half2"]),
+            }
+            for k, v in by_sess.items()
+            if v["full"]
+        },
+        "by_closed_h1_adx": {
+            k: {
+                "full": _bucket_trade_stats(v["full"]),
+                "half1_older": _bucket_trade_stats(v["half1"]),
+                "half2_recent": _bucket_trade_stats(v["half2"]),
+            }
+            for k, v in by_adx.items()
+            if v["full"]
+        },
+    }
+
+
+def evaluate_m5_regime_filters(
+    m5_bars: list[list[float]],
+    *,
+    spec: dict[str, Any],
+    symbol: str = "XAUUSD_i",
+    spread_price: float = 0.34,
+    m15_bars: list[list[float]] | None = None,
+    h1_bars: list[list[float]] | None = None,
+    h4_bars: list[list[float]] | None = None,
+    max_lot: float = 0.01,
+    leverage: float = 500.0,
+    split_recent_days: int = 180,
+    variants: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Evaluate pre-committed session & H1 ADX market-regime filters on locked M5_5.
+
+    Signal logic (pullback_or_2bar, M15+H1+H4, trail_only 0.8R, $12 stop, 0.01 lot)
+    is held 100% FIXED. Enforces dual-half anti-overfitting gates: a filter must
+    improve BOTH 6-month halves independently to earn live Paper eligibility.
+    """
+    clean_m5 = clean_ohlcv_bars(m5_bars)
+    if len(clean_m5) < 50:
+        raise ValueError("insufficient M5 bars for regime filter evaluation")
+
+    p_src = m15_bars if m15_bars else resample_bars_to_tf(clean_m5, src_seconds=300, dst_seconds=900)
+    m_src = h1_bars if h1_bars else resample_bars_to_tf(clean_m5, src_seconds=300, dst_seconds=3600)
+    g_src = h4_bars if h4_bars else resample_bars_to_tf(m_src, src_seconds=3600, dst_seconds=14400)
+    htf_indices = (
+        build_htf_index(p_src, period_seconds=900, ema_fast=9, ema_slow=21),
+        build_htf_index(m_src, period_seconds=3600, ema_fast=9, ema_slow=21),
+        build_htf_index(g_src, period_seconds=14400, ema_fast=20, ema_slow=50),
+    )
+    cov_raw = compute_htf_coverage(clean_m5, htf_indices=htf_indices)
+    coverage = {"m15_pct": cov_raw["m5_pct"], "h1_pct": cov_raw["m15_pct"], "h4_pct": cov_raw["h1_pct"]}
+
+    last_ts = int(clean_m5[-1][0])
+    cutoff_ts = last_ts - split_recent_days * 86400
+    half1_bars = [b for b in clean_m5 if int(b[0]) < cutoff_ts]
+    half2_bars = [b for b in clean_m5 if int(b[0]) >= cutoff_ts]
+    half1_span = (
+        round((half1_bars[-1][0] - half1_bars[0][0]) / 86400.0, 2) if len(half1_bars) >= 2 else 0.0
+    )
+    half2_span = (
+        round((half2_bars[-1][0] - half2_bars[0][0]) / 86400.0, 2) if len(half2_bars) >= 2 else 0.0
+    )
+    has_dual_halves = len(half1_bars) >= 200 and half1_span >= 45.0 and len(half2_bars) >= 200
+
+    cost_ladder: list[tuple[str, float, float]] = [
+        ("base_live_spread", spread_price, 0.0),
+        ("stress_spread_050", max(spread_price, 0.50), 0.0),
+        ("stress_spread_050_comm5", max(spread_price, 0.50), 5.0),
+        ("stress_spread_070_comm7", max(spread_price, 0.70), 7.0),
+    ]
+
+    var_list = variants if variants is not None else M5_REGIME_VARIANTS
+    raw_rows: list[dict[str, Any]] = []
+    baseline_anatomy: dict[str, Any] = {}
+    base_h1_dd: float | None = None
+    base_h2_dd: float | None = None
+
+    for v in var_list:
+        base_kw: dict[str, Any] = {
+            "spec": spec,
+            "symbol": symbol,
+            "bar_seconds": 300,
+            "htf_indices": htf_indices,
+            "entry_mode": "pullback_or_2bar",
+            "htf_filter": "m15_h1_h4",
+            "exit_mode": "trail_only",
+            "stop_usd": 12.0,
+            "max_lot": max_lot,
+            "max_legs": 1,
+            "leverage": leverage,
+            "max_margin_usd": 25.0,
+            "min_m5_adx": 18.0,
+            "min_mid_adx": v.get("min_mid_adx"),
+            "trail_arm_r": 0.8,
+            "blocked_utc_hours": tuple(v.get("blocked_utc_hours", ROLLOVER_BLOCKED_UTC_HOURS)),
+            "daily_loss_limit_usd": v.get("daily_loss_limit_usd"),
+            "weekly_loss_limit_usd": v.get("weekly_loss_limit_usd"),
+        }
+
+        full_res = replay_m1_momentum(
+            clean_m5, spread_price=spread_price, commission_per_lot=0.0, include_trades=True, **base_kw,
+        )
+        full_trades = full_res.pop("trades", [])
+        if v["id"] == "G0_BASE":
+            baseline_anatomy = _diagnose_baseline_regimes(
+                full_trades, h1_index=htf_indices[1], cutoff_ts=cutoff_ts,
+            )
+
+        months = summarize_months_utc(full_trades)
+        active_months = [m for m in months if m["trades"] >= 3]
+        pos_months = sum(1 for m in active_months if m["net_pnl_usd"] > 0)
+
+        h1_res = (
+            replay_m1_momentum(half1_bars, spread_price=spread_price, commission_per_lot=0.0, **base_kw)
+            if has_dual_halves
+            else None
+        )
+        h2_res = (
+            replay_m1_momentum(half2_bars, spread_price=spread_price, commission_per_lot=0.0, **base_kw)
+            if len(half2_bars) >= 20
+            else None
+        )
+        if v["id"] == "G0_BASE" and h1_res is not None and h2_res is not None:
+            base_h1_dd = float(h1_res["max_drawdown_usd"])
+            base_h2_dd = float(h2_res["max_drawdown_usd"])
+
+        stress_full: dict[str, dict[str, Any]] = {}
+        for s_name, s_sp, s_comm in cost_ladder:
+            s_res = full_res if s_name == "base_live_spread" else replay_m1_momentum(
+                clean_m5, spread_price=s_sp, commission_per_lot=s_comm, **base_kw,
+            )
+            stress_full[s_name] = {
+                "spread_price": round(s_sp, 4),
+                "commission_per_lot": round(s_comm, 2),
+                "trades": s_res["trades_closed"],
+                "net_pnl_usd": round(float(s_res["total_marked_pnl_usd"]), 2),
+                "pf": s_res["profit_factor"],
+                "max_dd_usd": round(float(s_res["max_drawdown_usd"]), 2),
+            }
+
+        raw_rows.append({
+            "v": v,
+            "full_res": full_res,
+            "h1_res": h1_res,
+            "h2_res": h2_res,
+            "months": months,
+            "active_months": active_months,
+            "pos_months": pos_months,
+            "stress_full": stress_full,
+        })
+
+    rows: list[dict[str, Any]] = []
+    for item in raw_rows:
+        v = item["v"]
+        full_res = item["full_res"]
+        h1_res = item["h1_res"]
+        h2_res = item["h2_res"]
+        months = item["months"]
+        active_months = item["active_months"]
+        pos_months = item["pos_months"]
+        stress_full = item["stress_full"]
+
+        full_dd = float(full_res["max_drawdown_usd"])
+        full_pnl = float(full_res["total_marked_pnl_usd"])
+        mar_ratio = round(full_pnl / full_dd, 2) if full_dd > 0 else None
+        s050_c5 = stress_full["stress_spread_050_comm5"]
+
+        gates: dict[str, bool] = {
+            "full_positive_and_pf_ge_1_30": (
+                full_pnl > 0
+                and (full_res["profit_factor"] or 0.0) >= 1.30
+                and int(full_res["trades_closed"]) >= 80
+            ),
+            "full_profitable_without_best_trade": float(full_res["pnl_excl_largest_win_usd"]) > 0,
+            "full_drawdown_le_65": full_dd <= 65.0,
+            "profit_to_dd_ratio_ge_2_2": bool(mar_ratio is not None and mar_ratio >= 2.2),
+            "survives_spread_050_comm5": (
+                s050_c5["net_pnl_usd"] > 0 and (s050_c5["pf"] or 0.0) >= 1.10
+            ),
+            "months_majority_positive": bool(
+                len(active_months) >= 3 and (pos_months / len(active_months)) >= 0.65
+            ),
+        }
+        if has_dual_halves and h1_res is not None and h2_res is not None:
+            h1_pnl = float(h1_res["total_marked_pnl_usd"])
+            h2_pnl = float(h2_res["total_marked_pnl_usd"])
+            h1_dd = float(h1_res["max_drawdown_usd"])
+            h2_dd = float(h2_res["max_drawdown_usd"])
+            gates["half1_positive_and_pf_ge_1_15"] = (
+                h1_pnl > 0
+                and (h1_res["profit_factor"] or 0.0) >= 1.15
+                and int(h1_res["trades_closed"]) >= 30
+                and float(h1_res["pnl_excl_largest_win_usd"]) >= 0.0
+            )
+            gates["half2_positive_and_pf_ge_1_15"] = (
+                h2_pnl > 0
+                and (h2_res["profit_factor"] or 0.0) >= 1.15
+                and int(h2_res["trades_closed"]) >= 30
+            )
+            if base_h1_dd is not None and base_h2_dd is not None:
+                gates["both_halves_dd_improved_or_le_60"] = (
+                    (h1_dd < base_h1_dd or h1_dd <= 60.0)
+                    and (h2_dd < base_h2_dd or h2_dd <= 60.0)
+                )
+
+        failed = [k for k, ok in gates.items() if not ok]
+        refs = full_res["refusal_counts"]
+        rows.append({
+            "id": v["id"],
+            "label": v["label"],
+            "regime_controls": {
+                "blocked_utc_hours": list(v.get("blocked_utc_hours", ROLLOVER_BLOCKED_UTC_HOURS)),
+                "min_h1_adx": v.get("min_mid_adx"),
+                "daily_loss_limit_usd": v.get("daily_loss_limit_usd"),
+                "weekly_loss_limit_usd": v.get("weekly_loss_limit_usd"),
+            },
+            "filters_triggered": {
+                "blocked_utc_hour": refs.get("blocked_utc_hour", 0),
+                "htf_h1_low_adx_chop": refs.get("htf_h1_low_adx_chop", 0),
+                "daily_loss_brake": refs.get("daily_loss_brake", 0),
+                "weekly_loss_brake": refs.get("weekly_loss_brake", 0),
+            },
+            "half1_older_180d": _plain_trade_summary(h1_res) if h1_res is not None else None,
+            "half2_recent_180d": _plain_trade_summary(h2_res) if h2_res is not None else None,
+            "full_period": {
+                **_plain_trade_summary(full_res),
+                "profit_to_dd_ratio": mar_ratio,
+                "max_loss_streak": full_res["max_loss_streak"],
+            },
+            "monthly_breakdown": months,
+            "active_months_positive": f"{pos_months}/{len(active_months)}",
+            "full_cost_stress": stress_full,
+            "capital_sizing_guide": _capital_sizing_guide(full_dd, float(full_res["peak_margin_used_usd"])),
+            "gates": gates,
+            "gates_passed_count": sum(1 for ok in gates.values() if ok),
+            "failed_gates": failed,
+            "all_gates_passed": len(failed) == 0,
+        })
+
+    passed = [r for r in rows if r["all_gates_passed"]]
+    passed.sort(
+        key=lambda r: (
+            r["full_period"]["profit_to_dd_ratio"] or 0.0,
+            r["full_cost_stress"]["stress_spread_050_comm5"]["pf"] or 0.0,
+        ),
+        reverse=True,
+    )
+    ranked_all = sorted(
+        rows,
+        key=lambda r: (
+            1 if r["all_gates_passed"] else 0,
+            r["gates_passed_count"],
+            r["full_period"]["profit_to_dd_ratio"] or 0.0,
+            r["full_period"]["net_pnl_usd"],
+        ),
+        reverse=True,
+    )
+
+    return {
+        "ok": True,
+        "paper": True,
+        "executable": False,
+        "execution_authorized": False,
+        "orders_submitted": 0,
+        "htf_coverage_pct": coverage,
+        "split": {
+            "split_recent_days": split_recent_days,
+            "cutoff_utc": _iso_utc(cutoff_ts),
+            "has_dual_halves": has_dual_halves,
+            "half1_older_bars": len(half1_bars),
+            "half1_older_span_days": half1_span,
+            "half1_older_range_utc": (
+                [_iso_utc(half1_bars[0][0]), _iso_utc(half1_bars[-1][0])] if half1_bars else []
+            ),
+            "half2_recent_bars": len(half2_bars),
+            "half2_recent_span_days": half2_span,
+            "half2_recent_range_utc": (
+                [_iso_utc(half2_bars[0][0]), _iso_utc(half2_bars[-1][0])] if half2_bars else []
+            ),
+        },
+        "baseline_regime_anatomy": baseline_anatomy,
+        "variants": rows,
+        "verdict": {
+            "any_variant_passed": len(passed) > 0,
+            "passed_ids": [r["id"] for r in passed],
+            "recommended_for_live_paper": passed[0]["id"] if passed else None,
+            "best_diagnostic_id": ranked_all[0]["id"] if ranked_all else None,
+            "status": (
+                "PASS_REGIME_SOLVED_READY_FOR_LIVE_PAPER"
+                if passed
+                else "FAIL_REGIME_NOT_SOLVED_DO_NOT_PROMOTE"
+            ),
+        },
+    }
+
 
 
 
