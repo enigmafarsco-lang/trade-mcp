@@ -454,8 +454,8 @@ def select_candidate_symbols(all_marketwatch_names: list[str], *, max_symbols: i
         ("USTEC", "NAS100", "US100", "NDX"),
         ("US30", "DJ30", "WS30"),
         ("SPX500", "US500", "SP500"),
-        ("DE40", "GER40", "DAX"),
-        ("USOIL", "XTIUSD", "WTI", "CL"),
+        ("DE40", "GER40", "DAX", "GER30", "DE30"),
+        ("USOIL", "XTIUSD", "WTI", "UKOIL", "XBRUSD", "BRENT", "CL"),
         ("BTCUSD",),
         ("ETHUSD",),
     ]

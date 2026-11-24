@@ -66,3 +66,52 @@ def test_multisymbol_cli_mock_smoke() -> None:
     finally:
         if out_file.exists():
             out_file.unlink()
+
+
+def test_inspect_symbol_live_subscribes_hidden_symbol(monkeypatch) -> None:
+    scripts_dir = str(Path(__file__).resolve().parents[1] / "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    import daytrade_multi_symbol_lab as cli  # noqa: E402
+
+    state = {"subscribed": False, "calls": []}
+
+    class FakeClient:
+        def call_tool(self, name, args):
+            state["calls"].append((name, args))
+            if name == "add_marketwatch_symbol":
+                state["subscribed"] = True
+            return {"ok": True}
+
+    class FakeFeed:
+        client = FakeClient()
+
+        def _call(self, name, args):
+            assert name == "get_marketwatch_symbols"
+            if not state["subscribed"]:
+                return {"symbols": [{"name": "EURUSD_i", "bid": 0.0, "ask": 0.0, "point": 0.00001, "trade_tick_value": 0.0}]}
+            return {
+                "symbols": [{
+                    "name": "EURUSD_i",
+                    "bid": 1.0810,
+                    "ask": 1.08112,
+                    "point": 0.00001,
+                    "trade_tick_size": 0.00001,
+                    "trade_tick_value": 1.0,
+                    "trade_contract_size": 100000.0,
+                    "currency_base": "EUR",
+                    "currency_profit": "USD",
+                    "volume_min": 0.01,
+                    "volume_max": 50.0,
+                    "volume_step": 0.01,
+                    "trade_stops_level": 0.0,
+                }]
+            }
+
+    monkeypatch.setattr(cli.time, "sleep", lambda _s: None)
+    spec, q = cli._inspect_symbol_live(FakeFeed(), "EURUSD_i")  # type: ignore[arg-type]
+    assert state["subscribed"] is True
+    assert ("add_marketwatch_symbol", {"symbol": "EURUSD_i"}) in state["calls"]
+    assert q["bid"] == 1.0810
+    assert spec["currency_base"] == "EUR"
+

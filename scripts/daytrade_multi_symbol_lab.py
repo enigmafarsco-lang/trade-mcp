@@ -77,15 +77,36 @@ def _discover_marketwatch_symbols(feed: ReadOnlyNativeFeed, *, max_symbols: int)
 
 
 def _inspect_symbol_live(feed: ReadOnlyNativeFeed, sym: str) -> tuple[dict[str, Any], dict[str, float]]:
-    row = exact_symbol(
-        feed._call("get_marketwatch_symbols", {"symbol": sym, "limit": 15, "include_hidden": True}),
-        sym,
-    )
-    spec = enrich_spec(reported_spec(row), row)
-    c_base = find(row, "currency_base", "base_currency")
-    if c_base is not None:
-        spec["currency_base"] = c_base
-    return spec, parse_quote(row)
+    """Read live spec & quote; if symbol is hidden in MT5 Market Watch, subscribe it cleanly first."""
+    def _read_once() -> tuple[dict[str, Any], dict[str, float]]:
+        row = exact_symbol(
+            feed._call("get_marketwatch_symbols", {"symbol": sym, "limit": 15, "include_hidden": True}),
+            sym,
+        )
+        spec = enrich_spec(reported_spec(row), row)
+        c_base = find(row, "currency_base", "base_currency")
+        if c_base is not None:
+            spec["currency_base"] = c_base
+        return spec, parse_quote(row)
+
+    try:
+        return _read_once()
+    except Blocked as exc:
+        if exc.reason not in ("missing_broker_spec", "invalid_data"):
+            raise
+        # Symbol is hidden / not yet subscribed in MT5 Market Watch -> add to Market Watch (non-trading)
+        try:
+            feed.client.call_tool("add_marketwatch_symbol", {"symbol": sym})
+        except McpError:
+            raise exc from None
+        last_err: Blocked = exc
+        for delay in (0.6, 1.0, 1.4):
+            time.sleep(delay)
+            try:
+                return _read_once()
+            except Blocked as e2:
+                last_err = e2
+        raise last_err from None
 
 
 def _mock_multisymbol_inputs() -> list[dict[str, Any]]:
