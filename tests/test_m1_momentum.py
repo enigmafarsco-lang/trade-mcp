@@ -425,4 +425,79 @@ def test_m5_vs_m1_validate_cli_mock_and_no_execution_imports(tmp_path, monkeypat
     assert "propose_open" not in script_text and "trade_send_market_order" not in script_text
 
 
+def test_volume_surge_filter_and_volume_dryup_exit():
+    base = 1790035200 + 14 * 3600
+    # 17 calm bars with baseline tick volume = 100
+    bars = [[float(base + i * 60), 3600.0, 3600.5, 3599.5, 3600.0, 100.0] for i in range(17)]
+    # Bar 17: strong bullish impulse WITH low volume (90) -> must be rejected when min_volume_ratio=1.4!
+    low_vol_bars = list(bars) + [
+        [float(base + 17 * 60), 3600.1, 3602.0, 3600.0, 3601.8, 90.0],
+        [float(base + 18 * 60), 3601.8, 3604.0, 3601.7, 3603.8, 120.0],
+        [float(base + 19 * 60), 3603.8, 3605.0, 3603.7, 3604.6, 50.0],
+    ]
+    res_low = replay_m1_momentum(
+        low_vol_bars, spec=ALPARI_SPEC, spread_price=0.34, htf_filter="none",
+        entry_mode="impulse_close", exit_mode="decel_and_trail",
+        stop_usd=5.0, max_lot=0.01, min_volume_ratio=1.4, volume_dryup_ratio=0.60,
+    )
+    assert res_low["signals_detected"] == 0
+
+    # Same impulse WITH volume surge (250 >= 1.4*100), then green bar 19 with sharp volume dryup (100 <= 0.6*250)
+    high_vol_bars = list(bars) + [
+        [float(base + 17 * 60), 3600.1, 3602.0, 3600.0, 3601.8, 250.0],
+        [float(base + 18 * 60), 3601.8, 3604.5, 3601.7, 3604.2, 220.0],
+        # Bar 19 stays green (NOT price deceleration), but tick volume collapses to 100 <= 0.60 * 250 -> volume_dryup!
+        [float(base + 19 * 60), 3604.2, 3605.5, 3604.1, 3605.3, 100.0],
+        [float(base + 20 * 60), 3605.3, 3605.5, 3599.0, 3599.5, 180.0],
+    ]
+    res_hi = replay_m1_momentum(
+        high_vol_bars, spec=ALPARI_SPEC, spread_price=0.34, htf_filter="none",
+        entry_mode="impulse_close", exit_mode="decel_and_trail",
+        stop_usd=5.0, max_lot=0.01, min_decel_profit_usd=1.0,
+        min_volume_ratio=1.4, volume_dryup_ratio=0.60,
+    )
+    assert res_hi["trades_closed"] == 1
+    assert res_hi["exit_reasons"].get("volume_dryup", 0) == 1
+    assert res_hi["realized_pnl_usd"] > 2.0
+
+
+def test_m5_oos_180d_cli_mock_and_isolation(tmp_path, monkeypatch, capsys):
+    spec_mod = importlib.util.spec_from_file_location(
+        "daytrade_m5_oos_180d", ROOT / "scripts/daytrade_m5_oos_180d.py"
+    )
+    cli = importlib.util.module_from_spec(spec_mod)
+    assert spec_mod and spec_mod.loader
+    spec_mod.loader.exec_module(cli)
+
+    paper_spec = importlib.util.spec_from_file_location(
+        "daytrade_m1_paper_window", ROOT / "scripts/daytrade_m1_paper_window.py"
+    )
+    paper_cli = importlib.util.module_from_spec(paper_spec)
+    assert paper_spec and paper_spec.loader
+    paper_spec.loader.exec_module(paper_cli)
+
+    monkeypatch.setattr(paper_cli, "ROOT", tmp_path)
+    monkeypatch.setattr(cli, "_save_private_json", paper_cli._save_private_json)
+    monkeypatch.setenv("TRADE_MCP_ALLOW_TRADING", "false")
+    monkeypatch.setenv("TRADE_MCP_PAPER_TRADING", "false")
+
+    rc = cli.main(["--mock", "--out", "logs/m5-oos-180d-smoke.json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] and payload["paper"] and payload["orders_submitted"] == 0
+    assert payload["parameters"]["pricing_basis"] == "contract_size"
+    oos = payload["locked_m5_oos"]
+    assert oos["split"]["unseen_older_oos_span_days"] > 60.0
+    assert [s["id"] for s in oos["strategies"]] == ["M5_5_LOCKED", "M5_3_LOCKED"]
+    assert "net_without_best_trade_usd" in oos["strategies"][0]["full_period"]
+    assert payload["experimental_volume_method_check"]["diagnostic_only_not_part_of_locked_oos_verdict"] is True
+    assert len(payload["experimental_volume_method_check"]["results"]) == 3
+    out_file = tmp_path / "logs" / "m5-oos-180d-smoke.json"
+    assert stat.S_IMODE(out_file.stat().st_mode) == 0o600
+
+    script_text = (ROOT / "scripts/daytrade_m5_oos_180d.py").read_text(encoding="utf-8")
+    assert "propose_open" not in script_text and "trade_send_market_order" not in script_text
+
+
+
 

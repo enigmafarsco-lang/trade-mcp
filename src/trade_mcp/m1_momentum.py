@@ -301,8 +301,9 @@ def detect_m1_impulse(
     breakout_lookback: int = 3,
     max_spread_to_bar: float = 0.22,
     pullback_frac: float = 0.30,
+    min_volume_ratio: float | None = None,
 ) -> dict[str, Any] | None:
-    """Detect an M1 momentum/acceleration signal from strictly closed bars <= idx-1.
+    """Detect an M1/M5 momentum/acceleration signal from strictly closed bars <= idx-1.
 
     Bar ``seg[idx]`` is the newly opening bar where entry may execute (zero lookahead).
     """
@@ -317,10 +318,18 @@ def detect_m1_impulse(
 
     b1 = seg[idx - 1]
     o1, h1, l1, c1 = b1[1], b1[2], b1[3], b1[4]
+    v1 = float(b1[5]) if len(b1) >= 6 else 0.0
     r1 = h1 - l1
     body1 = abs(c1 - o1)
     if r1 <= 0 or body1 <= 0:
         return None
+
+    if min_volume_ratio is not None and min_volume_ratio > 0:
+        look_start = max(0, idx - 21)
+        prev_vols = [float(seg[k][5]) for k in range(look_start, idx - 1) if len(seg[k]) >= 6]
+        avg_v = (sum(prev_vols) / len(prev_vols)) if prev_vols else 0.0
+        if avg_v > 0 and v1 < min_volume_ratio * avg_v:
+            return None
 
     side = "buy" if c1 > o1 else ("sell" if c1 < o1 else None)
     if side is None:
@@ -356,6 +365,7 @@ def detect_m1_impulse(
             "impulse_low": impulse_low,
             "impulse_high": impulse_high,
             "impulse_mid": impulse_mid,
+            "impulse_volume": v1,
             "atr_m1": atr,
             "limit_trigger_bid": None,
         }
@@ -387,6 +397,7 @@ def detect_m1_impulse(
         "impulse_low": l1,
         "impulse_high": h1,
         "impulse_mid": (o1 + c1) / 2.0,
+        "impulse_volume": v1,
         "atr_m1": atr,
         "limit_trigger_bid": limit_bid,
     }
@@ -462,6 +473,7 @@ class MomentumLeg:
     opened_bar_index: int
     impulse_body: float
     impulse_mid: float
+    impulse_volume: float = 0.0
     initial_risk_usd: float = 5.0
     target: float | None = None
     opened_via_pullback: bool = False
@@ -518,6 +530,8 @@ def replay_m1_momentum(
     min_decel_r: float | None = None,
     trail_arm_r: float | None = None,
     fixed_tp_r: float | None = None,
+    min_volume_ratio: float | None = None,
+    volume_dryup_ratio: float | None = None,
     htf_indices: tuple[
         tuple[list[int], list[HTFContext]],
         tuple[list[int], list[HTFContext]],
@@ -698,6 +712,7 @@ def replay_m1_momentum(
             opened_bar_index=bar_idx,
             impulse_body=sig["impulse_body"],
             impulse_mid=sig["impulse_mid"],
+            impulse_volume=float(sig.get("impulse_volume", 0.0)),
             initial_risk_usd=actual_risk,
             target=target_px,
             opened_via_pullback=via_pullback,
@@ -723,15 +738,18 @@ def replay_m1_momentum(
                 if pending_unfilled_pb_time is not None and pending_unfilled_pb_time == int(seg[i - 2][0]):
                     sig = detect_m1_impulse(
                         seg, atr_vals, i, entry_mode="impulse_2bar", spread_price=spread_price,
+                        min_volume_ratio=min_volume_ratio,
                     )
                 pending_unfilled_pb_time = None
                 if sig is None:
                     sig = detect_m1_impulse(
                         seg, atr_vals, i, entry_mode="impulse_pullback", spread_price=spread_price,
+                        min_volume_ratio=min_volume_ratio,
                     )
             else:
                 sig = detect_m1_impulse(
                     seg, atr_vals, i, entry_mode=entry_mode, spread_price=spread_price,
+                    min_volume_ratio=min_volume_ratio,
                 )
 
             opened_this_bar: MomentumLeg | None = None
@@ -853,14 +871,26 @@ def replay_m1_momentum(
                         _close_leg(lg, exit_px=close_exit, reason="fast_invalidation_cut", closed_at=bar_end)
                     open_legs = []
 
-                # 3b) Uncapped momentum deceleration exit while in meaningful profit
+                # 3b) Uncapped momentum deceleration or tick-volume dry-up exit while in profit
                 elif (
                     exit_mode == "decel_and_trail"
                     and total_net >= decel_threshold - 1e-9
-                    and _is_deceleration_bar(bar, side=side, impulse_body=lead.impulse_body)
+                    and (
+                        _is_deceleration_bar(bar, side=side, impulse_body=lead.impulse_body)
+                        or (
+                            volume_dryup_ratio is not None
+                            and volume_dryup_ratio > 0
+                            and lead.impulse_volume > 0
+                            and len(bar) >= 6
+                            and bar[5] > 0
+                            and bar[5] <= volume_dryup_ratio * lead.impulse_volume
+                        )
+                    )
                 ):
+                    decel_hit = _is_deceleration_bar(bar, side=side, impulse_body=lead.impulse_body)
+                    reason_lbl = "momentum_deceleration" if decel_hit else "volume_dryup"
                     for lg in open_legs:
-                        _close_leg(lg, exit_px=close_exit, reason="momentum_deceleration", closed_at=bar_end)
+                        _close_leg(lg, exit_px=close_exit, reason=reason_lbl, closed_at=bar_end)
                     open_legs = []
 
                 # 3c) Monotonic candle-low/high trailing stop (or BE-only lock for fixed_tp_and_be)
@@ -910,6 +940,11 @@ def replay_m1_momentum(
     realized = round(sum(t["net_pnl_usd"] for t in closed_trades), 4)
     gross_w = sum(t["net_pnl_usd"] for t in wins)
     gross_l = abs(sum(t["net_pnl_usd"] for t in losses))
+    max_single_win = max((t["net_pnl_usd"] for t in closed_trades), default=0.0)
+    max_single_loss = min((t["net_pnl_usd"] for t in closed_trades), default=0.0)
+    gross_w_excl_top = max(0.0, gross_w - max(0.0, max_single_win))
+    pnl_excl_largest_win = round(realized - max(0.0, max_single_win), 4)
+    pf_excl_largest_win = round(gross_w_excl_top / gross_l, 3) if gross_l > 0 else None
     avg_win = round(gross_w / len(wins), 4) if wins else None
     avg_loss = round(gross_l / len(losses), 4) if losses else None
     payoff = round(avg_win / avg_loss, 3) if (avg_win and avg_loss and avg_loss > 0) else None
@@ -948,11 +983,15 @@ def replay_m1_momentum(
         "wins": len(wins),
         "losses": len(losses),
         "win_rate_pct": win_rate,
+        "gross_profit_usd": round(gross_w, 4),
+        "gross_loss_usd": round(gross_l, 4),
         "avg_win_usd": avg_win,
         "avg_loss_usd": avg_loss,
         "payoff_ratio": payoff,
-        "max_single_win_usd": round(max((t["net_pnl_usd"] for t in closed_trades), default=0.0), 4),
-        "max_single_loss_usd": round(min((t["net_pnl_usd"] for t in closed_trades), default=0.0), 4),
+        "max_single_win_usd": round(max_single_win, 4),
+        "max_single_loss_usd": round(max_single_loss, 4),
+        "pnl_excl_largest_win_usd": pnl_excl_largest_win,
+        "pf_excl_largest_win": pf_excl_largest_win,
         "avg_volume": avg_vol,
         "avg_entry_spread_usd": avg_spread,
         "realized_pnl_usd": realized,
@@ -1897,6 +1936,287 @@ def validate_timeframe_candidates(
                 if passed
                 else "FAIL_DO_NOT_PROMOTE_TO_DEMO_OR_LIVE"
             ),
+        },
+    }
+
+
+def summarize_months_utc(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Aggregate closed trades chronologically by UTC calendar month (YYYY-MM)."""
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for tr in trades:
+        ym = datetime.fromtimestamp(float(tr.get("opened_at", 0.0)), tz=timezone.utc).strftime("%Y-%m")
+        buckets.setdefault(ym, []).append(tr)
+    out: list[dict[str, Any]] = []
+    for ym in sorted(buckets):
+        rows = buckets[ym]
+        wins = [r for r in rows if r["net_pnl_usd"] > 0]
+        losses = [r for r in rows if r["net_pnl_usd"] < 0]
+        gw = sum(r["net_pnl_usd"] for r in wins)
+        gl = abs(sum(r["net_pnl_usd"] for r in losses))
+        net = sum(r["net_pnl_usd"] for r in rows)
+        best = max((r["net_pnl_usd"] for r in rows), default=0.0)
+        worst = min((r["net_pnl_usd"] for r in rows), default=0.0)
+        out.append({
+            "month": ym,
+            "trades": len(rows),
+            "wins": len(wins),
+            "losses": len(losses),
+            "win_rate_pct": round(100.0 * len(wins) / len(rows), 2) if rows else None,
+            "gross_profit_usd": round(gw, 2),
+            "gross_loss_usd": round(gl, 2),
+            "net_pnl_usd": round(net, 2),
+            "best_trade_usd": round(best, 2),
+            "worst_trade_usd": round(worst, 2),
+            "pf": round(gw / gl, 3) if gl > 0 else None,
+        })
+    return out
+
+
+LOCKED_M5_OOS_STRATEGIES: list[dict[str, Any]] = [
+    {
+        "id": "M5_5_LOCKED",
+        "role": "primary_candidate",
+        "label": "M5 pullback_or_2bar | M15+H1+H4 | trail_only(0.8R) | $12 | 0.01lot | no-rollover",
+        "entry_mode": "pullback_or_2bar",
+        "htf_filter": "m15_h1_h4",
+        "exit_mode": "trail_only",
+        "stop_usd": 12.0,
+        "trail_arm_r": 0.8,
+        "min_decel_r": None,
+        "fixed_tp_r": None,
+        "blocked_utc_hours": ROLLOVER_BLOCKED_UTC_HOURS,
+    },
+    {
+        "id": "M5_3_LOCKED",
+        "role": "sibling_control",
+        "label": "M5 close | M15+H1+H4 | trail_only(0.8R) | $12 | 0.01lot | no-rollover",
+        "entry_mode": "impulse_close",
+        "htf_filter": "m15_h1_h4",
+        "exit_mode": "trail_only",
+        "stop_usd": 12.0,
+        "trail_arm_r": 0.8,
+        "min_decel_r": None,
+        "fixed_tp_r": None,
+        "blocked_utc_hours": ROLLOVER_BLOCKED_UTC_HOURS,
+    },
+]
+
+
+def _plain_trade_summary(res: dict[str, Any]) -> dict[str, Any]:
+    """Concise, plain-dollar summary of a replay result."""
+    return {
+        "trades": res["trades_closed"],
+        "wins": res["wins"],
+        "losses": res["losses"],
+        "win_rate_pct": res["win_rate_pct"],
+        "gross_won_usd": round(float(res["gross_profit_usd"]), 2),
+        "gross_lost_usd": round(float(res["gross_loss_usd"]), 2),
+        "net_pnl_usd": round(float(res["total_marked_pnl_usd"]), 2),
+        "avg_win_usd": round(float(res["avg_win_usd"]), 2) if res["avg_win_usd"] is not None else None,
+        "avg_loss_usd": round(float(res["avg_loss_usd"]), 2) if res["avg_loss_usd"] is not None else None,
+        "payoff_ratio": res["payoff_ratio"],
+        "best_trade_usd": round(float(res["max_single_win_usd"]), 2),
+        "worst_trade_usd": round(float(res["max_single_loss_usd"]), 2),
+        "net_without_best_trade_usd": round(float(res["pnl_excl_largest_win_usd"]), 2),
+        "pf": res["profit_factor"],
+        "pf_without_best_trade": res["pf_excl_largest_win"],
+        "max_dd_usd": round(float(res["max_drawdown_usd"]), 2),
+        "peak_margin_usd": round(float(res["peak_margin_used_usd"]), 2),
+        "exit_reasons": res["exit_reasons"],
+    }
+
+
+def evaluate_locked_m5_oos(
+    m5_bars: list[list[float]],
+    *,
+    spec: dict[str, Any],
+    symbol: str = "XAUUSD_i",
+    spread_price: float = 0.34,
+    m15_bars: list[list[float]] | None = None,
+    h1_bars: list[list[float]] | None = None,
+    h4_bars: list[list[float]] | None = None,
+    max_lot: float = 0.01,
+    leverage: float = 500.0,
+    recent_seen_days: int = 60,
+    strategies: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """True Out-of-Sample evaluation for locked M5 strategies over 180+ days.
+
+    Splits M5 cleanly into:
+      - ``unseen_older_oos``: strictly BEFORE the most recent ``recent_seen_days``
+        (completely unseen during prior 60-day selection!)
+      - ``seen_recent_window``: the most recent ``recent_seen_days``
+      - ``full_period``: entire fetched history + month-by-month breakdown.
+    """
+    clean_m5 = clean_ohlcv_bars(m5_bars)
+    if len(clean_m5) < 50:
+        raise ValueError("insufficient M5 bars for out-of-sample evaluation")
+
+    p_src = m15_bars if m15_bars else resample_bars_to_tf(clean_m5, src_seconds=300, dst_seconds=900)
+    m_src = h1_bars if h1_bars else resample_bars_to_tf(clean_m5, src_seconds=300, dst_seconds=3600)
+    g_src = h4_bars if h4_bars else resample_bars_to_tf(m_src, src_seconds=3600, dst_seconds=14400)
+    htf_indices = (
+        build_htf_index(p_src, period_seconds=900, ema_fast=9, ema_slow=21),
+        build_htf_index(m_src, period_seconds=3600, ema_fast=9, ema_slow=21),
+        build_htf_index(g_src, period_seconds=14400, ema_fast=20, ema_slow=50),
+    )
+    cov_raw = compute_htf_coverage(clean_m5, htf_indices=htf_indices)
+    coverage = {"m15_pct": cov_raw["m5_pct"], "h1_pct": cov_raw["m15_pct"], "h4_pct": cov_raw["h1_pct"]}
+
+    last_ts = int(clean_m5[-1][0])
+    cutoff_ts = last_ts - recent_seen_days * 86400
+    unseen_bars = [b for b in clean_m5 if int(b[0]) < cutoff_ts]
+    recent_bars = [b for b in clean_m5 if int(b[0]) >= cutoff_ts]
+    unseen_span_days = round((unseen_bars[-1][0] - unseen_bars[0][0]) / 86400.0, 2) if len(unseen_bars) >= 2 else 0.0
+    recent_span_days = round((recent_bars[-1][0] - recent_bars[0][0]) / 86400.0, 2) if len(recent_bars) >= 2 else 0.0
+
+    cost_ladder: list[tuple[str, float, float]] = [
+        ("base_live_spread", spread_price, 0.0),
+        ("stress_spread_050", max(spread_price, 0.50), 0.0),
+        ("stress_spread_050_comm5", max(spread_price, 0.50), 5.0),
+        ("stress_spread_070_comm7", max(spread_price, 0.70), 7.0),
+    ]
+
+    strat_list = strategies if strategies is not None else LOCKED_M5_OOS_STRATEGIES
+    out_rows: list[dict[str, Any]] = []
+
+    for st in strat_list:
+        base_kw: dict[str, Any] = {
+            "spec": spec,
+            "symbol": symbol,
+            "bar_seconds": 300,
+            "htf_indices": htf_indices,
+            "entry_mode": st["entry_mode"],
+            "htf_filter": st["htf_filter"],
+            "exit_mode": st["exit_mode"],
+            "stop_usd": float(st["stop_usd"]),
+            "max_lot": max_lot,
+            "max_legs": 1,
+            "leverage": leverage,
+            "max_margin_usd": 25.0,
+            "min_m5_adx": 18.0,
+            "blocked_utc_hours": tuple(st.get("blocked_utc_hours", ())),
+            "trail_arm_r": st.get("trail_arm_r"),
+            "min_decel_r": st.get("min_decel_r"),
+            "fixed_tp_r": st.get("fixed_tp_r"),
+        }
+
+        full_res = replay_m1_momentum(
+            clean_m5, spread_price=spread_price, commission_per_lot=0.0, include_trades=True, **base_kw,
+        )
+        full_trades = full_res.pop("trades", [])
+        months = summarize_months_utc(full_trades)
+        active_months = [m for m in months if m["trades"] >= 3]
+        pos_months = sum(1 for m in active_months if m["net_pnl_usd"] > 0)
+
+        recent_res = replay_m1_momentum(
+            recent_bars, spread_price=spread_price, commission_per_lot=0.0, **base_kw,
+        ) if len(recent_bars) >= 20 else None
+
+        oos_res = replay_m1_momentum(
+            unseen_bars, spread_price=spread_price, commission_per_lot=0.0, **base_kw,
+        ) if len(unseen_bars) >= 20 else None
+
+        # Cost stress on BOTH True OOS and Full Period
+        oos_stress: dict[str, dict[str, Any]] = {}
+        full_stress: dict[str, dict[str, Any]] = {}
+        for s_name, s_sp, s_comm in cost_ladder:
+            f_s = full_res if s_name == "base_live_spread" else replay_m1_momentum(
+                clean_m5, spread_price=s_sp, commission_per_lot=s_comm, **base_kw,
+            )
+            full_stress[s_name] = {
+                "spread_price": round(s_sp, 4),
+                "commission_per_lot": round(s_comm, 2),
+                "trades": f_s["trades_closed"],
+                "net_pnl_usd": round(float(f_s["total_marked_pnl_usd"]), 2),
+                "pf": f_s["profit_factor"],
+                "max_dd_usd": round(float(f_s["max_drawdown_usd"]), 2),
+            }
+            if oos_res is not None:
+                o_s = oos_res if s_name == "base_live_spread" else replay_m1_momentum(
+                    unseen_bars, spread_price=s_sp, commission_per_lot=s_comm, **base_kw,
+                )
+                oos_stress[s_name] = {
+                    "spread_price": round(s_sp, 4),
+                    "commission_per_lot": round(s_comm, 2),
+                    "trades": o_s["trades_closed"],
+                    "net_pnl_usd": round(float(o_s["total_marked_pnl_usd"]), 2),
+                    "pf": o_s["profit_factor"],
+                    "max_dd_usd": round(float(o_s["max_drawdown_usd"]), 2),
+                }
+
+        # Strict True Out-of-Sample gates
+        has_oos = oos_res is not None and unseen_span_days >= 45.0
+        oos_s050 = oos_stress.get("stress_spread_050")
+        gates = {
+            "oos_history_available_ge_45d": has_oos,
+            "oos_sample_ge_30": bool(oos_res and oos_res["trades_closed"] >= 30),
+            "oos_positive_and_pf_ge_1_15": bool(
+                oos_res and oos_res["total_marked_pnl_usd"] > 0 and (oos_res["profit_factor"] or 0.0) >= 1.15
+            ),
+            "oos_profitable_without_best_trade": bool(
+                oos_res and oos_res["pnl_excl_largest_win_usd"] > 0
+            ),
+            "oos_survives_spread_050": bool(
+                oos_s050 and oos_s050["net_pnl_usd"] > 0 and (oos_s050["pf"] or 0.0) >= 1.05
+            ),
+            "oos_drawdown_le_65": bool(oos_res and oos_res["max_drawdown_usd"] <= 65.0),
+            "full_months_majority_positive": bool(
+                len(active_months) >= 3 and (pos_months / len(active_months)) >= 0.65
+            ),
+        }
+        failed = [k for k, ok in gates.items() if not ok]
+        out_rows.append({
+            "id": st["id"],
+            "role": st.get("role", "candidate"),
+            "label": st["label"],
+            "unseen_older_oos": _plain_trade_summary(oos_res) if oos_res else None,
+            "seen_recent_window": _plain_trade_summary(recent_res) if recent_res else None,
+            "full_period": _plain_trade_summary(full_res),
+            "monthly_breakdown": months,
+            "active_months_positive": f"{pos_months}/{len(active_months)}",
+            "oos_cost_stress": oos_stress,
+            "full_cost_stress": full_stress,
+            "oos_gates": gates,
+            "failed_oos_gates": failed,
+            "oos_pass": len(failed) == 0,
+        })
+
+    primary = next((r for r in out_rows if r["id"] == "M5_5_LOCKED"), out_rows[0] if out_rows else None)
+    passed_ids = [r["id"] for r in out_rows if r["oos_pass"]]
+    if primary and primary["oos_pass"]:
+        verdict_status = "TRUE_OOS_PASSED_READY_FOR_LIVE_PAPER"
+    elif passed_ids:
+        verdict_status = "CONTROL_PASSED_PRIMARY_FAILED_REVIEW"
+    else:
+        verdict_status = "TRUE_OOS_FAILED_DO_NOT_PROMOTE"
+
+    return {
+        "ok": True,
+        "paper": True,
+        "executable": False,
+        "execution_authorized": False,
+        "orders_submitted": 0,
+        "htf_coverage_pct": coverage,
+        "split": {
+            "recent_seen_days": recent_seen_days,
+            "cutoff_utc": _iso_utc(cutoff_ts),
+            "unseen_older_oos_bars": len(unseen_bars),
+            "unseen_older_oos_span_days": unseen_span_days,
+            "unseen_older_oos_range_utc": (
+                [_iso_utc(unseen_bars[0][0]), _iso_utc(unseen_bars[-1][0])] if unseen_bars else []
+            ),
+            "seen_recent_bars": len(recent_bars),
+            "seen_recent_span_days": recent_span_days,
+            "seen_recent_range_utc": (
+                [_iso_utc(recent_bars[0][0]), _iso_utc(recent_bars[-1][0])] if recent_bars else []
+            ),
+        },
+        "strategies": out_rows,
+        "verdict": {
+            "status": verdict_status,
+            "primary_passed": bool(primary and primary["oos_pass"]),
+            "passed_ids": passed_ids,
         },
     }
 
