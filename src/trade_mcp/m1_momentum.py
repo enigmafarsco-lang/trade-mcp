@@ -532,6 +532,10 @@ def replay_m1_momentum(
     fixed_tp_r: float | None = None,
     min_volume_ratio: float | None = None,
     volume_dryup_ratio: float | None = None,
+    daily_loss_limit_usd: float | None = None,
+    weekly_loss_limit_usd: float | None = None,
+    loss_streak_pause_count: int = 0,
+    loss_streak_cooldown_bars: int = 0,
     htf_indices: tuple[
         tuple[list[int], list[HTFContext]],
         tuple[list[int], list[HTFContext]],
@@ -606,10 +610,28 @@ def replay_m1_momentum(
     peak_open_lots = 0.0
     peak_margin_used = 0.0
     loss_streak = 0
+    streak_since_cooldown = 0
     max_loss_streak = 0
+    current_day_id: int | None = None
+    current_iso_week: tuple[int, int] | None = None
+    daily_realized_pnl = 0.0
+    weekly_realized_pnl = 0.0
+    cooldown_until_epoch = 0.0
 
     def _refuse(reason: str) -> None:
         refusals[reason] = refusals.get(reason, 0) + 1
+
+    def _sync_calendar(ts: float) -> None:
+        nonlocal current_day_id, current_iso_week, daily_realized_pnl, weekly_realized_pnl
+        day_id = int(ts) // 86400
+        if day_id != current_day_id:
+            current_day_id = day_id
+            daily_realized_pnl = 0.0
+            iso = datetime.fromtimestamp(day_id * 86400, tz=timezone.utc).isocalendar()
+            wk = (int(iso[0]), int(iso[1]))
+            if wk != current_iso_week:
+                current_iso_week = wk
+                weekly_realized_pnl = 0.0
 
     def _leg_pnl(leg: MomentumLeg, exit_px: float) -> float:
         sign = 1.0 if leg.side == "buy" else -1.0
@@ -629,14 +651,30 @@ def replay_m1_momentum(
             max_drawdown = dd
 
     def _close_leg(leg: MomentumLeg, *, exit_px: float, reason: str, closed_at: float) -> None:
-        nonlocal balance, loss_streak, max_loss_streak
+        nonlocal balance, loss_streak, streak_since_cooldown, max_loss_streak
+        nonlocal daily_realized_pnl, weekly_realized_pnl, cooldown_until_epoch
+        _sync_calendar(closed_at)
         net = _leg_pnl(leg, exit_px)
         balance += net
+        daily_realized_pnl += net
+        weekly_realized_pnl += net
         if net < 0:
             loss_streak += 1
+            streak_since_cooldown += 1
             max_loss_streak = max(max_loss_streak, loss_streak)
+            if (
+                loss_streak_pause_count > 0
+                and loss_streak_cooldown_bars > 0
+                and streak_since_cooldown >= loss_streak_pause_count
+            ):
+                cooldown_until_epoch = max(
+                    cooldown_until_epoch,
+                    closed_at + loss_streak_cooldown_bars * bar_seconds,
+                )
+                streak_since_cooldown = 0
         else:
             loss_streak = 0
+            streak_since_cooldown = 0
         closed_trades.append({
             "trade_id": leg.trade_id,
             "side": leg.side,
@@ -730,6 +768,7 @@ def replay_m1_momentum(
             bar = seg[i]
             t, o, h, low, c = bar[0], bar[1], bar[2], bar[3], bar[4]
             bar_end = t + bar_seconds
+            _sync_calendar(t)
             atr_now = atr_vals[i] or atr_vals[i - 1] or max(h - low, tick_size)
 
             # 1) Detect impulse from strictly closed bars <= i-1 (zero lookahead).
@@ -757,6 +796,12 @@ def replay_m1_momentum(
                 signals_detected += 1
                 if blocked_hours_set and (int(t) // 3600) % 24 in blocked_hours_set:
                     _refuse("blocked_utc_hour")
+                elif daily_loss_limit_usd is not None and daily_realized_pnl <= -daily_loss_limit_usd + 1e-9:
+                    _refuse("daily_loss_brake")
+                elif weekly_loss_limit_usd is not None and weekly_realized_pnl <= -weekly_loss_limit_usd + 1e-9:
+                    _refuse("weekly_loss_brake")
+                elif cooldown_until_epoch > 0.0 and t < cooldown_until_epoch:
+                    _refuse("loss_streak_cooldown")
                 else:
                     m5 = lookup_htf(m5_t, m5_ctx, int(t))
                     m15 = lookup_htf(m15_t, m15_ctx, int(t))
@@ -2219,5 +2264,301 @@ def evaluate_locked_m5_oos(
             "passed_ids": passed_ids,
         },
     }
+
+
+M5_RISK_BRAKE_VARIANTS: list[dict[str, Any]] = [
+    {
+        "id": "R0_BASE",
+        "label": "Locked M5_5 baseline (stop $12, NO daily/weekly brake)",
+        "stop_usd": 12.0,
+        "daily_loss_limit_usd": None,
+        "weekly_loss_limit_usd": None,
+        "loss_streak_pause_count": 0,
+        "loss_streak_cooldown_bars": 0,
+    },
+    {
+        "id": "R1_DAILY15",
+        "label": "Locked M5_5 (stop $12) + Daily brake -$15",
+        "stop_usd": 12.0,
+        "daily_loss_limit_usd": 15.0,
+        "weekly_loss_limit_usd": None,
+        "loss_streak_pause_count": 0,
+        "loss_streak_cooldown_bars": 0,
+    },
+    {
+        "id": "R2_DAILY15_WEEKLY25",
+        "label": "Locked M5_5 (stop $12) + Daily -$15 + Weekly -$25",
+        "stop_usd": 12.0,
+        "daily_loss_limit_usd": 15.0,
+        "weekly_loss_limit_usd": 25.0,
+        "loss_streak_pause_count": 0,
+        "loss_streak_cooldown_bars": 0,
+    },
+    {
+        "id": "R3_BRAKE_PLUS_4H_CD",
+        "label": "Locked M5_5 (stop $12) + Daily -$15 + Weekly -$25 + 4h pause after 2 losses",
+        "stop_usd": 12.0,
+        "daily_loss_limit_usd": 15.0,
+        "weekly_loss_limit_usd": 25.0,
+        "loss_streak_pause_count": 2,
+        "loss_streak_cooldown_bars": 48,
+    },
+    {
+        "id": "R4_STOP10_BRAKES",
+        "label": "Locked M5_5 (tighter stop $10) + Daily -$15 + Weekly -$25",
+        "stop_usd": 10.0,
+        "daily_loss_limit_usd": 15.0,
+        "weekly_loss_limit_usd": 25.0,
+        "loss_streak_pause_count": 0,
+        "loss_streak_cooldown_bars": 0,
+    },
+    {
+        "id": "R5_STOP8_BRAKES",
+        "label": "Locked M5_5 (tighter stop $8) + Daily -$12 + Weekly -$20",
+        "stop_usd": 8.0,
+        "daily_loss_limit_usd": 12.0,
+        "weekly_loss_limit_usd": 20.0,
+        "loss_streak_pause_count": 0,
+        "loss_streak_cooldown_bars": 0,
+    },
+]
+
+
+def _capital_sizing_guide(max_dd_usd: float, peak_margin_usd: float) -> dict[str, Any]:
+    dd = max(0.0, float(max_dd_usd))
+    # Recommend starting capital where historical max DD <= 20% of equity (rounded up to nearest $50)
+    min_rec = max(150, int(math.ceil((dd * 5.0) / 50.0) * 50))
+    return {
+        "max_dd_usd": round(dd, 2),
+        "peak_margin_usd": round(peak_margin_usd, 2),
+        "dd_pct_of_100": round(dd, 1),
+        "dd_pct_of_250": round(dd / 2.5, 1),
+        "dd_pct_of_500": round(dd / 5.0, 1),
+        "dd_pct_of_1000": round(dd / 10.0, 1),
+        "min_recommended_account_usd_for_20pct_dd": min_rec,
+    }
+
+
+def evaluate_m5_risk_brakes(
+    m5_bars: list[list[float]],
+    *,
+    spec: dict[str, Any],
+    symbol: str = "XAUUSD_i",
+    spread_price: float = 0.34,
+    m15_bars: list[list[float]] | None = None,
+    h1_bars: list[list[float]] | None = None,
+    h4_bars: list[list[float]] | None = None,
+    max_lot: float = 0.01,
+    leverage: float = 500.0,
+    prior_seen_days: int = 180,
+    variants: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Test capital-protection risk brakes on locked M5_5 across up to 365 days.
+
+    Signal logic (pullback_or_2bar, M15+H1+H4, trail_only 0.8R, no rollover) is
+    held 100% FIXED across all variants. Only protective risk brakes vary.
+    """
+    clean_m5 = clean_ohlcv_bars(m5_bars)
+    if len(clean_m5) < 50:
+        raise ValueError("insufficient M5 bars for risk-brake evaluation")
+
+    p_src = m15_bars if m15_bars else resample_bars_to_tf(clean_m5, src_seconds=300, dst_seconds=900)
+    m_src = h1_bars if h1_bars else resample_bars_to_tf(clean_m5, src_seconds=300, dst_seconds=3600)
+    g_src = h4_bars if h4_bars else resample_bars_to_tf(m_src, src_seconds=3600, dst_seconds=14400)
+    htf_indices = (
+        build_htf_index(p_src, period_seconds=900, ema_fast=9, ema_slow=21),
+        build_htf_index(m_src, period_seconds=3600, ema_fast=9, ema_slow=21),
+        build_htf_index(g_src, period_seconds=14400, ema_fast=20, ema_slow=50),
+    )
+    cov_raw = compute_htf_coverage(clean_m5, htf_indices=htf_indices)
+    coverage = {"m15_pct": cov_raw["m5_pct"], "h1_pct": cov_raw["m15_pct"], "h4_pct": cov_raw["h1_pct"]}
+
+    last_ts = int(clean_m5[-1][0])
+    cutoff_180 = last_ts - prior_seen_days * 86400
+    older_brand_new = [b for b in clean_m5 if int(b[0]) < cutoff_180]
+    recent_180 = [b for b in clean_m5 if int(b[0]) >= cutoff_180]
+    older_span_days = (
+        round((older_brand_new[-1][0] - older_brand_new[0][0]) / 86400.0, 2)
+        if len(older_brand_new) >= 2
+        else 0.0
+    )
+    has_brand_new_oos = len(older_brand_new) >= 200 and older_span_days >= 45.0
+
+    cost_ladder: list[tuple[str, float, float]] = [
+        ("base_live_spread", spread_price, 0.0),
+        ("stress_spread_050", max(spread_price, 0.50), 0.0),
+        ("stress_spread_050_comm5", max(spread_price, 0.50), 5.0),
+        ("stress_spread_070_comm7", max(spread_price, 0.70), 7.0),
+    ]
+
+    var_list = variants if variants is not None else M5_RISK_BRAKE_VARIANTS
+    rows: list[dict[str, Any]] = []
+
+    for v in var_list:
+        base_kw: dict[str, Any] = {
+            "spec": spec,
+            "symbol": symbol,
+            "bar_seconds": 300,
+            "htf_indices": htf_indices,
+            "entry_mode": "pullback_or_2bar",
+            "htf_filter": "m15_h1_h4",
+            "exit_mode": "trail_only",
+            "stop_usd": float(v["stop_usd"]),
+            "max_lot": max_lot,
+            "max_legs": 1,
+            "leverage": leverage,
+            "max_margin_usd": 25.0,
+            "min_m5_adx": 18.0,
+            "trail_arm_r": 0.8,
+            "blocked_utc_hours": ROLLOVER_BLOCKED_UTC_HOURS,
+            "daily_loss_limit_usd": v.get("daily_loss_limit_usd"),
+            "weekly_loss_limit_usd": v.get("weekly_loss_limit_usd"),
+            "loss_streak_pause_count": int(v.get("loss_streak_pause_count", 0)),
+            "loss_streak_cooldown_bars": int(v.get("loss_streak_cooldown_bars", 0)),
+        }
+
+        full_res = replay_m1_momentum(
+            clean_m5, spread_price=spread_price, commission_per_lot=0.0, include_trades=True, **base_kw,
+        )
+        full_trades = full_res.pop("trades", [])
+        months = summarize_months_utc(full_trades)
+        active_months = [m for m in months if m["trades"] >= 3]
+        pos_months = sum(1 for m in active_months if m["net_pnl_usd"] > 0)
+
+        prior180_res = replay_m1_momentum(
+            recent_180, spread_price=spread_price, commission_per_lot=0.0, **base_kw,
+        ) if len(recent_180) >= 20 else None
+
+        brand_new_res = replay_m1_momentum(
+            older_brand_new, spread_price=spread_price, commission_per_lot=0.0, **base_kw,
+        ) if has_brand_new_oos else None
+
+        stress_full: dict[str, dict[str, Any]] = {}
+        for s_name, s_sp, s_comm in cost_ladder:
+            s_res = full_res if s_name == "base_live_spread" else replay_m1_momentum(
+                clean_m5, spread_price=s_sp, commission_per_lot=s_comm, **base_kw,
+            )
+            stress_full[s_name] = {
+                "spread_price": round(s_sp, 4),
+                "commission_per_lot": round(s_comm, 2),
+                "trades": s_res["trades_closed"],
+                "net_pnl_usd": round(float(s_res["total_marked_pnl_usd"]), 2),
+                "pf": s_res["profit_factor"],
+                "max_dd_usd": round(float(s_res["max_drawdown_usd"]), 2),
+            }
+
+        full_dd = float(full_res["max_drawdown_usd"])
+        full_pnl = float(full_res["total_marked_pnl_usd"])
+        mar_ratio = round(full_pnl / full_dd, 2) if full_dd > 0 else None
+        s050 = stress_full["stress_spread_050"]
+
+        gates: dict[str, bool] = {
+            "full_positive_and_pf_ge_1_20": full_pnl > 0 and (full_res["profit_factor"] or 0.0) >= 1.20,
+            "full_profitable_without_best_trade": float(full_res["pnl_excl_largest_win_usd"]) > 0,
+            "full_drawdown_le_60": full_dd <= 60.0,
+            "profit_to_dd_ratio_ge_2_0": bool(mar_ratio is not None and mar_ratio >= 2.0),
+            "survives_spread_050": s050["net_pnl_usd"] > 0 and (s050["pf"] or 0.0) >= 1.10,
+            "months_majority_positive": bool(
+                len(active_months) >= 3 and (pos_months / len(active_months)) >= 0.65
+            ),
+        }
+        if has_brand_new_oos and brand_new_res is not None:
+            gates["brand_new_older_oos_positive"] = (
+                float(brand_new_res["total_marked_pnl_usd"]) > 0
+                and (brand_new_res["profit_factor"] or 0.0) >= 1.10
+            )
+
+        failed = [k for k, ok in gates.items() if not ok]
+        refs = full_res["refusal_counts"]
+        rows.append({
+            "id": v["id"],
+            "label": v["label"],
+            "risk_controls": {
+                "stop_usd": v["stop_usd"],
+                "daily_loss_limit_usd": v.get("daily_loss_limit_usd"),
+                "weekly_loss_limit_usd": v.get("weekly_loss_limit_usd"),
+                "loss_streak_pause_count": v.get("loss_streak_pause_count", 0),
+                "loss_streak_cooldown_hours": round(
+                    int(v.get("loss_streak_cooldown_bars", 0)) * 5 / 60.0, 2
+                ),
+            },
+            "brakes_triggered": {
+                "daily_loss_brake": refs.get("daily_loss_brake", 0),
+                "weekly_loss_brake": refs.get("weekly_loss_brake", 0),
+                "loss_streak_cooldown": refs.get("loss_streak_cooldown", 0),
+                "oversized_candle_skipped": refs.get("volume_below_minimum", 0),
+            },
+            "brand_new_unseen_older_oos": _plain_trade_summary(brand_new_res) if brand_new_res else None,
+            "prior_180d_window": _plain_trade_summary(prior180_res) if prior180_res else None,
+            "full_period": {
+                **_plain_trade_summary(full_res),
+                "profit_to_dd_ratio": mar_ratio,
+                "max_loss_streak": full_res["max_loss_streak"],
+            },
+            "monthly_breakdown": months,
+            "active_months_positive": f"{pos_months}/{len(active_months)}",
+            "full_cost_stress": stress_full,
+            "capital_sizing_guide": _capital_sizing_guide(full_dd, float(full_res["peak_margin_used_usd"])),
+            "gates": gates,
+            "failed_gates": failed,
+            "all_gates_passed": len(failed) == 0,
+        })
+
+    passed = [r for r in rows if r["all_gates_passed"]]
+    passed.sort(
+        key=lambda r: (
+            r["full_period"]["profit_to_dd_ratio"] or 0.0,
+            r["full_cost_stress"]["stress_spread_050"]["pf"] or 0.0,
+        ),
+        reverse=True,
+    )
+    ranked_all = sorted(
+        rows,
+        key=lambda r: (
+            1 if r["all_gates_passed"] else 0,
+            sum(1 for ok in r["gates"].values() if ok),
+            r["full_period"]["profit_to_dd_ratio"] or 0.0,
+            r["full_period"]["net_pnl_usd"],
+        ),
+        reverse=True,
+    )
+
+    return {
+        "ok": True,
+        "paper": True,
+        "executable": False,
+        "execution_authorized": False,
+        "orders_submitted": 0,
+        "htf_coverage_pct": coverage,
+        "split": {
+            "prior_seen_days": prior_seen_days,
+            "cutoff_utc": _iso_utc(cutoff_180),
+            "has_brand_new_older_oos": has_brand_new_oos,
+            "brand_new_older_oos_bars": len(older_brand_new),
+            "brand_new_older_oos_span_days": older_span_days,
+            "brand_new_older_oos_range_utc": (
+                [_iso_utc(older_brand_new[0][0]), _iso_utc(older_brand_new[-1][0])]
+                if older_brand_new else []
+            ),
+            "prior_180d_bars": len(recent_180),
+            "prior_180d_range_utc": (
+                [_iso_utc(recent_180[0][0]), _iso_utc(recent_180[-1][0])]
+                if recent_180 else []
+            ),
+        },
+        "variants": rows,
+        "verdict": {
+            "any_variant_passed": len(passed) > 0,
+            "passed_ids": [r["id"] for r in passed],
+            "recommended_for_live_paper": passed[0]["id"] if passed else None,
+            "best_diagnostic_id": ranked_all[0]["id"] if ranked_all else None,
+            "status": (
+                "PASS_DRAWDOWN_CONTROLLED_READY_FOR_LIVE_PAPER"
+                if passed
+                else "FAIL_DRAWDOWN_OR_OOS_NOT_SOLVED"
+            ),
+        },
+    }
+
 
 

@@ -499,5 +499,90 @@ def test_m5_oos_180d_cli_mock_and_isolation(tmp_path, monkeypatch, capsys):
     assert "propose_open" not in script_text and "trade_send_market_order" not in script_text
 
 
+def test_daily_weekly_loss_brakes_and_loss_streak_cooldown():
+    # Build two consecutive losing impulses on the same UTC day, followed by a 3rd impulse same day
+    day1 = 1790035200 + 10 * 3600  # 2026-09-22T10:00:00Z
+    bars: list[list[float]] = []
+    px = 3600.0
+    # 16 calm bars
+    for i in range(16):
+        bars.append([float(day1 + i * 60), px, px + 0.5, px - 0.5, px, 100.0])
+    # Impulse 1 at bar 16 -> BUY at bar 17 -> immediately crashes -$6 (hits -$5 stop!)
+    bars.append([float(day1 + 16 * 60), 3600.1, 3602.0, 3600.0, 3601.8, 220.0])
+    bars.append([float(day1 + 17 * 60), 3601.8, 3601.9, 3595.0, 3595.5, 250.0])
+    # 5 calm bars around 3595.5
+    for k in range(5):
+        bars.append([float(day1 + (18 + k) * 60), 3595.5, 3596.0, 3595.0, 3595.5, 100.0])
+    # Impulse 2 at bar 23 -> BUY at bar 24 -> crashes -$6 (hits -$5 stop! daily_pnl = -$10)
+    bars.append([float(day1 + 23 * 60), 3595.6, 3597.5, 3595.5, 3597.3, 220.0])
+    bars.append([float(day1 + 24 * 60), 3597.3, 3597.4, 3590.5, 3591.0, 250.0])
+    # 5 calm bars around 3591.0
+    for k in range(5):
+        bars.append([float(day1 + (25 + k) * 60), 3591.0, 3591.5, 3590.5, 3591.0, 100.0])
+    # Impulse 3 at bar 30 (SAME UTC day, only 6 mins later!) -> MUST BE BLOCKED by daily brake -$9 OR 2-loss cooldown!
+    bars.append([float(day1 + 30 * 60), 3591.1, 3593.0, 3591.0, 3592.8, 220.0])
+    bars.append([float(day1 + 31 * 60), 3592.8, 3593.0, 3585.0, 3586.0, 250.0])
+
+    base_res = replay_m1_momentum(
+        bars, spec=ALPARI_SPEC, spread_price=0.34, htf_filter="none",
+        entry_mode="impulse_close", exit_mode="trail_only", stop_usd=5.0, max_lot=0.01,
+    )
+    daily_res = replay_m1_momentum(
+        bars, spec=ALPARI_SPEC, spread_price=0.34, htf_filter="none",
+        entry_mode="impulse_close", exit_mode="trail_only", stop_usd=5.0, max_lot=0.01,
+        daily_loss_limit_usd=9.0,
+    )
+    cd_res = replay_m1_momentum(
+        bars, spec=ALPARI_SPEC, spread_price=0.34, htf_filter="none",
+        entry_mode="impulse_close", exit_mode="trail_only", stop_usd=5.0, max_lot=0.01,
+        loss_streak_pause_count=2, loss_streak_cooldown_bars=30,
+    )
+    assert base_res["trades_closed"] == 3
+    assert daily_res["trades_closed"] == 2
+    assert daily_res["refusal_counts"].get("daily_loss_brake", 0) >= 1
+    assert cd_res["trades_closed"] == 2
+    assert cd_res["refusal_counts"].get("loss_streak_cooldown", 0) >= 1
+
+
+def test_m5_risk_brakes_365d_cli_mock_and_no_execution_imports(tmp_path, monkeypatch, capsys):
+    spec_mod = importlib.util.spec_from_file_location(
+        "daytrade_m5_risk_brakes_365d", ROOT / "scripts/daytrade_m5_risk_brakes_365d.py"
+    )
+    cli = importlib.util.module_from_spec(spec_mod)
+    assert spec_mod and spec_mod.loader
+    spec_mod.loader.exec_module(cli)
+
+    paper_spec = importlib.util.spec_from_file_location(
+        "daytrade_m1_paper_window", ROOT / "scripts/daytrade_m1_paper_window.py"
+    )
+    paper_cli = importlib.util.module_from_spec(paper_spec)
+    assert paper_spec and paper_spec.loader
+    paper_spec.loader.exec_module(paper_cli)
+
+    monkeypatch.setattr(paper_cli, "ROOT", tmp_path)
+    monkeypatch.setattr(cli, "_save_private_json", paper_cli._save_private_json)
+    monkeypatch.setenv("TRADE_MCP_ALLOW_TRADING", "false")
+    monkeypatch.setenv("TRADE_MCP_PAPER_TRADING", "false")
+
+    rc = cli.main(["--mock", "--out", "logs/m5-brakes-365d-smoke.json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] and payload["paper"] and payload["orders_submitted"] == 0
+    rb = payload["risk_brakes_validation"]
+    assert rb["split"]["has_brand_new_older_oos"] is True
+    assert len(rb["variants"]) == 6
+    assert [v["id"] for v in rb["variants"]] == [
+        "R0_BASE", "R1_DAILY15", "R2_DAILY15_WEEKLY25",
+        "R3_BRAKE_PLUS_4H_CD", "R4_STOP10_BRAKES", "R5_STOP8_BRAKES",
+    ]
+    assert "min_recommended_account_usd_for_20pct_dd" in rb["variants"][0]["capital_sizing_guide"]
+    out_file = tmp_path / "logs" / "m5-brakes-365d-smoke.json"
+    assert stat.S_IMODE(out_file.stat().st_mode) == 0o600
+
+    script_text = (ROOT / "scripts/daytrade_m5_risk_brakes_365d.py").read_text(encoding="utf-8")
+    assert "propose_open" not in script_text and "trade_send_market_order" not in script_text
+
+
+
 
 
