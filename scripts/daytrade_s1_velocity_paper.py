@@ -130,7 +130,7 @@ def _print_status(eng: S1VelocitySurferEngine, m1_ctx: dict[str, Any], bid: floa
         pos_s = "FLAT"
     print(
         f"[{now_str}] [S1 SURFER | ORDERS=0] {bid:.2f}/{ask:.2f} (sp={m.get('spread', 0):.2f}) | "
-        f"S1(streak={m.get('s1_streak', 0):+d} slope={m.get('s1_slope', 0):.1f}x vel={m.get('vel_ratio', 0):.1f}x) | "
+        f"S1(streak={m.get('s1_streak', 0):+d} slope={m.get('s1_slope', 0):.1f}x vel={m.get('vel_ratio', 0):.1f}x 60s={m.get('move_60s', 0):+.2f}) | "
         f"M1={m1_ctx.get('label')} (S={m1_ctx.get('support')} R={m1_ctx.get('resistance')}) | "
         f"Pos=[{pos_s}] | Waves={s['waves_count']} ({s['total_legs_executed']}L, {s['wins']}W/{s['losses']}L) "
         f"Real=${s['realized_pnl_usd']:+.2f} Unr=${s['unrealized_pnl_usd']:+.2f}",
@@ -146,6 +146,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-legs", type=int, default=6, help="Max winner-only legs per wave (1..6, default 6)")
     parser.add_argument("--vel-mult", type=float, default=2.5, help="Eye-speed multiplier vs 90s baseline (default 2.5)")
     parser.add_argument("--min-burst", type=float, default=0.90, help="Min 3-second $ burst for Leg 1 (default 0.90)")
+    parser.add_argument("--min-60s-move", type=float, default=0.0, help="Ripping-tape gate: require >= $X directional 60s move (0=off)")
     parser.add_argument("--max-spread", type=float, default=0.90, help="Max allowed live spread $ (default 0.90)")
     parser.add_argument("--add-interval", type=float, default=0.60, help="Min seconds between winner legs (default 0.60)")
     parser.add_argument("--add-profit", type=float, default=0.20, help="Min net $ move on last leg before adding (default 0.20)")
@@ -172,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
         max_legs=max_legs,
         vel_mult=args.vel_mult,
         min_burst_price=args.min_burst,
+        min_60s_move_price=args.min_60s_move,
         max_spread_price=args.max_spread,
         add_interval_sec=args.add_interval,
         add_min_profit_price=args.add_profit,

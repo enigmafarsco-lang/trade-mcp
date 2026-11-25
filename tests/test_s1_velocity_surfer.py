@@ -381,4 +381,36 @@ def test_sr_wall_guard_blocks_buying_right_under_m1_resistance() -> None:
     assert eng.signals_blocked_m1 >= 1
 
 
+def test_min_60s_move_gate_blocks_quiet_chop_and_allows_real_rip() -> None:
+    """Ripping-tape gate (min_60s_move_price) keeps S1 quiet in calm drift and unlocks on real >=$4/min moves."""
+    m1_bars, ticks = make_synthetic_s1_session(mode="normal_c3")
+    m1_ctx = analyze_m1_sr_context(m1_bars, server_now_ts=ticks[0][0])
+
+    # Require $5/60s move: our normal_c3 only moves ~$1.50 before entry -> blocked as quiet!
+    eng_quiet = S1VelocitySurferEngine(cfg=S1SurferConfig(leg_lot=0.01, max_legs=6, min_60s_move_price=5.0))
+    for ts, bid, ask in ticks[: 4 * 27]:
+        eng_quiet.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_ctx)
+    assert eng_quiet.basket is None
+    assert eng_quiet.signals_blocked_quiet >= 1
+
+    # Now prepend 35s of real downward trend (-$6.00 over 35s) before the burst -> unlocks immediately!
+    t_first = ticks[0][0]
+    lead_ticks: list[tuple[float, float, float]] = []
+    start_bid = ticks[0][1] + 6.00
+    for k in range(35 * 4):
+        lt = t_first - (35.0 - k * 0.25)
+        lb = round(start_bid - (6.00 * k / (35 * 4)), 2)
+        lead_ticks.append((lt, lb, round(lb + 0.32, 2)))
+
+    eng_rip = S1VelocitySurferEngine(cfg=S1SurferConfig(leg_lot=0.01, max_legs=6, min_60s_move_price=4.0))
+    opens = 0
+    for ts, bid, ask in lead_ticks + ticks:
+        for ev in eng_rip.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_ctx):
+            if ev["type"] == "OPEN_L1":
+                opens += 1
+    assert opens >= 1
+    assert eng_rip.waves_closed[0]["net_pnl_usd"] > 0
+
+
+
 

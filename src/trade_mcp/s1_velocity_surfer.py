@@ -157,6 +157,7 @@ class S1SurferConfig:
     c3_min_last_body: float = 0.20  # NORMAL_C3: latest completed candle C2 minimum body $
     sr_wall_buffer_price: float = 0.80  # block entering right INTO closed M1 Resistance/Support wall before clean break
     sr_break_clear_price: float = 0.30  # clean clearance beyond M1 S/R counts as breakout, not wall
+    min_60s_move_price: float = 0.0  # optional ripping-tape gate: require >= $X directional move over last 60s (0=off)
     extreme_slope_mult: float = 9.0  # extreme vertical blow-off -> stop adding at C5+ & tighten exit
     extreme_3s_move: float = 3.50  # or >= $3.50 move in 3s counts as extreme blow-off
     min_burst_price: float = 0.90  # minimum 3s move for normal C3 entry (spread-aware)
@@ -212,6 +213,7 @@ class S1VelocitySurferEngine:
     waves_closed: list[dict[str, Any]] = field(default_factory=list)
     signals_blocked_spread: int = 0
     signals_blocked_m1: int = 0
+    signals_blocked_quiet: int = 0
     last_metrics: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -289,6 +291,23 @@ class S1VelocitySurferEngine:
         base_vel = max(float(statistics.median(vel_samples)), self.cfg.base_vel_floor)
         base_body = max(float(statistics.median(body_samples)), self.cfg.base_s1_body_floor)
         return base_vel, base_body, len(vel_samples)
+
+    def _tape_move_60s(self, ts: float, mid: float) -> tuple[float, bool]:
+        """Return signed 60-second tape displacement ($/min) strictly from past completed S1 bars."""
+        if not self.s1_bars:
+            return 0.0, False
+        cutoff = int(ts) - 60
+        ref_bar = None
+        for bar in self.s1_bars:
+            if bar["sec"] >= cutoff:
+                ref_bar = bar
+                break
+        if ref_bar is None:
+            return 0.0, False
+        span = int(ts) - int(ref_bar["sec"])
+        if span < 20:
+            return 0.0, False
+        return round(mid - float(ref_bar["o"]), 3), True
 
     def _s1_candle_streak(self, base_body: float) -> tuple[int, int, float, float]:
         """Return (streak_count, streak_dir, c1_slope_mult, last_slope_mult) on completed S1 candles."""
@@ -421,6 +440,7 @@ class S1VelocitySurferEngine:
         mid, completed_s1 = self._record_tick(ts, bid, ask)
         move_3s, eff_3s, has_3s = self._window_move_and_eff(ts, self.cfg.burst_window_sec)
         move_2s, _, has_2s = self._window_move_and_eff(ts, self.cfg.decel_window_sec)
+        move_60s, has_60s = self._tape_move_60s(ts, mid)
         base_vel, base_body, base_n = self._baselines(ts)
         vel_ratio = round(abs(move_3s) / base_vel, 2) if (has_3s and base_vel > 0) else 0.0
         streak_n, streak_dir, c1_slope, last_slope = self._s1_candle_streak(base_body)
@@ -432,6 +452,7 @@ class S1VelocitySurferEngine:
             "spread": spread,
             "move_3s": round(move_3s, 3),
             "move_2s": round(move_2s, 3),
+            "move_60s": round(move_60s, 2),
             "eff_3s": round(eff_3s, 2),
             "base_vel": round(base_vel, 3),
             "base_s1_body": round(base_body, 3),
@@ -750,6 +771,8 @@ class S1VelocitySurferEngine:
 
             if spread > self.cfg.max_spread_price:
                 self.signals_blocked_spread += 1
+            elif self.cfg.min_60s_move_price > 0.0 and (not has_60s or (move_60s * burst_dir) < self.cfg.min_60s_move_price):
+                self.signals_blocked_quiet += 1
             elif m1_bias != burst_dir or blocked_by_sr_wall:
                 self.signals_blocked_m1 += 1
             else:
@@ -797,6 +820,7 @@ class S1VelocitySurferEngine:
             "pf": pf,
             "signals_blocked_spread": self.signals_blocked_spread,
             "signals_blocked_m1": self.signals_blocked_m1,
+            "signals_blocked_quiet": self.signals_blocked_quiet,
             "open_basket": self.basket,
             "last_metrics": self.last_metrics,
         }
@@ -1025,6 +1049,32 @@ def replay_calibration_sweep(
                 news_c1_mult=4.5,
                 news_c1_min_body=0.65,
                 c2_min_confirm_body=0.25,
+                add_min_profit_price=0.18,
+                loss_cooldown_sec=25.0,
+                consec_loss_cooldown_sec=50.0,
+            ),
+        ),
+        (
+            "v2.2_RIP_4.0",
+            S1SurferConfig(
+                leg_lot=leg_lot,
+                max_legs=max_legs,
+                vel_mult=3.0,
+                min_burst_price=1.20,
+                min_60s_move_price=4.0,
+                add_min_profit_price=0.18,
+                loss_cooldown_sec=20.0,
+                consec_loss_cooldown_sec=45.0,
+            ),
+        ),
+        (
+            "v2.2_RIP_5.5",
+            S1SurferConfig(
+                leg_lot=leg_lot,
+                max_legs=max_legs,
+                vel_mult=3.2,
+                min_burst_price=1.50,
+                min_60s_move_price=5.5,
                 add_min_profit_price=0.18,
                 loss_cooldown_sec=25.0,
                 consec_loss_cooldown_sec=50.0,
