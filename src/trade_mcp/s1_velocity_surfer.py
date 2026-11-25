@@ -178,6 +178,7 @@ class S1SurferConfig:
     decel_loss_cut_sec: float = 2.0  # cut dead/stalled losing 1s scalp quickly instead of holding 5s
     disable_decel_exit: bool = False  # wave-rider mode: ride normal 2-5s breaths via structural SL & trail
     decel_only_in_loss_1l: bool = False  # hybrid: cut stalled 1L losers fast after decel_loss_cut_sec, never cut winners
+    loss_cut_min_loss_price: float = 0.0  # only trigger stalled_loss_cut once 1L is at least -$X in loss (avoids cutting -$0.30 breaths)
     candle_cap_adds: bool = True  # when False (wave-rider), winner pyramiding continues across multi-second waves
     sl_min_breathing_room: float = 0.0  # min $ gap between locked SL and live exit price (prevents $0.20 choke-outs)
     be_arm_price: float = 0.0  # lock 1L to breakeven (+$0.08) once open gain reaches this $ amount (0=off)
@@ -701,11 +702,11 @@ class S1VelocitySurferEngine:
             elif (
                 self.cfg.decel_only_in_loss_1l
                 and len(b["legs"]) == 1
-                and avg_gain <= 0.0
+                and avg_gain <= -max(0.0, self.cfg.loss_cut_min_loss_price)
                 and hold_sec >= self.cfg.decel_loss_cut_sec
                 and has_2s
             ):
-                # Hybrid fast-loss-cut: cut dead/reversing 1L losers quickly while NEVER touching winners!
+                # Hybrid fast-loss-cut: cut dead/reversing 1L losers quickly while NEVER touching winners or shallow breaths!
                 if signed_vel_2s <= 0.0:
                     b["decel_ticks"] += 1
                 else:
@@ -1036,16 +1037,13 @@ def replay_recorded_ticks(
     return s
 
 
-def replay_calibration_sweep(
-    tick_jsonl_path: Path,
+def s1_calibration_profiles(
     *,
     leg_lot: float = 0.01,
     max_legs: int = 6,
-    initial_capital_usd: float = 1000.0,
-    rebuild_m1: bool = False,
-) -> list[dict[str, Any]]:
-    """Run 6 named S1 parameter profiles side-by-side on the exact same recorded ticks (ORDERS=0)."""
-    profiles: list[tuple[str, S1SurferConfig]] = [
+) -> list[tuple[str, S1SurferConfig]]:
+    """Canonical named S1 parameter profiles shared between --replay-sweep and live --profile."""
+    return [
         (
             "v2.0_LEGACY_5S",
             S1SurferConfig(
@@ -1329,7 +1327,95 @@ def replay_calibration_sweep(
                 consec_loss_cooldown_sec=60.0,
             ),
         ),
+        (
+            "v2.4_GOLD_RIP4",
+            S1SurferConfig(
+                leg_lot=leg_lot,
+                max_legs=max_legs,
+                vel_mult=3.0,
+                min_burst_price=1.20,
+                min_60s_move_price=4.0,
+                add_interval_sec=2.0,
+                add_min_profit_price=1.00,
+                min_stop_price=1.80,
+                max_stop_price=2.60,
+                decel_loss_cut_sec=6.0,
+                disable_decel_exit=True,
+                decel_only_in_loss_1l=True,
+                loss_cut_min_loss_price=0.85,
+                candle_cap_adds=False,
+                sl_min_breathing_room=1.10,
+                be_arm_price=1.40,
+                require_be_on_add=True,
+                s1_reversal_cut_body=0.0,
+                trail_arm_price=1.80,
+                trail_min_pullback=1.35,
+                trail_max_pullback_price=3.60,
+                trail_giveback_frac=0.32,
+                multi_leg_giveback_frac=0.22,
+                max_hold_sec=240.0,
+                loss_cooldown_sec=30.0,
+                consec_loss_cooldown_sec=60.0,
+            ),
+        ),
+        (
+            "v2.4_GOLD_RIP5.5",
+            S1SurferConfig(
+                leg_lot=leg_lot,
+                max_legs=max_legs,
+                vel_mult=3.2,
+                min_burst_price=1.50,
+                min_60s_move_price=5.5,
+                add_interval_sec=2.0,
+                add_min_profit_price=1.00,
+                min_stop_price=1.60,
+                max_stop_price=2.40,
+                decel_loss_cut_sec=6.0,
+                disable_decel_exit=True,
+                decel_only_in_loss_1l=True,
+                loss_cut_min_loss_price=0.85,
+                candle_cap_adds=False,
+                sl_min_breathing_room=1.10,
+                be_arm_price=1.40,
+                require_be_on_add=True,
+                s1_reversal_cut_body=0.0,
+                trail_arm_price=1.80,
+                trail_min_pullback=1.35,
+                trail_max_pullback_price=3.60,
+                trail_giveback_frac=0.32,
+                multi_leg_giveback_frac=0.22,
+                max_hold_sec=240.0,
+                loss_cooldown_sec=30.0,
+                consec_loss_cooldown_sec=60.0,
+            ),
+        ),
     ]
+
+
+def build_s1_profile_config(
+    profile_name: str,
+    *,
+    leg_lot: float = 0.01,
+    max_legs: int = 6,
+) -> S1SurferConfig:
+    """Resolve a canonical profile name to its exact S1SurferConfig."""
+    by_name = dict(s1_calibration_profiles(leg_lot=leg_lot, max_legs=max_legs))
+    if profile_name not in by_name:
+        valid = ", ".join(by_name.keys())
+        raise ValueError(f"Unknown S1 profile '{profile_name}'. Valid profiles: {valid}")
+    return by_name[profile_name]
+
+
+def replay_calibration_sweep(
+    tick_jsonl_path: Path,
+    *,
+    leg_lot: float = 0.01,
+    max_legs: int = 6,
+    initial_capital_usd: float = 1000.0,
+    rebuild_m1: bool = False,
+) -> list[dict[str, Any]]:
+    """Run all canonical S1 parameter profiles side-by-side on the exact same recorded ticks (ORDERS=0)."""
+    profiles = s1_calibration_profiles(leg_lot=leg_lot, max_legs=max_legs)
     rows: list[dict[str, Any]] = []
     for name, pcfg in profiles:
         res = replay_recorded_ticks(

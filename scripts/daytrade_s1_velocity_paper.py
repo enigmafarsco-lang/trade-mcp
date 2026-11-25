@@ -42,6 +42,7 @@ from trade_mcp.s1_velocity_surfer import (  # noqa: E402
     S1VelocitySurferEngine,
     analyze_m1_sr_context,
     append_jsonl_private,
+    build_s1_profile_config,
     make_synthetic_s1_session,
     replay_calibration_sweep,
     replay_recorded_ticks,
@@ -159,6 +160,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--replay-all", action="store_true", help="Show ALL waves in --replay (no 80-wave cap)")
     parser.add_argument("--replay-sweep", nargs="+", default=[], help="Compare S1 calibration profiles across 1 or more recorded tick JSONL files")
     parser.add_argument("--show-profile", default="", help="Print per-file wave list for a specific profile during --replay-sweep")
+    parser.add_argument("--profile", default="", help="Load an exact canonical sweep profile for live Paper or --replay (e.g. v2.4_GOLD_RIP4)")
     parser.add_argument("--rebuild-m1", action="store_true", help="Rebuild causal M1 context from recorded ticks during --replay")
     parser.add_argument("--wave-rider", action="store_true", help="Enable v2.3 breath-proof Wave-Rider exits (no 1.8s panic decel cut, wider trail & SL breathing room)")
     parser.add_argument("--safe-hybrid", action="store_true", help="Enable v2.4 Safe-Pyramid Hybrid (fast 1L loss cut, BE arm, risk-free pyramid gate, capped pullback trail)")
@@ -172,7 +174,10 @@ def main(argv: list[str] | None = None) -> int:
     leg_lot = max(0.01, min(0.05, round(args.leg_lot, 2)))
     max_legs = max(1, min(6, int(args.max_legs)))
 
-    if args.safe_hybrid:
+    active_profile_label = args.profile or ("safe_hybrid" if args.safe_hybrid else ("wave_rider" if args.wave_rider else "custom"))
+    if args.profile:
+        cfg = build_s1_profile_config(args.profile, leg_lot=leg_lot, max_legs=max_legs)
+    elif args.safe_hybrid:
         cfg = S1SurferConfig(
             leg_lot=leg_lot,
             max_legs=max_legs,
@@ -400,10 +405,10 @@ def main(argv: list[str] | None = None) -> int:
 
             eng = S1VelocitySurferEngine(cfg=cfg, initial_capital_usd=args.capital)
             print(
-                f"[START | S1 VELOCITY SURFER | PAPER ONLY | ORDERS=0] {args.symbol} | "
+                f"[START | S1 VELOCITY SURFER | PAPER ONLY | ORDERS=0] {args.symbol} | PROFILE={active_profile_label} | "
                 f"Leg={leg_lot:.2f}x{max_legs} (max {leg_lot * max_legs:.2f} lot ONLY in profit) | "
-                f"vel>={cfg.vel_mult}x burst>=${cfg.min_burst_price} maxSp=${cfg.max_spread_price} "
-                f"decel<={cfg.decel_ratio:.0%} | poll={args.poll_seconds}s"
+                f"vel>={cfg.vel_mult}x burst>=${cfg.min_burst_price} 60s>=${cfg.min_60s_move_price} maxSp=${cfg.max_spread_price} "
+                f"| poll={args.poll_seconds}s"
                 + ("" if args.no_record else f" | REC={tick_path.name}"),
                 flush=True,
             )

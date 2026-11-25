@@ -21,6 +21,7 @@ from trade_mcp.s1_velocity_surfer import (  # noqa: E402
     S1SurferConfig,
     S1VelocitySurferEngine,
     analyze_m1_sr_context,
+    build_s1_profile_config,
     make_synthetic_s1_session,
     replay_recorded_ticks,
 )
@@ -546,6 +547,43 @@ def test_v24_safe_pyramid_never_turns_winner_into_multi_leg_loser() -> None:
     assert w2["legs_count"] >= 2
     assert w2["exit_reason"] == "tick_trail_exit"
     assert w2["net_pnl_usd"] > 20.0
+
+
+def test_build_s1_profile_config_and_shallow_breath_survives_loss_cut() -> None:
+    """Canonical --profile loader resolves v2.4_GOLD_* and loss_cut_min_loss_price ignores -$0.35 shallow breaths."""
+    cfg = build_s1_profile_config("v2.4_GOLD_RIP4", leg_lot=0.01, max_legs=6)
+    assert cfg.require_be_on_add is True
+    assert cfg.loss_cut_min_loss_price == 0.85
+    assert cfg.decel_loss_cut_sec == 6.0
+
+    with pytest.raises(ValueError, match="Unknown S1 profile"):
+        build_s1_profile_config("DOES_NOT_EXIST")
+
+    # Shallow -$0.35 breath at hold=7s must NOT trigger stalled_loss_cut when loss_cut_min_loss_price=0.85!
+    t0 = 1_764_099_000.0
+    bull_ctx = {"bias": 1, "label": "BULL_TREND", "support": 3440.0, "resistance": 3530.0}
+    eng = S1VelocitySurferEngine(cfg=cfg)
+    spread = 0.40
+    bid = 3450.00
+    for step in range(4 * 60):
+        sec = step * 0.25
+        if sec < 35.0:
+            bid = round(3450.00 + (5.00 * sec / 35.0), 2)
+        elif sec < 38.0:
+            bid = round(bid + 0.18, 2)  # triggers BUY L1
+        elif sec < 45.0:
+            # Flat/shallow dip around -$0.30 net of entry for 7s -> MUST survive!
+            bid = round(bid + (-0.01 if (step % 4 == 0) else 0.005), 2)
+        elif sec < 54.0:
+            bid = round(bid + 0.20, 2)  # wave launches!
+        else:
+            bid = round(bid - 0.25, 2)
+        eng.on_tick(ts=t0 + sec, bid=bid, ask=round(bid + spread, 2), m1_context=bull_ctx)
+
+    assert len(eng.waves_closed) >= 1
+    assert eng.waves_closed[0]["exit_reason"] != "stalled_loss_cut"
+    assert eng.waves_closed[0]["net_pnl_usd"] > 3.0
+
 
 
 
