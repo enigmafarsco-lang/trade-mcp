@@ -11,7 +11,6 @@ from typing import Any
 
 from trade_mcp.candlestick_lab import _summarize_trades
 
-
 TIMEFRAME_SECONDS: dict[str, int] = {
     "M1": 60,
     "M5": 300,

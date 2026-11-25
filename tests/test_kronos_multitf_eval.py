@@ -36,7 +36,7 @@ def test_select_chronological_origins_non_overlapping() -> None:
     assert len(origins) == 40
     assert origins[0] >= 256
     assert origins[-1] + 12 <= len(bars)
-    assert all(b - a >= 12 for a, b in zip(origins, origins[1:]))
+    assert all(b - a >= 12 for a, b in zip(origins, origins[1:], strict=False))
 
 
 def test_evaluate_kronos_predictions_oracle_and_conviction_filter() -> None:
