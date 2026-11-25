@@ -273,3 +273,55 @@ def test_replay_rebuilds_causal_m1_when_recording_had_insufficient_m1(tmp_path: 
     assert rep["realized_pnl_usd"] > 0
     assert rep["orders_submitted"] == 0
 
+
+def test_v21_fast_s1_reversal_cut_and_loss_cooldown() -> None:
+    """v2.1: 1L trade that reverses on the next completed S1 candle cuts quickly (<=2.5s) & applies loss cooldown."""
+    m1_bars, ticks = make_synthetic_s1_session(mode="normal_c3")
+    m1_ctx = analyze_m1_sr_context(m1_bars, server_now_ts=ticks[0][0])
+    eng = S1VelocitySurferEngine(
+        cfg=S1SurferConfig(leg_lot=0.01, max_legs=6, s1_reversal_cut_body=0.30, loss_cooldown_sec=20.0)
+    )
+
+    rev_step = 0
+    for ts, bid, ask in ticks:
+        if eng.basket is not None:
+            rev_step += 1
+            # Ramp smoothly up +$0.12/0.25s (a real +$0.48/s opposite green S1 candle, still inside $1.50 hard SL)
+            bid = round(float(eng.basket["avg_entry"]) + 0.12 * rev_step, 2)
+            ask = round(bid + 0.32, 2)
+        eng.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_ctx)
+        if eng.waves_closed:
+            break
+
+    assert len(eng.waves_closed) == 1
+    w = eng.waves_closed[0]
+    assert w["legs_count"] == 1
+    assert w["exit_reason"] == "s1_reversal_cut"
+    assert w["hold_seconds"] <= 2.5
+    assert eng.consecutive_losses == 1
+    assert eng.cooldown_until >= (w["closed_at"] + 19.5)
+
+
+def test_replay_calibration_sweep_cli_smoke(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("TRADE_MCP_ALLOW_TRADING", "false")
+    monkeypatch.setenv("TRADE_MCP_PAPER_TRADING", "true")
+    m1_bars, ticks = make_synthetic_s1_session(mode="news_steep_confirm")
+    m1_ctx = analyze_m1_sr_context(m1_bars, server_now_ts=ticks[0][0])
+    rec = tmp_path / "sweep_ticks.jsonl"
+    with rec.open("w", encoding="utf-8") as fh:
+        for ts, bid, ask in ticks:
+            fh.write(json.dumps({"ts": ts, "bid": bid, "ask": ask, "m1": m1_ctx}) + "\n")
+
+    rc = cli.main(["--replay-sweep", str(rec)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "S1 VELOCITY CALIBRATION SWEEP (ORDERS=0)" in out
+    assert "v2.0_LEGACY_5S" in out
+    assert "v2.1_DEFAULT" in out
+    assert "BEST PROFILE WAVES:" in out
+
+

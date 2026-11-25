@@ -150,15 +150,16 @@ class S1SurferConfig:
     vel_mult: float = 2.5  # normal-session C3 trigger: live 3s speed >= 2.5x baseline
     news_c1_mult: float = 5.0  # news steep C1 probe: |body(C1)| >= 5x baseline S1 body
     news_c1_min_body: float = 0.55  # minimum $ body for steep news C1 probe
+    c2_min_confirm_body: float = 0.20  # minimum $ C2 body in wave direction to confirm NEWS_STEEP_C1
     extreme_slope_mult: float = 9.0  # extreme vertical blow-off -> stop adding at C5+ & tighten exit
     extreme_3s_move: float = 3.50  # or >= $3.50 move in 3s counts as extreme blow-off
-    min_burst_price: float = 0.70  # minimum 3s move for normal C3 entry
+    min_burst_price: float = 0.90  # minimum 3s move for normal C3 entry (spread-aware)
     min_efficiency: float = 0.65
     max_spread_price: float = 0.90
     latency_sec: float = 0.25
     add_interval_sec: float = 0.60  # winner add cadence
     c3_add_interval_sec: float = 0.35  # rapid-fire inside confirmed C3 when prior leg is in profit
-    add_min_profit_price: float = 0.15  # last leg must be >= +$0.15 net of spread before firing next leg
+    add_min_profit_price: float = 0.20  # last leg must be >= +$0.20 net of spread before firing next leg
     add_min_vel_ratio: float = 1.4
     initial_stop_mult: float = 1.25
     min_stop_price: float = 1.50
@@ -166,14 +167,17 @@ class S1SurferConfig:
     decel_ratio: float = 0.28
     steep_decel_ratio: float = 0.45  # tighter decel exit after extreme blow-off
     decel_confirm_ticks: int = 2
-    decel_min_hold_sec: float = 2.0
+    decel_min_hold_sec: float = 1.5
+    decel_loss_cut_sec: float = 2.0  # cut dead/stalled losing 1s scalp quickly instead of holding 5s
+    s1_reversal_cut_body: float = 0.30  # cut 1L immediately if a completed S1 candle reverses >= $0.30 in loss
     trail_arm_price: float = 0.35
     trail_min_pullback: float = 0.45
     trail_giveback_frac: float = 0.35
     steep_giveback_frac: float = 0.22
     max_hold_sec: float = 120.0
     win_cooldown_sec: float = 2.0
-    loss_cooldown_sec: float = 6.0
+    loss_cooldown_sec: float = 20.0
+    consec_loss_cooldown_sec: float = 45.0  # step back after >=2 consecutive choppy losses
 
 
 @dataclass
@@ -192,6 +196,7 @@ class S1VelocitySurferEngine:
     pending_order: dict[str, Any] | None = None
     basket: dict[str, Any] | None = None
     cooldown_until: float = 0.0
+    consecutive_losses: int = 0
     next_wave_id: int = 1
 
     # Stats
@@ -355,7 +360,12 @@ class S1VelocitySurferEngine:
             "orders_submitted": 0,
         }
         self.waves_closed.append(rec)
-        cd = self.cfg.win_cooldown_sec if pnl > 0 else self.cfg.loss_cooldown_sec
+        if pnl > 0:
+            self.consecutive_losses = 0
+            cd = self.cfg.win_cooldown_sec
+        else:
+            self.consecutive_losses += 1
+            cd = self.cfg.consec_loss_cooldown_sec if self.consecutive_losses >= 2 else self.cfg.loss_cooldown_sec
         self.cooldown_until = ts + cd
         return rec
 
@@ -524,9 +534,10 @@ class S1VelocitySurferEngine:
                 if c_slope >= self.cfg.extreme_slope_mult or abs(move_3s) >= self.cfg.extreme_3s_move:
                     b["extreme_blowoff"] = True
 
-                # News C1 Probe -> check C2 close confirmation!
+                # News C1 Probe -> check C2 close confirmation (requires real body >= c2_min_confirm_body!)
                 if not b["c2_confirmed"] and b["wave_candle_num"] == 2:
-                    if (sdir == 1 and c_body > 0) or (sdir == -1 and c_body < 0):
+                    c2_min = max(self.cfg.c2_min_confirm_body, spread * 0.45)
+                    if (sdir == 1 and c_body >= c2_min) or (sdir == -1 and c_body <= -c2_min):
                         b["c2_confirmed"] = True
                         b["wave_candle_num"] = 3  # now entering Candle 3 ("کله‌خری" unlocked!)
                         events.append({
@@ -537,13 +548,28 @@ class S1VelocitySurferEngine:
                             "extreme_blowoff": b["extreme_blowoff"],
                         })
                     else:
-                        # Fake steep C1 wick: C2 reversed -> cut immediately instead of hoping!
+                        # Fake or weak steep C1 wick: C2 failed to confirm -> cut immediately!
                         closed = self._close_basket(ex_px, ts, "c2_unconfirmed_cut")
                         events.append({"type": "CLOSE_ALL", "wave": closed})
                         self._update_dd(bid, ask)
                         return events
                 else:
                     b["wave_candle_num"] += 1
+                    # Fast S1 reversal cut: if still on 1L in loss and a completed S1 candle reverses strongly against us!
+                    cur_gain = (bid - b["avg_entry"]) if side == "buy" else (b["avg_entry"] - ask)
+                    if (
+                        len(b["legs"]) == 1
+                        and cur_gain <= 0.0
+                        and self.cfg.s1_reversal_cut_body > 0.0
+                        and (
+                            (sdir == 1 and c_body <= -self.cfg.s1_reversal_cut_body)
+                            or (sdir == -1 and c_body >= self.cfg.s1_reversal_cut_body)
+                        )
+                    ):
+                        closed = self._close_basket(ex_px, ts, "s1_reversal_cut")
+                        events.append({"type": "CLOSE_ALL", "wave": closed})
+                        self._update_dd(bid, ask)
+                        return events
                     # On C4+ in moderate slope, tighten stop to lock 50% of open profit ("کندل ۴ با احتیاط")
                     if b["wave_candle_num"] >= 4:
                         self._lock_basket_stop(bid=bid, ask=ask, lock_half_profit=True)
@@ -568,7 +594,10 @@ class S1VelocitySurferEngine:
             # Priority 1: Hard / Locked Basket SL
             sl_hit = (bid <= b["stop"]) if side == "buy" else (ask >= b["stop"])
             if sl_hit:
-                reason = "profit_floor_hit" if b["stop_locked"] else "hard_stop_loss"
+                if b["stop_locked"]:
+                    reason = "profit_floor_hit" if avg_gain >= 0 else "locked_sl_gap_slip"
+                else:
+                    reason = "hard_stop_loss"
                 closed = self._close_basket(ex_px, ts, reason)
                 events.append({"type": "CLOSE_ALL", "wave": closed})
                 self._update_dd(bid, ask)
@@ -581,7 +610,9 @@ class S1VelocitySurferEngine:
                     b["decel_ticks"] += 1
                 else:
                     b["decel_ticks"] = 0
-                if b["decel_ticks"] >= self.cfg.decel_confirm_ticks and (avg_gain > 0 or hold_sec >= 5.0):
+                if b["decel_ticks"] >= self.cfg.decel_confirm_ticks and (
+                    avg_gain > 0 or signed_vel_2s < 0 or hold_sec >= self.cfg.decel_loss_cut_sec
+                ):
                     closed = self._close_basket(ex_px, ts, "decel_stall_exit")
                     events.append({"type": "CLOSE_ALL", "wave": closed})
                     self._update_dd(bid, ask)
@@ -860,6 +891,113 @@ def replay_recorded_ticks(
     s["rebuilt_m1_ticks"] = rebuilt_m1_ticks
     s["waves"] = eng.waves_closed
     return s
+
+
+def replay_calibration_sweep(
+    tick_jsonl_path: Path,
+    *,
+    leg_lot: float = 0.01,
+    max_legs: int = 6,
+    initial_capital_usd: float = 1000.0,
+    rebuild_m1: bool = False,
+) -> list[dict[str, Any]]:
+    """Run 6 named S1 parameter profiles side-by-side on the exact same recorded ticks (ORDERS=0)."""
+    profiles: list[tuple[str, S1SurferConfig]] = [
+        (
+            "v2.0_LEGACY_5S",
+            S1SurferConfig(
+                leg_lot=leg_lot,
+                max_legs=max_legs,
+                vel_mult=2.5,
+                min_burst_price=0.70,
+                add_min_profit_price=0.15,
+                c2_min_confirm_body=0.01,
+                decel_min_hold_sec=2.0,
+                decel_loss_cut_sec=5.0,
+                s1_reversal_cut_body=0.0,
+                loss_cooldown_sec=6.0,
+                consec_loss_cooldown_sec=6.0,
+            ),
+        ),
+        (
+            "v2.1_DEFAULT",
+            S1SurferConfig(
+                leg_lot=leg_lot,
+                max_legs=max_legs,
+                vel_mult=2.5,
+                min_burst_price=0.90,
+                add_min_profit_price=0.20,
+                loss_cooldown_sec=20.0,
+                consec_loss_cooldown_sec=45.0,
+            ),
+        ),
+        (
+            "v2.1_FILTER_1.2",
+            S1SurferConfig(
+                leg_lot=leg_lot,
+                max_legs=max_legs,
+                vel_mult=2.8,
+                min_burst_price=1.20,
+                add_min_profit_price=0.25,
+                loss_cooldown_sec=25.0,
+                consec_loss_cooldown_sec=50.0,
+            ),
+        ),
+        (
+            "v2.1_STRONG_1.5",
+            S1SurferConfig(
+                leg_lot=leg_lot,
+                max_legs=max_legs,
+                vel_mult=3.2,
+                min_burst_price=1.50,
+                add_min_profit_price=0.30,
+                loss_cooldown_sec=25.0,
+                consec_loss_cooldown_sec=50.0,
+            ),
+        ),
+        (
+            "v2.1_SNIPER_2.0",
+            S1SurferConfig(
+                leg_lot=leg_lot,
+                max_legs=max_legs,
+                vel_mult=3.5,
+                min_burst_price=2.00,
+                add_min_profit_price=0.35,
+                loss_cooldown_sec=30.0,
+                consec_loss_cooldown_sec=60.0,
+            ),
+        ),
+        (
+            "v2.1_NEWS_ONLY",
+            S1SurferConfig(
+                leg_lot=leg_lot,
+                max_legs=max_legs,
+                vel_mult=4.2,
+                min_burst_price=2.20,
+                news_c1_mult=4.5,
+                news_c1_min_body=0.65,
+                c2_min_confirm_body=0.25,
+                add_min_profit_price=0.25,
+                loss_cooldown_sec=25.0,
+                consec_loss_cooldown_sec=50.0,
+            ),
+        ),
+    ]
+    rows: list[dict[str, Any]] = []
+    for name, pcfg in profiles:
+        res = replay_recorded_ticks(
+            tick_jsonl_path,
+            cfg=pcfg,
+            initial_capital_usd=initial_capital_usd,
+            rebuild_m1=rebuild_m1,
+        )
+        wins = [w["net_pnl_usd"] for w in res["waves"] if w["net_pnl_usd"] > 0]
+        losses = [w["net_pnl_usd"] for w in res["waves"] if w["net_pnl_usd"] <= 0]
+        res["profile"] = name
+        res["avg_win_usd"] = round(sum(wins) / len(wins), 2) if wins else 0.0
+        res["avg_loss_usd"] = round(sum(losses) / len(losses), 2) if losses else 0.0
+        rows.append(res)
+    return rows
 
 
 def make_synthetic_s1_session(*, mode: str = "normal_c3") -> tuple[list[list[float]], list[tuple[float, float, float]]]:

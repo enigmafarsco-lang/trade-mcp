@@ -43,6 +43,7 @@ from trade_mcp.s1_velocity_surfer import (  # noqa: E402
     analyze_m1_sr_context,
     append_jsonl_private,
     make_synthetic_s1_session,
+    replay_calibration_sweep,
     replay_recorded_ticks,
 )
 
@@ -144,16 +145,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--leg-lot", type=float, default=0.01, help="Lot per winner-pyramid leg (0.01..0.05, default 0.01)")
     parser.add_argument("--max-legs", type=int, default=6, help="Max winner-only legs per wave (1..6, default 6)")
     parser.add_argument("--vel-mult", type=float, default=2.5, help="Eye-speed multiplier vs 90s baseline (default 2.5)")
-    parser.add_argument("--min-burst", type=float, default=0.70, help="Min 3-second $ burst for Leg 1 (default 0.70)")
+    parser.add_argument("--min-burst", type=float, default=0.90, help="Min 3-second $ burst for Leg 1 (default 0.90)")
     parser.add_argument("--max-spread", type=float, default=0.90, help="Max allowed live spread $ (default 0.90)")
     parser.add_argument("--add-interval", type=float, default=0.60, help="Min seconds between winner legs (default 0.60)")
-    parser.add_argument("--add-profit", type=float, default=0.15, help="Min net $ move on last leg before adding (default 0.15)")
+    parser.add_argument("--add-profit", type=float, default=0.20, help="Min net $ move on last leg before adding (default 0.20)")
     parser.add_argument("--decel-ratio", type=float, default=0.28, help="Exit when 2s speed <= this fraction of peak (default 0.28)")
     parser.add_argument("--poll-seconds", type=float, default=0.30, help="Live tick poll interval seconds (default 0.30)")
     parser.add_argument("--status-seconds", type=float, default=15.0, help="Heartbeat print interval seconds (default 15)")
     parser.add_argument("--minutes", type=float, default=0.0, help="Run duration minutes (0 = until Ctrl+C)")
     parser.add_argument("--no-record", action="store_true", help="Disable recording ticks to logs/s1_ticks_*.jsonl")
     parser.add_argument("--replay", default="", help="Replay a recorded logs/s1_ticks_*.jsonl file offline")
+    parser.add_argument("--replay-all", action="store_true", help="Show ALL waves in --replay (no 80-wave cap)")
+    parser.add_argument("--replay-sweep", default="", help="Compare 6 S1 calibration profiles side-by-side on a recorded tick JSONL")
     parser.add_argument("--rebuild-m1", action="store_true", help="Rebuild causal M1 context from recorded ticks during --replay")
     parser.add_argument("--mock", action="store_true", help="Run deterministic offline synthetic waterfall verification")
     args = parser.parse_args(argv)
@@ -175,6 +178,47 @@ def main(argv: list[str] | None = None) -> int:
         decel_ratio=args.decel_ratio,
     )
 
+    def _print_waves(waves: list[dict[str, Any]], *, show_all: bool = False) -> None:
+        subset = waves if (show_all or len(waves) <= 80) else waves[-80:]
+        for w in subset:
+            t_hms = str(w.get("opened_utc", ""))[11:19]
+            print(
+                f"  #{w['wave_id']:2d} {t_hms} [{w.get('regime', 'S1'):13s}] {w['side'].upper():4s} "
+                f"{w['legs_count']}L/{w['total_volume']:.2f}lot {w['avg_entry']:.2f}->{w['exit_price']:.2f} "
+                f"PnL=${w['net_pnl_usd']:+6.2f} hold={w['hold_seconds']:4.1f}s C{w.get('s1_candles_elapsed', 0):2d} "
+                f"({w['exit_reason']} | {w.get('m1_label', '')})"
+            )
+
+    if args.replay_sweep:
+        rep_path = Path(args.replay_sweep)
+        if not rep_path.is_absolute():
+            rep_path = ROOT / rep_path
+        rows = replay_calibration_sweep(
+            rep_path,
+            leg_lot=leg_lot,
+            max_legs=max_legs,
+            initial_capital_usd=args.capital,
+            rebuild_m1=args.rebuild_m1,
+        )
+        print(f"=== S1 VELOCITY CALIBRATION SWEEP (ORDERS=0) ===\nFILE={rep_path} TICKS={rows[0]['ticks_replayed']}")
+        print(
+            f"{'PROFILE':16s} | {'WAVES':>5s} | {'LEGS':>4s} | {'W/L':>7s} | {'WR%':>5s} | "
+            f"{'NET $':>8s} | {'PF':>5s} | {'MaxDD':>6s} | {'AvgW':>6s} | {'AvgL':>6s}"
+        )
+        print("-" * 92)
+        for r in rows:
+            pf_s = f"{r['pf']:.2f}" if r["pf"] is not None else "  -  "
+            wl_s = f"{r['wins']}/{r['losses']}"
+            print(
+                f"{r['profile']:16s} | {r['waves_count']:5d} | {r['total_legs_executed']:4d} | "
+                f"{wl_s:>7s} | {r['win_rate_pct']:5.1f} | {r['realized_pnl_usd']:+8.2f} | "
+                f"{pf_s:>5s} | {r['max_dd_usd']:6.2f} | {r['avg_win_usd']:+6.2f} | {r['avg_loss_usd']:+6.2f}"
+            )
+        best = max(rows, key=lambda x: (x["realized_pnl_usd"], -x["max_dd_usd"]))
+        print(f"\n--- BEST PROFILE WAVES: {best['profile']} (NET=${best['realized_pnl_usd']:+.2f}, DD=${best['max_dd_usd']:.2f}) ---")
+        _print_waves(best["waves"], show_all=True)
+        return 0
+
     if args.replay:
         rep_path = Path(args.replay)
         if not rep_path.is_absolute():
@@ -187,13 +231,7 @@ def main(argv: list[str] | None = None) -> int:
             f"{res['wins']}W/{res['losses']}L WR={res['win_rate_pct']}%) | NET=${res['realized_pnl_usd']:+.2f} "
             f"PF={res['pf']} DD=${res['max_dd_usd']:.2f} | blocked(sp={res['signals_blocked_spread']}, m1={res['signals_blocked_m1']}){rebuilt_note}"
         )
-        for w in res["waves"][-30:]:
-            print(
-                f"  #{w['wave_id']:2d} [{w.get('regime', 'S1'):13s}] {w['side'].upper():4s} "
-                f"{w['legs_count']}L/{w['total_volume']:.2f}lot {w['avg_entry']:.2f}->{w['exit_price']:.2f} "
-                f"PnL=${w['net_pnl_usd']:+6.2f} hold={w['hold_seconds']:5.1f}s C{w.get('s1_candles_elapsed', 0)} "
-                f"({w['exit_reason']})"
-            )
+        _print_waves(res["waves"], show_all=args.replay_all)
         return 0
 
     if args.mock:
@@ -337,7 +375,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"WAVES={s['waves_count']} ({s['total_legs_executed']}L, {s['wins']}W/{s['losses']}L WR={s['win_rate_pct']}%) | "
                 f"NET=${s['realized_pnl_usd']:+.2f} PF={s['pf']} DD=${s['max_dd_usd']:.2f} | "
                 f"TICKS_REC={ticks_recorded}"
-                + ("" if args.no_record else f" | REPLAY: .venv/bin/python scripts/daytrade_s1_velocity_paper.py --replay {tick_path}"),
+                + ("" if args.no_record else f" | REPLAY: python3 scripts/daytrade_s1_velocity_paper.py --replay-sweep {tick_path}"),
                 flush=True,
             )
             return 0
