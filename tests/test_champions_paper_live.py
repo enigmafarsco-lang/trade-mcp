@@ -149,3 +149,66 @@ def test_champions_paper_live_cli_mock_smoke() -> None:
     finally:
         st.unlink(missing_ok=True)
         jn.unlink(missing_ok=True)
+
+
+def test_accel_m1_winner_pyramid_adds_legs_and_locks_be() -> None:
+    from trade_mcp.accel_pyramid_lab import make_synthetic_accel_bars
+
+    bars = make_synthetic_accel_bars(n_bars=320, bar_seconds=60)
+    eng = ChampionsPaperEngine(spec=_gold_spec(), initial_capital_usd=1000.0, enable_accel_engines=True, accel_leg_lot=0.01)
+
+    saw_open = False
+    saw_pyramid = False
+    saw_close = False
+    for idx in range(120, len(bars)):
+        sub = bars[: idx + 1]
+        c = sub[-1][4]
+        now_ts = sub[-1][0] + 62.0
+        evs = eng.on_bars(
+            m1_bars=sub, m5_bars=[], m15_bars=[], h1_bars=[],
+            bid=c, ask=c + 0.32, server_now_ts=now_ts,
+        )
+        evs.extend(eng.on_tick(bid=c, ask=c + 0.32, ts=now_ts + 5.0))
+        for ev in evs:
+            if ev["type"] == "OPEN" and ev["position"]["engine"] == eng.ENGINE_M1_ACCEL:
+                saw_open = True
+            elif ev["type"] == "PYRAMID_ADD" and ev["engine"] == eng.ENGINE_M1_ACCEL:
+                saw_pyramid = True
+                assert ev["leg_num"] >= 2
+                assert ev["total_volume"] >= 0.02
+            elif ev["type"] == "CLOSE" and ev["trade"]["engine"] == eng.ENGINE_M1_ACCEL:
+                saw_close = True
+
+    assert saw_open
+    assert saw_pyramid
+    assert saw_close
+    s = eng.summary(3500.0, 3500.32)
+    m1_stats = s["by_engine"][eng.ENGINE_M1_ACCEL]
+    assert m1_stats["trades"] >= 1
+    assert m1_stats["legs"] > m1_stats["trades"]
+    assert m1_stats["net_usd"] > 0
+
+
+def test_state_backward_compat_from_2engine_v1() -> None:
+    legacy = {
+        "schema": "champions-paper-state/v1",
+        "symbol": "XAUUSD_i",
+        "realized_pnl_usd": -25.13,
+        "peak_equity_usd": 1000.0,
+        "max_dd_usd": 25.13,
+        "max_dd_pct": 2.51,
+        "next_trade_id": 2,
+        "last_m5_closed_ts": 1764060000,
+        "last_h1_closed_ts": 1764060000,
+        "positions": {},
+        "closed_trades": [{"trade_id": 1, "engine": "H1_DONCHIAN50_LONDON", "net_pnl_usd": -25.13}],
+        "last_snapshot": {},
+    }
+    eng = ChampionsPaperEngine(spec=_gold_spec(), initial_capital_usd=1000.0, enable_accel_engines=True)
+    eng.load_state_dict(legacy)
+    assert eng.realized_pnl_usd == -25.13
+    assert len(eng.closed_trades) == 1
+    assert eng.last_m1_closed_ts == 0
+    assert eng.last_m5_accel_closed_ts == 0
+    assert eng.accel_cooldown_until_ts == {}
+

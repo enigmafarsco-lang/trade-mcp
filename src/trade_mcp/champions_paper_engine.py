@@ -23,6 +23,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .accel_pyramid_lab import (
+    AccelPyramidConfig,
+    _detect_accel_signal,
+    _rolling_mean,
+    default_m1_accel_configs,
+    default_m5_accel_configs,
+)
 from .daytrade_paper import resolve_pricing_basis
 from .m1_momentum import (
     LONDON_NY_BLOCKED_UTC_HOURS,
@@ -30,6 +37,7 @@ from .m1_momentum import (
     build_htf_index,
     clean_ohlcv_bars,
     detect_m1_impulse,
+    ema_series,
     htf_allows_signal,
     lookup_htf,
     resample_bars_to_tf,
@@ -56,10 +64,12 @@ def _drop_forming_bar(bars: list[list[float]], *, period_seconds: int, server_no
 
 
 class ChampionsPaperEngine:
-    """Stateful virtual portfolio running M5_MOMENTUM_G5_ADX20_35 + H1_DONCHIAN50_LONDON."""
+    """Stateful virtual portfolio: 2 Champions (M5 + H1) + optional 2 Acceleration Winner-Pyramid engines."""
 
     ENGINE_M5 = "M5_MOMENTUM_G5_ADX20_35"
     ENGINE_H1 = "H1_DONCHIAN50_LONDON"
+    ENGINE_M1_ACCEL = "M1_PRE15_PB5_PYRAMID3"
+    ENGINE_M5_ACCEL = "M5_VOL_PB_BURST_PYR3"
 
     def __init__(
         self,
@@ -76,6 +86,8 @@ class ChampionsPaperEngine:
         min_h1_atr: float = 5.0,
         m5_base_stop_usd_001: float = 12.0,
         h1_base_stop_usd_001: float = 25.0,
+        enable_accel_engines: bool = True,
+        accel_leg_lot: float = 0.01,
     ) -> None:
         self.symbol = symbol
         self.spec = dict(spec)
@@ -95,6 +107,16 @@ class ChampionsPaperEngine:
         self.min_h1_atr = float(min_h1_atr)
         self.m5_base_stop_usd_001 = float(m5_base_stop_usd_001)
         self.h1_base_stop_usd_001 = float(h1_base_stop_usd_001)
+        self.enable_accel_engines = bool(enable_accel_engines)
+        self.accel_leg_lot = max(0.01, min(0.05, _floor_step(float(accel_leg_lot), 0.01) or 0.01))
+
+        # Exact validated configs from accel_pyramid_lab (single source of truth)
+        self._m1_accel_cfg: AccelPyramidConfig = next(
+            c for c in default_m1_accel_configs() if c.name == self.ENGINE_M1_ACCEL
+        )
+        self._m5_accel_cfg: AccelPyramidConfig = next(
+            c for c in default_m5_accel_configs() if c.name == self.ENGINE_M5_ACCEL
+        )
 
         # Persistent virtual ledger state
         self.realized_pnl_usd: float = 0.0
@@ -104,6 +126,9 @@ class ChampionsPaperEngine:
         self.next_trade_id: int = 1
         self.last_m5_closed_ts: int = 0
         self.last_h1_closed_ts: int = 0
+        self.last_m1_closed_ts: int = 0
+        self.last_m5_accel_closed_ts: int = 0
+        self.accel_cooldown_until_ts: dict[str, int] = {}
         self.pending_m5_pullback: dict[str, Any] | None = None
         self.pending_unfilled_pb_bar_ts: int | None = None
         self.positions: dict[str, dict[str, Any]] = {}  # keyed by engine name (max 1 open per engine)
@@ -174,12 +199,22 @@ class ChampionsPaperEngine:
         bid: float,
         ask: float,
         extra: dict[str, Any] | None = None,
+        fixed_volume_override: float | None = None,
     ) -> dict[str, Any] | None:
-        vol, risk_usd = self.compute_position_lot(
-            stop_dist_price=stop_dist_price, price=entry_px, bid=bid, ask=ask,
-        )
-        if vol <= 0:
-            return None
+        if fixed_volume_override is not None:
+            eq = self.current_equity_usd(bid, ask)
+            vol = _floor_step(fixed_volume_override, 0.01)
+            open_margin = sum(p["volume"] * self.contract_size * entry_px / self.leverage for p in self.positions.values())
+            add_margin = vol * self.contract_size * entry_px / self.leverage
+            if eq <= 20.0 or vol < 0.01 or (open_margin + add_margin) > (eq * 0.50):
+                return None
+            risk_usd = round(stop_dist_price * vol * self.multiplier, 4)
+        else:
+            vol, risk_usd = self.compute_position_lot(
+                stop_dist_price=stop_dist_price, price=entry_px, bid=bid, ask=ask,
+            )
+            if vol <= 0:
+                return None
         stop_px = (entry_px - stop_dist_price) if side == "buy" else (entry_px + stop_dist_price)
         pos: dict[str, Any] = {
             "trade_id": self.next_trade_id,
@@ -197,6 +232,7 @@ class ChampionsPaperEngine:
             "bars_held": 0,
             "trailed": False,
             "best_px": round(entry_px, 4),
+            "legs_count": 1,
         }
         if extra:
             pos.update(extra)
@@ -215,6 +251,7 @@ class ChampionsPaperEngine:
             "symbol": self.symbol,
             "side": pos["side"],
             "volume": pos["volume"],
+            "legs_count": int(pos.get("legs_count", 1)),
             "entry": pos["entry"],
             "exit": round(exit_px, 4),
             "stop_final": pos["stop"],
@@ -234,29 +271,42 @@ class ChampionsPaperEngine:
             "orders_submitted": 0,
         }
         self.closed_trades.append(rec)
+        # Update cooldown for acceleration pyramid engines (0 bars after win -> immediate re-entry!)
+        if engine in (self.ENGINE_M1_ACCEL, self.ENGINE_M5_ACCEL):
+            cfg = self._m1_accel_cfg if engine == self.ENGINE_M1_ACCEL else self._m5_accel_cfg
+            period_sec = 60 if engine == self.ENGINE_M1_ACCEL else 300
+            cd_bars = cfg.win_cooldown_bars if pnl > 0 else cfg.loss_cooldown_bars
+            self.accel_cooldown_until_ts[engine] = int(ts) + cd_bars * period_sec
         return rec
 
     # ------------------------------------------------------------------ live tick handling
     def on_tick(self, *, bid: float, ask: float, ts: float) -> list[dict[str, Any]]:
-        """Process one live Bid/Ask tick: check live SLs & pending M5 pullback limit fills."""
+        """Process one live Bid/Ask tick: check live SLs, live TPs, & pending M5 pullback limit fills."""
         events: list[dict[str, Any]] = []
         if bid <= 0 or ask <= 0 or ask < bid:
             return events
 
-        # 1) Check live SL on all open virtual positions first
+        # 1) Check live SL FIRST (worst-case), then live TP SECOND on all open virtual positions
         for eng in list(self.positions.keys()):
             pos = self.positions[eng]
+            tp_px = pos.get("tp")
             if pos["side"] == "buy":
                 pos["best_px"] = max(pos["best_px"], bid)
                 if bid <= pos["stop"]:
                     reason = "trail_stop_hit" if pos["trailed"] else "stop_loss"
                     closed = self._close_position(engine=eng, exit_px=bid, ts=ts, reason=reason)
                     events.append({"type": "CLOSE", "trade": closed})
+                elif tp_px is not None and bid >= float(tp_px):
+                    closed = self._close_position(engine=eng, exit_px=bid, ts=ts, reason="take_profit")
+                    events.append({"type": "CLOSE", "trade": closed})
             else:
                 pos["best_px"] = min(pos["best_px"], ask)
                 if ask >= pos["stop"]:
                     reason = "trail_stop_hit" if pos["trailed"] else "stop_loss"
                     closed = self._close_position(engine=eng, exit_px=ask, ts=ts, reason=reason)
+                    events.append({"type": "CLOSE", "trade": closed})
+                elif tp_px is not None and ask <= float(tp_px):
+                    closed = self._close_position(engine=eng, exit_px=ask, ts=ts, reason="take_profit")
                     events.append({"type": "CLOSE", "trade": closed})
 
         # 2) Check pending M5 pullback trigger during the active M5 bar
@@ -316,13 +366,15 @@ class ChampionsPaperEngine:
         bid: float,
         ask: float,
         server_now_ts: float,
+        m1_bars: list[list[float]] | None = None,
     ) -> list[dict[str, Any]]:
-        """Process strictly closed M5 & H1 bars (idempotent — safe to call repeatedly)."""
+        """Process strictly closed M1/M5/H1 bars (idempotent — safe to call repeatedly)."""
         events: list[dict[str, Any]] = []
         if bid <= 0 or ask <= 0:
             return events
         spread = max(0.0, ask - bid)
 
+        closed_m1 = _drop_forming_bar(m1_bars or [], period_seconds=60, server_now_ts=server_now_ts)
         closed_m5 = _drop_forming_bar(m5_bars, period_seconds=300, server_now_ts=server_now_ts)
         closed_m15 = _drop_forming_bar(m15_bars, period_seconds=900, server_now_ts=server_now_ts)
         closed_h1 = _drop_forming_bar(h1_bars, period_seconds=3600, server_now_ts=server_now_ts)
@@ -367,6 +419,51 @@ class ChampionsPaperEngine:
                         is_warmup_first=is_warmup_first,
                     )
                 )
+
+        if self.enable_accel_engines:
+            # --- ENGINE 3: M1_PRE15_PB5_PYRAMID3 (Fast M1 Winner-Only 3-Leg Pyramid) ---
+            if len(closed_m1) >= 120:
+                m1_bar_ts = int(closed_m1[-1][0])
+                if m1_bar_ts > self.last_m1_closed_ts:
+                    is_warmup_first = self.last_m1_closed_ts == 0
+                    self.last_m1_closed_ts = m1_bar_ts
+                    events.extend(
+                        self._process_closed_accel(
+                            engine=self.ENGINE_M1_ACCEL,
+                            snap_key="m1_accel",
+                            closed_bars=closed_m1,
+                            cfg=self._m1_accel_cfg,
+                            period_seconds=60,
+                            max_stop_usd_001=10.0,
+                            bid=bid,
+                            ask=ask,
+                            spread=spread,
+                            server_now_ts=server_now_ts,
+                            is_warmup_first=is_warmup_first,
+                        )
+                    )
+
+            # --- ENGINE 4: M5_VOL_PB_BURST_PYR3 (517d M5 Vol-Accel Pullback Burst Winner-Pyramid) ---
+            if len(closed_m5) >= 120:
+                m5a_bar_ts = int(closed_m5[-1][0])
+                if m5a_bar_ts > self.last_m5_accel_closed_ts:
+                    is_warmup_first = self.last_m5_accel_closed_ts == 0
+                    self.last_m5_accel_closed_ts = m5a_bar_ts
+                    events.extend(
+                        self._process_closed_accel(
+                            engine=self.ENGINE_M5_ACCEL,
+                            snap_key="m5_accel",
+                            closed_bars=closed_m5,
+                            cfg=self._m5_accel_cfg,
+                            period_seconds=300,
+                            max_stop_usd_001=15.0,
+                            bid=bid,
+                            ask=ask,
+                            spread=spread,
+                            server_now_ts=server_now_ts,
+                            is_warmup_first=is_warmup_first,
+                        )
+                    )
 
         self._update_dd_marks(bid, ask)
         return events
@@ -638,6 +735,157 @@ class ChampionsPaperEngine:
         }
         return events
 
+    def _process_closed_accel(
+        self,
+        *,
+        engine: str,
+        snap_key: str,
+        closed_bars: list[list[float]],
+        cfg: AccelPyramidConfig,
+        period_seconds: int,
+        max_stop_usd_001: float,
+        bid: float,
+        ask: float,
+        spread: float,
+        server_now_ts: float,
+        is_warmup_first: bool,
+    ) -> list[dict[str, Any]]:
+        """Process strictly closed M1/M5 bar for a Winner-Only Pyramid Acceleration engine."""
+        events: list[dict[str, Any]] = []
+        window = closed_bars[-200:]
+        closes = [b[4] for b in window]
+        ema9 = [float(v) if v is not None else 0.0 for v in ema_series(closes, 9)]
+        ema21 = [float(v) if v is not None else 0.0 for v in ema_series(closes, 21)]
+        ema50 = [float(v) if v is not None else 0.0 for v in ema_series(closes, 50)]
+        atr14 = [float(v) if v is not None else 0.0 for v in atr_series(window, period=14)]
+        atr_base = _rolling_mean(atr14, 100)
+
+        idx = len(window) - 1
+        last_bar = window[idx]
+        bar_open_ts = int(last_bar[0])
+        eval_ts = bar_open_ts + period_seconds
+        c = float(last_bar[4])
+        atr_now = atr14[idx]
+        vol_ratio = round(atr_now / atr_base[idx], 2) if atr_base[idx] > 0 else 0.0
+
+        # 1) Manage existing acceleration position (Winner-Only Pyramid + BE/profit lock + trail + time-stop)
+        if engine in self.positions:
+            pos = self.positions[engine]
+            pos["bars_held"] += 1
+            side = pos["side"]
+            ent1 = float(pos.get("leg1_entry", pos["entry"]))
+            init_risk = float(pos["initial_stop_dist_price"])
+            k = int(pos.get("legs_count", 1))
+
+            # Bar-close milestone check (exact parity with accel_pyramid_lab.simulate_accel_pyramid)
+            cur_gain = (c - ent1) if side == "buy" else (ent1 - (c + spread))
+            if init_risk > 0 and cur_gain >= k * cfg.pyr_step_r * init_risk:
+                lock_mult = 0.05 if k == 1 else (0.45 * (k - 1))
+                old_stop = float(pos["stop"])
+                if side == "buy":
+                    new_stop = round(max(old_stop, ent1 + lock_mult * init_risk), 4)
+                else:
+                    new_stop = round(min(old_stop, ent1 - lock_mult * init_risk), 4)
+                pos["stop"] = new_stop
+                pos["trailed"] = True
+                if new_stop != old_stop:
+                    events.append({"type": "TRAIL", "engine": engine, "new_stop": new_stop})
+
+                # Winner-only scale-in: add leg k+1 at live market ONLY if price hasn't breached locked SL
+                if k < cfg.max_legs:
+                    add_px = ask if side == "buy" else bid
+                    safe_side = (side == "buy" and bid > new_stop) or (side == "sell" and ask < new_stop)
+                    eq = self.current_equity_usd(bid, ask)
+                    open_margin = sum(p["volume"] * self.contract_size * add_px / self.leverage for p in self.positions.values())
+                    add_margin = self.accel_leg_lot * self.contract_size * add_px / self.leverage
+                    if safe_side and eq > 20.0 and (open_margin + add_margin) <= (eq * 0.50):
+                        old_vol = float(pos["volume"])
+                        new_vol = round(old_vol + self.accel_leg_lot, 2)
+                        new_avg = round((float(pos["entry"]) * old_vol + add_px * self.accel_leg_lot) / new_vol, 4)
+                        pos["volume"] = new_vol
+                        pos["entry"] = new_avg
+                        pos["legs_count"] = k + 1
+                        legs_list = list(pos.get("legs") or [{"entry": ent1, "volume": old_vol, "opened_at": pos["opened_at"]}])
+                        legs_list.append({"entry": round(add_px, 4), "volume": self.accel_leg_lot, "opened_at": float(server_now_ts)})
+                        pos["legs"] = legs_list
+                        events.append({
+                            "type": "PYRAMID_ADD",
+                            "engine": engine,
+                            "side": side,
+                            "leg_num": k + 1,
+                            "add_price": round(add_px, 4),
+                            "total_volume": new_vol,
+                            "avg_entry": new_avg,
+                            "stop": new_stop,
+                        })
+
+            # Monotonic ATR trailing stop once BE/profit lock has armed
+            if pos["trailed"] and cfg.trail_atr > 0 and atr_now > 0:
+                old_stop = float(pos["stop"])
+                if side == "buy":
+                    cand = round(max(old_stop, c - cfg.trail_atr * atr_now), 4)
+                else:
+                    cand = round(min(old_stop, (c + spread) + cfg.trail_atr * atr_now), 4)
+                if cand != old_stop:
+                    pos["stop"] = cand
+                    events.append({"type": "TRAIL", "engine": engine, "new_stop": cand})
+
+            # Hard time-stop
+            if pos["bars_held"] >= cfg.max_hold_bars:
+                ex_px = bid if side == "buy" else ask
+                closed = self._close_position(engine=engine, exit_px=ex_px, ts=server_now_ts, reason="time_stop")
+                events.append({"type": "CLOSE", "trade": closed})
+
+        # 2) Flat entry check on strictly closed bar
+        bar_age_sec = max(0.0, server_now_ts - float(eval_ts))
+        fresh_for_entry = (not is_warmup_first) or (bar_age_sec <= min(120.0, float(period_seconds)))
+        cd_until = int(self.accel_cooldown_until_ts.get(engine, 0))
+
+        status = "watching"
+        if engine in self.positions:
+            p = self.positions[engine]
+            status = f"open_{p['side']}_{p.get('legs_count', 1)}L"
+        elif int(server_now_ts) < cd_until:
+            status = "cooldown"
+        elif not fresh_for_entry:
+            status = "startup_bar_stale_skipped"
+        else:
+            sig = _detect_accel_signal(idx, window, ema9, ema21, ema50, atr14, atr_base, cfg)
+            if sig is not None:
+                entry_px = ask if sig == "buy" else bid
+                max_sdist = max_stop_usd_001 / max(0.01 * self.multiplier, 1e-9)
+                sl_dist = round(min(max(spread * 3.0, cfg.sl_atr * atr_now), max_sdist), 4)
+                tp_dist = round(max(spread * 4.0, cfg.tp_atr * atr_now), 4)
+                tp_px = round((entry_px + tp_dist) if sig == "buy" else (entry_px - tp_dist), 4)
+                pos = self._open_position(
+                    engine=engine,
+                    side=sig,
+                    entry_px=entry_px,
+                    stop_dist_price=sl_dist,
+                    ts=server_now_ts,
+                    bid=bid,
+                    ask=ask,
+                    fixed_volume_override=self.accel_leg_lot,
+                    extra={
+                        "tp": tp_px,
+                        "leg1_entry": round(entry_px, 4),
+                        "legs_count": 1,
+                        "legs": [{"entry": round(entry_px, 4), "volume": self.accel_leg_lot, "opened_at": float(server_now_ts)}],
+                    },
+                )
+                if pos is not None:
+                    events.append({"type": "OPEN", "position": dict(pos)})
+                    status = f"opened_{sig}_1L"
+
+        self.last_snapshot[snap_key] = {
+            "bar_ts": bar_open_ts,
+            "bar_utc": _iso_utc(bar_open_ts),
+            "atr": round(atr_now, 3),
+            "vol_ratio": vol_ratio,
+            "status": status,
+        }
+        return events
+
     # ------------------------------------------------------------------ summary & persistence
     def summary(self, bid: float = 0.0, ask: float = 0.0) -> dict[str, Any]:
         wins = [t for t in self.closed_trades if t["net_pnl_usd"] > 0]
@@ -645,10 +893,24 @@ class ChampionsPaperEngine:
         gw = sum(t["net_pnl_usd"] for t in wins)
         gl = abs(sum(t["net_pnl_usd"] for t in losses))
         pf = round(gw / gl, 3) if gl > 0 else (99.0 if gw > 0 else None)
+
+        by_engine: dict[str, dict[str, Any]] = {}
+        for t in self.closed_trades:
+            eng = str(t.get("engine", "unknown"))
+            st = by_engine.setdefault(eng, {"trades": 0, "legs": 0, "wins": 0, "losses": 0, "net_usd": 0.0})
+            st["trades"] += 1
+            st["legs"] += int(t.get("legs_count", 1))
+            if t["net_pnl_usd"] > 0:
+                st["wins"] += 1
+            else:
+                st["losses"] += 1
+            st["net_usd"] = round(st["net_usd"] + float(t["net_pnl_usd"]), 4)
+
         return {
             "symbol": self.symbol,
             "paper_only": True,
             "orders_submitted": 0,
+            "enable_accel_engines": self.enable_accel_engines,
             "initial_capital_usd": self.initial_capital_usd,
             "realized_pnl_usd": self.realized_pnl_usd,
             "unrealized_pnl_usd": self.unrealized_pnl_usd(bid, ask),
@@ -660,6 +922,7 @@ class ChampionsPaperEngine:
             "wins": len(wins),
             "losses": len(losses),
             "pf": pf,
+            "by_engine": by_engine,
             "open_positions": list(self.positions.values()),
             "pending_m5_pullback": self.pending_m5_pullback,
             "last_snapshot": self.last_snapshot,
@@ -675,6 +938,8 @@ class ChampionsPaperEngine:
             "min_lot": self.min_lot,
             "max_lot": self.max_lot,
             "dd_governor_pct": self.dd_governor_pct,
+            "enable_accel_engines": self.enable_accel_engines,
+            "accel_leg_lot": self.accel_leg_lot,
             "realized_pnl_usd": self.realized_pnl_usd,
             "peak_equity_usd": self.peak_equity_usd,
             "max_dd_usd": self.max_dd_usd,
@@ -682,6 +947,9 @@ class ChampionsPaperEngine:
             "next_trade_id": self.next_trade_id,
             "last_m5_closed_ts": self.last_m5_closed_ts,
             "last_h1_closed_ts": self.last_h1_closed_ts,
+            "last_m1_closed_ts": self.last_m1_closed_ts,
+            "last_m5_accel_closed_ts": self.last_m5_accel_closed_ts,
+            "accel_cooldown_until_ts": self.accel_cooldown_until_ts,
             "pending_m5_pullback": self.pending_m5_pullback,
             "pending_unfilled_pb_bar_ts": self.pending_unfilled_pb_bar_ts,
             "positions": self.positions,
@@ -701,6 +969,11 @@ class ChampionsPaperEngine:
         self.next_trade_id = int(data.get("next_trade_id", 1))
         self.last_m5_closed_ts = int(data.get("last_m5_closed_ts", 0))
         self.last_h1_closed_ts = int(data.get("last_h1_closed_ts", 0))
+        self.last_m1_closed_ts = int(data.get("last_m1_closed_ts", 0))
+        self.last_m5_accel_closed_ts = int(data.get("last_m5_accel_closed_ts", 0))
+        self.accel_cooldown_until_ts = {
+            str(k): int(v) for k, v in (data.get("accel_cooldown_until_ts") or {}).items()
+        }
         self.pending_m5_pullback = data.get("pending_m5_pullback")
         self.pending_unfilled_pb_bar_ts = data.get("pending_unfilled_pb_bar_ts")
         self.positions = dict(data.get("positions") or {})

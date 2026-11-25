@@ -91,17 +91,26 @@ def _print_event(ev: dict[str, Any]) -> None:
     now_str = datetime.now(timezone.utc).strftime("%H:%M:%SZ")
     if et == "OPEN":
         p = ev["position"]
+        tp_s = f" TP={p['tp']:.2f}" if p.get("tp") is not None else ""
         print(
             f"[{now_str}] [PAPER OPEN] #{p['trade_id']} {p['engine']} {p['side'].upper()} "
-            f"{p['volume']:.2f} lot @ {p['entry']:.2f} | SL={p['stop']:.2f} "
+            f"{p['volume']:.2f} lot @ {p['entry']:.2f} | SL={p['stop']:.2f}{tp_s} "
             f"(risk=${p['initial_risk_usd']:.2f}, sp={p['entry_spread_price']:.2f})",
+            flush=True,
+        )
+    elif et == "PYRAMID_ADD":
+        print(
+            f"[{now_str}] [PAPER PYRAMID +L{ev['leg_num']}] {ev['engine']} {ev['side'].upper()} "
+            f"added @ {ev['add_price']:.2f} -> total={ev['total_volume']:.2f} lot avg={ev['avg_entry']:.2f} "
+            f"| SL locked @ {ev['stop']:.2f}",
             flush=True,
         )
     elif et == "CLOSE":
         t = ev["trade"]
+        legs_tag = f" ({t.get('legs_count', 1)}L)" if int(t.get("legs_count", 1)) > 1 else ""
         print(
             f"[{now_str}] [PAPER CLOSE] #{t['trade_id']} {t['engine']} {t['side'].upper()} "
-            f"{t['volume']:.2f} lot {t['entry']:.2f}->{t['exit']:.2f} | "
+            f"{t['volume']:.2f} lot{legs_tag} {t['entry']:.2f}->{t['exit']:.2f} | "
             f"PnL=${t['net_pnl_usd']:+.2f} ({t['exit_reason']}) | Eq=${t['equity_after_usd']:.2f}",
             flush=True,
         )
@@ -113,6 +122,18 @@ def _print_event(ev: dict[str, Any]) -> None:
         print(f"[{now_str}] [PAPER EXPIRE] {ev['engine']} {ev['side'].upper()} pullback unfilled -> watching 2-bar", flush=True)
 
 
+def _short_eng(name: str) -> str:
+    if name == ChampionsPaperEngine.ENGINE_M1_ACCEL:
+        return "M1P"
+    if name == ChampionsPaperEngine.ENGINE_M5_ACCEL:
+        return "M5V"
+    if name == ChampionsPaperEngine.ENGINE_M5:
+        return "M5"
+    if name == ChampionsPaperEngine.ENGINE_H1:
+        return "H1"
+    return name[:4]
+
+
 def _print_heartbeat(engine: ChampionsPaperEngine, *, bid: float, ask: float) -> None:
     s = engine.summary(bid, ask)
     now_str = datetime.now(timezone.utc).strftime("%H:%M:%SZ")
@@ -120,15 +141,23 @@ def _print_heartbeat(engine: ChampionsPaperEngine, *, bid: float, ask: float) ->
     m5_st = s["last_snapshot"].get("m5", {}).get("status", "init")
     h1_st = s["last_snapshot"].get("h1", {}).get("status", "init")
     h1_adx = s["last_snapshot"].get("m5", {}).get("h1_adx")
+    accel_str = ""
+    if engine.enable_accel_engines:
+        m1a = s["last_snapshot"].get("m1_accel", {})
+        m5a = s["last_snapshot"].get("m5_accel", {})
+        accel_str = (
+            f" M1P={m1a.get('status', 'init')}(atr={m1a.get('atr', 0)})"
+            f" M5V={m5a.get('status', 'init')}(vr={m5a.get('vol_ratio', 0)})"
+        )
     open_desc = ", ".join(
-        f"{p['engine'][:2]}:{p['side'].upper()} {p['volume']:.2f}@{p['entry']:.2f}(SL {p['stop']:.2f})"
+        f"{_short_eng(p['engine'])}:{p['side'].upper()} {p.get('legs_count', 1)}L/{p['volume']:.2f}@{p['entry']:.2f}(SL {p['stop']:.2f})"
         for p in s["open_positions"]
     ) or "FLAT"
     print(
         f"[{now_str}] [LIVE PAPER | ORDERS=0] {engine.symbol} {bid:.2f}/{ask:.2f} (sp={sp:.2f}) | "
         f"Eq=${s['equity_usd']:.2f} (Real=${s['realized_pnl_usd']:+.2f} Unr=${s['unrealized_pnl_usd']:+.2f} "
         f"MaxDD={s['max_dd_pct']:.1f}%) | Closed={s['closed_trades_count']} ({s['wins']}W/{s['losses']}L) | "
-        f"Pos=[{open_desc}] | M5={m5_st} H1_ADX={h1_adx} H1={h1_st}",
+        f"Pos=[{open_desc}] | M5={m5_st} H1_ADX={h1_adx} H1={h1_st}{accel_str}",
         flush=True,
     )
 
@@ -192,13 +221,15 @@ def _run_mock_simulation(engine: ChampionsPaperEngine, *, state_path: Path, jour
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Strictly read-only live 2-Engine Champions Paper Forward-Tester (ORDERS=0).")
+    parser = argparse.ArgumentParser(description="Strictly read-only live 4-Engine Champions + Accel Winner-Pyramid Paper Forward-Tester (ORDERS=0).")
     parser.add_argument("--symbol", default="XAUUSD_i")
     parser.add_argument("--capital", type=float, default=1000.0, help="Starting virtual capital USD (default 1000)")
     parser.add_argument("--risk-pct", type=float, default=1.5, help="Dynamic risk %% per trade (default 1.5; ignored if --fixed-lot)")
     parser.add_argument("--fixed-lot", type=float, default=None, help="Optional fixed virtual lot (e.g. 0.01)")
     parser.add_argument("--max-lot", type=float, default=0.10, help="Max dynamic lot cap (<= 0.10)")
     parser.add_argument("--dd-governor", type=float, default=12.0, help="Cut risk 50%% when DD >= this %% (default 12)")
+    parser.add_argument("--champions-only", action="store_true", help="Disable fast M1/M5 Winner-Pyramid acceleration engines")
+    parser.add_argument("--accel-leg-lot", type=float, default=0.01, help="Per-leg lot for fast Winner-Pyramid engines (0.01..0.05, default 0.01)")
     parser.add_argument("--poll-seconds", type=float, default=5.0, help="Live Bid/Ask poll interval seconds (default 5)")
     parser.add_argument("--heartbeat-seconds", type=float, default=60.0, help="Status print interval seconds (default 60)")
     parser.add_argument("--minutes", type=float, default=0.0, help="Duration in minutes (0 = run until Ctrl+C)")
@@ -208,6 +239,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--journal-file", default="logs/champions_paper_trades.jsonl", help="Append-only 0600 trade JSONL inside logs/")
     parser.add_argument("--mock", action="store_true", help="Offline deterministic simulation smoke test")
     args = parser.parse_args(argv)
+    enable_accel = not args.champions_only
 
     os.environ["TRADE_MCP_ALLOW_TRADING"] = "false"
     os.environ["TRADE_MCP_PAPER_TRADING"] = "true"
@@ -233,7 +265,8 @@ def main(argv: list[str] | None = None) -> int:
             engine = ChampionsPaperEngine(
                 symbol=args.symbol, spec=spec, initial_capital_usd=args.capital,
                 risk_pct=args.risk_pct, fixed_lot=args.fixed_lot, max_lot=args.max_lot,
-                dd_governor_pct=args.dd_governor,
+                dd_governor_pct=args.dd_governor, enable_accel_engines=enable_accel,
+                accel_leg_lot=args.accel_leg_lot,
             )
             if state_path.exists() and not args.reset_state:
                 engine.load_state_dict(json.loads(state_path.read_text(encoding="utf-8")))
@@ -252,29 +285,40 @@ def main(argv: list[str] | None = None) -> int:
             engine = ChampionsPaperEngine(
                 symbol=args.symbol, spec=spec, initial_capital_usd=args.capital,
                 risk_pct=args.risk_pct, fixed_lot=args.fixed_lot, max_lot=args.max_lot,
-                dd_governor_pct=args.dd_governor,
+                dd_governor_pct=args.dd_governor, enable_accel_engines=enable_accel,
+                accel_leg_lot=args.accel_leg_lot,
+            )
+            eng_list = (
+                "M5_MOMENTUM_G5_ADX20_35 + H1_DONCHIAN50_LONDON + M1_PRE15_PB5_PYRAMID3 + M5_VOL_PB_BURST_PYR3"
+                if enable_accel
+                else "M5_MOMENTUM_G5_ADX20_35 + H1_DONCHIAN50_LONDON"
             )
             if state_path.exists() and not args.reset_state:
                 engine.load_state_dict(json.loads(state_path.read_text(encoding="utf-8")))
                 print(
-                    f"[RESUME] Loaded {state_path.name}: Eq=${engine.current_equity_usd(quote['bid'], quote['ask']):.2f} "
-                    f"Closed={len(engine.closed_trades)} Open={len(engine.positions)}",
+                    f"[RESUME | ORDERS=0] Loaded {state_path.name}: Eq=${engine.current_equity_usd(quote['bid'], quote['ask']):.2f} "
+                    f"Closed={len(engine.closed_trades)} Open={len(engine.positions)} | Engines=[{eng_list}]",
                     flush=True,
                 )
             else:
                 mode_lbl = f"FIXED {args.fixed_lot:.2f} lot" if args.fixed_lot else f"DYNAMIC {args.risk_pct:.1f}% risk (0.01..{args.max_lot:.2f}, DD-gov {args.dd_governor:.0f}%)"
                 print(
                     f"[START | PAPER ONLY | ORDERS=0] {args.symbol} | Capital=${args.capital:.2f} | Sizing={mode_lbl} | "
-                    f"Engines=[M5_MOMENTUM_G5_ADX20_35 + H1_DONCHIAN50_LONDON]",
+                    f"AccelLeg={engine.accel_leg_lot:.2f}x3 | Engines=[{eng_list}]",
                     flush=True,
                 )
 
             t_start = time.monotonic()
             deadline = (t_start + args.minutes * 60.0) if args.minutes > 0 else None
+            last_m1_bucket = -1
             last_m5_bucket = -1
             last_bar_fetch_mono = 0.0
             last_hb_mono = 0.0
             last_bid, last_ask = quote["bid"], quote["ask"]
+            cached_m1: list[list[float]] = []
+            cached_m5: list[list[float]] = []
+            cached_m15: list[list[float]] = []
+            cached_h1: list[list[float]] = []
 
             while not stop_requested:
                 loop_t0 = time.monotonic()
@@ -291,18 +335,30 @@ def main(argv: list[str] | None = None) -> int:
                         if ev["type"] == "CLOSE":
                             append_trade_journal(journal_path, ev["trade"])
 
+                    m1_bucket = int(srv_ts // 60)
                     m5_bucket = int(srv_ts // 300)
-                    need_bars = (m5_bucket != last_m5_bucket) or ((loop_t0 - last_bar_fetch_mono) >= 60.0)
-                    if need_bars:
-                        m5_bars = _fetch_recent_bars(feed, period="M5", now_label=srv_dt, days_back=4, limit=600)
-                        m15_bars = _fetch_recent_bars(feed, period="M15", now_label=srv_dt, days_back=8, limit=500)
-                        h1_bars = _fetch_recent_bars(feed, period="H1", now_label=srv_dt, days_back=20, limit=360)
+                    need_m5 = (m5_bucket != last_m5_bucket) or ((loop_t0 - last_bar_fetch_mono) >= 60.0)
+                    need_m1 = enable_accel and (m1_bucket != last_m1_bucket)
+
+                    if need_m5 or need_m1:
+                        if need_m1 or (enable_accel and not cached_m1):
+                            cached_m1 = _fetch_recent_bars(feed, period="M1", now_label=srv_dt, days_back=1, limit=250)
+                            last_m1_bucket = m1_bucket
+                        if need_m5 or not cached_m5:
+                            cached_m5 = _fetch_recent_bars(feed, period="M5", now_label=srv_dt, days_back=4, limit=600)
+                            cached_m15 = _fetch_recent_bars(feed, period="M15", now_label=srv_dt, days_back=8, limit=500)
+                            cached_h1 = _fetch_recent_bars(feed, period="H1", now_label=srv_dt, days_back=20, limit=360)
+                            last_m5_bucket = m5_bucket
+                            last_bar_fetch_mono = loop_t0
                         bar_evs = engine.on_bars(
-                            m5_bars=m5_bars, m15_bars=m15_bars, h1_bars=h1_bars,
-                            bid=last_bid, ask=last_ask, server_now_ts=srv_ts,
+                            m1_bars=cached_m1 if enable_accel else None,
+                            m5_bars=cached_m5,
+                            m15_bars=cached_m15,
+                            h1_bars=cached_h1,
+                            bid=last_bid,
+                            ask=last_ask,
+                            server_now_ts=srv_ts,
                         )
-                        last_m5_bucket = m5_bucket
-                        last_bar_fetch_mono = loop_t0
                         state_dirty = True
                         for ev in bar_evs:
                             _print_event(ev)
@@ -329,10 +385,15 @@ def main(argv: list[str] | None = None) -> int:
 
             save_state_atomic(state_path, engine.to_state_dict())
             s = engine.summary(last_bid, last_ask)
+            eng_breakdown = " | ".join(
+                f"{_short_eng(k)}:{v['trades']}t/{v['legs']}L(${v['net_usd']:+.2f})"
+                for k, v in s.get("by_engine", {}).items()
+            ) or "none"
             print(
                 f"=== PAPER FORWARD-TEST STOPPED CLEANLY (ORDERS=0) ===\n"
                 f"EQ=${s['equity_usd']:.2f} REALIZED=${s['realized_pnl_usd']:+.2f} UNREALIZED=${s['unrealized_pnl_usd']:+.2f} "
-                f"MAX_DD={s['max_dd_pct']:.2f}% CLOSED={s['closed_trades_count']} ({s['wins']}W/{s['losses']}L) PF={s['pf']} "
+                f"MAX_DD={s['max_dd_pct']:.2f}% CLOSED={s['closed_trades_count']} ({s['wins']}W/{s['losses']}L) PF={s['pf']}\n"
+                f"BY_ENGINE: {eng_breakdown}\n"
                 f"STATE={state_path} JOURNAL={journal_path}",
                 flush=True,
             )
