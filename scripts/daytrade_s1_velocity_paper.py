@@ -156,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-record", action="store_true", help="Disable recording ticks to logs/s1_ticks_*.jsonl")
     parser.add_argument("--replay", default="", help="Replay a recorded logs/s1_ticks_*.jsonl file offline")
     parser.add_argument("--replay-all", action="store_true", help="Show ALL waves in --replay (no 80-wave cap)")
-    parser.add_argument("--replay-sweep", default="", help="Compare 6 S1 calibration profiles side-by-side on a recorded tick JSONL")
+    parser.add_argument("--replay-sweep", nargs="+", default=[], help="Compare S1 calibration profiles across 1 or more recorded tick JSONL files")
     parser.add_argument("--rebuild-m1", action="store_true", help="Rebuild causal M1 context from recorded ticks during --replay")
     parser.add_argument("--mock", action="store_true", help="Run deterministic offline synthetic waterfall verification")
     args = parser.parse_args(argv)
@@ -190,33 +190,89 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     if args.replay_sweep:
-        rep_path = Path(args.replay_sweep)
-        if not rep_path.is_absolute():
-            rep_path = ROOT / rep_path
-        rows = replay_calibration_sweep(
-            rep_path,
-            leg_lot=leg_lot,
-            max_legs=max_legs,
-            initial_capital_usd=args.capital,
-            rebuild_m1=args.rebuild_m1,
-        )
-        print(f"=== S1 VELOCITY CALIBRATION SWEEP (ORDERS=0) ===\nFILE={rep_path} TICKS={rows[0]['ticks_replayed']}")
-        print(
-            f"{'PROFILE':16s} | {'WAVES':>5s} | {'LEGS':>4s} | {'W/L':>7s} | {'WR%':>5s} | "
-            f"{'NET $':>8s} | {'PF':>5s} | {'MaxDD':>6s} | {'AvgW':>6s} | {'AvgL':>6s}"
-        )
-        print("-" * 92)
-        for r in rows:
-            pf_s = f"{r['pf']:.2f}" if r["pf"] is not None else "  -  "
-            wl_s = f"{r['wins']}/{r['losses']}"
-            print(
-                f"{r['profile']:16s} | {r['waves_count']:5d} | {r['total_legs_executed']:4d} | "
-                f"{wl_s:>7s} | {r['win_rate_pct']:5.1f} | {r['realized_pnl_usd']:+8.2f} | "
-                f"{pf_s:>5s} | {r['max_dd_usd']:6.2f} | {r['avg_win_usd']:+6.2f} | {r['avg_loss_usd']:+6.2f}"
+        sweep_paths: list[Path] = []
+        for raw_p in args.replay_sweep:
+            p = Path(raw_p)
+            if not p.is_absolute():
+                p = ROOT / p
+            sweep_paths.append(p)
+
+        per_file_rows: list[tuple[Path, list[dict[str, Any]]]] = []
+        for p in sweep_paths:
+            rows = replay_calibration_sweep(
+                p,
+                leg_lot=leg_lot,
+                max_legs=max_legs,
+                initial_capital_usd=args.capital,
+                rebuild_m1=args.rebuild_m1,
             )
-        best = max(rows, key=lambda x: (x["realized_pnl_usd"], -x["max_dd_usd"]))
-        print(f"\n--- BEST PROFILE WAVES: {best['profile']} (NET=${best['realized_pnl_usd']:+.2f}, DD=${best['max_dd_usd']:.2f}) ---")
-        _print_waves(best["waves"], show_all=True)
+            per_file_rows.append((p, rows))
+
+        def _print_sweep_table(title: str, rows: list[dict[str, Any]]) -> None:
+            print(title)
+            print(
+                f"{'PROFILE':16s} | {'WAVES':>5s} | {'LEGS':>4s} | {'W/L':>7s} | {'WR%':>5s} | "
+                f"{'NET $':>8s} | {'PF':>5s} | {'MaxDD':>6s} | {'AvgW':>6s} | {'AvgL':>6s}"
+            )
+            print("-" * 92)
+            for r in rows:
+                pf_s = f"{r['pf']:.2f}" if r["pf"] is not None else "  -  "
+                wl_s = f"{r['wins']}/{r['losses']}"
+                print(
+                    f"{r['profile']:16s} | {r['waves_count']:5d} | {r['total_legs_executed']:4d} | "
+                    f"{wl_s:>7s} | {r['win_rate_pct']:5.1f} | {r['realized_pnl_usd']:+8.2f} | "
+                    f"{pf_s:>5s} | {r['max_dd_usd']:6.2f} | {r['avg_win_usd']:+6.2f} | {r['avg_loss_usd']:+6.2f}"
+                )
+
+        if len(per_file_rows) == 1:
+            p0, rows0 = per_file_rows[0]
+            _print_sweep_table(
+                f"=== S1 VELOCITY CALIBRATION SWEEP (ORDERS=0) ===\nFILE={p0} TICKS={rows0[0]['ticks_replayed']}",
+                rows0,
+            )
+            best = max(rows0, key=lambda x: (x["realized_pnl_usd"], -x["max_dd_usd"]))
+            print(f"\n--- BEST PROFILE WAVES: {best['profile']} (NET=${best['realized_pnl_usd']:+.2f}, DD=${best['max_dd_usd']:.2f}) ---")
+            _print_waves(best["waves"], show_all=True)
+        else:
+            for p, rows in per_file_rows:
+                _print_sweep_table(f"\n=== FILE: {p.name} (TICKS={rows[0]['ticks_replayed']}) ===", rows)
+            # Combined multi-session aggregate across all recorded files
+            prof_names = [r["profile"] for r in per_file_rows[0][1]]
+            combined: list[dict[str, Any]] = []
+            for idx, pname in enumerate(prof_names):
+                all_waves = [w for _, rows in per_file_rows for w in rows[idx]["waves"]]
+                wins = [w["net_pnl_usd"] for w in all_waves if w["net_pnl_usd"] > 0]
+                losses = [w["net_pnl_usd"] for w in all_waves if w["net_pnl_usd"] <= 0]
+                gw = sum(wins)
+                gl = abs(sum(losses))
+                pf = round(gw / gl, 3) if gl > 0 else (99.0 if gw > 0 else None)
+                net = round(sum(w["net_pnl_usd"] for w in all_waves), 4)
+                eq = 0.0
+                pk = 0.0
+                mdd = 0.0
+                for w in all_waves:
+                    eq += w["net_pnl_usd"]
+                    if eq > pk:
+                        pk = eq
+                    mdd = max(mdd, pk - eq)
+                combined.append({
+                    "profile": pname,
+                    "waves_count": len(all_waves),
+                    "total_legs_executed": sum(int(w["legs_count"]) for w in all_waves),
+                    "wins": len(wins),
+                    "losses": len(losses),
+                    "win_rate_pct": round(100.0 * len(wins) / len(all_waves), 1) if all_waves else 0.0,
+                    "realized_pnl_usd": net,
+                    "pf": pf,
+                    "max_dd_usd": round(mdd, 2),
+                    "avg_win_usd": round(sum(wins) / len(wins), 2) if wins else 0.0,
+                    "avg_loss_usd": round(sum(losses) / len(losses), 2) if losses else 0.0,
+                })
+            tot_ticks = sum(rows[0]["ticks_replayed"] for _, rows in per_file_rows)
+            _print_sweep_table(
+                f"\n=== COMBINED S1 CALIBRATION SWEEP ({len(per_file_rows)} FILES, {tot_ticks} TICKS, ORDERS=0) ===",
+                combined,
+            )
         return 0
 
     if args.replay:
@@ -329,6 +385,7 @@ def main(argv: list[str] | None = None) -> int:
                                             "label": m1_ctx["label"],
                                             "support": m1_ctx.get("support"),
                                             "resistance": m1_ctx.get("resistance"),
+                                            "atr_m1": m1_ctx.get("atr_m1"),
                                         },
                                     },
                                     ensure_ascii=False,

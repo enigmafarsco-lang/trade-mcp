@@ -150,7 +150,13 @@ class S1SurferConfig:
     vel_mult: float = 2.5  # normal-session C3 trigger: live 3s speed >= 2.5x baseline
     news_c1_mult: float = 5.0  # news steep C1 probe: |body(C1)| >= 5x baseline S1 body
     news_c1_min_body: float = 0.55  # minimum $ body for steep news C1 probe
+    news_c1_min_vel_ratio: float = 2.0  # prevent 1s whipsaw bounce (e.g. vel=0.6x) from faking news C1
+    news_c1_min_3s_move: float = 0.55  # minimum directional 3s move $ for steep news C1
     c2_min_confirm_body: float = 0.20  # minimum $ C2 body in wave direction to confirm NEWS_STEEP_C1
+    c3_min_last_slope: float = 1.5  # NORMAL_C3: latest completed candle C2 must still have active slope
+    c3_min_last_body: float = 0.20  # NORMAL_C3: latest completed candle C2 minimum body $
+    sr_wall_buffer_price: float = 0.80  # block entering right INTO closed M1 Resistance/Support wall before clean break
+    sr_break_clear_price: float = 0.30  # clean clearance beyond M1 S/R counts as breakout, not wall
     extreme_slope_mult: float = 9.0  # extreme vertical blow-off -> stop adding at C5+ & tighten exit
     extreme_3s_move: float = 3.50  # or >= $3.50 move in 3s counts as extreme blow-off
     min_burst_price: float = 0.90  # minimum 3s move for normal C3 entry (spread-aware)
@@ -680,10 +686,10 @@ class S1VelocitySurferEngine:
         # Live causal M1 S/R break: if closed M1 is neutral/choppy right before a news shock,
         # breaking cleanly beyond closed M1 Swing Support/Resistance unlocks direction immediately!
         if m1_bias == 0:
-            if m1_sup is not None and mid < (float(m1_sup) - 0.25):
+            if m1_sup is not None and mid < (float(m1_sup) - self.cfg.sr_break_clear_price):
                 m1_bias = -1
                 m1_label = "LIVE_M1_SUP_BREAK"
-            elif m1_res is not None and mid > (float(m1_res) + 0.25):
+            elif m1_res is not None and mid > (float(m1_res) + self.cfg.sr_break_clear_price):
                 m1_bias = 1
                 m1_label = "LIVE_M1_RES_BREAK"
 
@@ -692,25 +698,33 @@ class S1VelocitySurferEngine:
         wave_cnum = 3
         slope_metric = last_slope
 
-        # Regime A: News / Session-Open Steep C1 Probe (just closed steep Candle 1!)
+        # Regime A: News / Session-Open Steep C1 Probe (just closed steep Candle 1 + real 3s directional vel!)
         if completed_s1 is not None and streak_n == 1 and streak_dir != 0:
             c1_abs = abs(float(completed_s1["body"]))
+            news_3s_ok = (not has_3s) or (
+                (move_3s * streak_dir) >= max(self.cfg.news_c1_min_3s_move, spread * 1.8)
+                and vel_ratio >= self.cfg.news_c1_min_vel_ratio
+            )
             if (
                 last_slope >= self.cfg.news_c1_mult
                 and c1_abs >= max(self.cfg.news_c1_min_body, spread * 1.6)
+                and news_3s_ok
             ):
                 triggered_regime = "NEWS_STEEP_C1"
                 burst_dir = streak_dir
                 wave_cnum = 2  # entering right as C2 opens; wait for C2 close confirmation
                 slope_metric = last_slope
 
-        # Regime B: Normal Active Session C3 Entry (2 completed same-color S1 candles + C3 continuing!)
+        # Regime B: Normal Active Session C3 Entry (2 completed same-color S1 candles + C2 still strong + C3 continuing!)
         if triggered_regime is None and has_3s and streak_n >= 2 and streak_dir != 0:
             last_close = float(self.s1_bars[-1]["c"])
+            last_body_abs = abs(float(self.s1_bars[-1]["body"]))
             c3_continuing = (mid > last_close) if streak_dir == 1 else (mid < last_close)
             min_req_move = max(self.cfg.min_burst_price, spread * 2.2)
             if (
                 c3_continuing
+                and last_slope >= self.cfg.c3_min_last_slope
+                and last_body_abs >= self.cfg.c3_min_last_body
                 and (move_3s * streak_dir) >= min_req_move
                 and vel_ratio >= self.cfg.vel_mult
                 and eff_3s >= self.cfg.min_efficiency
@@ -721,9 +735,22 @@ class S1VelocitySurferEngine:
                 slope_metric = max(c1_slope, last_slope)
 
         if triggered_regime is not None and burst_dir != 0:
+            # Live M1 S/R wall guard: never BUY right underneath M1 Resistance (R-0.80 .. R+0.30)
+            # or SELL right on top of M1 Support (S-0.30 .. S+0.80) before a clean breakout!
+            blocked_by_sr_wall = False
+            if self.cfg.sr_wall_buffer_price > 0.0:
+                if burst_dir == 1 and m1_res is not None:
+                    r_val = float(m1_res)
+                    if (r_val - self.cfg.sr_wall_buffer_price) <= mid <= (r_val + self.cfg.sr_break_clear_price):
+                        blocked_by_sr_wall = True
+                elif burst_dir == -1 and m1_sup is not None:
+                    s_val = float(m1_sup)
+                    if (s_val - self.cfg.sr_break_clear_price) <= mid <= (s_val + self.cfg.sr_wall_buffer_price):
+                        blocked_by_sr_wall = True
+
             if spread > self.cfg.max_spread_price:
                 self.signals_blocked_spread += 1
-            elif m1_bias != burst_dir:
+            elif m1_bias != burst_dir or blocked_by_sr_wall:
                 self.signals_blocked_m1 += 1
             else:
                 side = "buy" if burst_dir == 1 else "sell"
@@ -912,7 +939,12 @@ def replay_calibration_sweep(
                 vel_mult=2.5,
                 min_burst_price=0.70,
                 add_min_profit_price=0.15,
+                news_c1_min_vel_ratio=0.0,
+                news_c1_min_3s_move=0.0,
                 c2_min_confirm_body=0.01,
+                c3_min_last_slope=0.0,
+                c3_min_last_body=0.0,
+                sr_wall_buffer_price=0.0,
                 decel_min_hold_sec=2.0,
                 decel_loss_cut_sec=5.0,
                 s1_reversal_cut_body=0.0,

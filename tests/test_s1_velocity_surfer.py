@@ -324,4 +324,61 @@ def test_replay_calibration_sweep_cli_smoke(
     assert "v2.1_DEFAULT" in out
     assert "BEST PROFILE WAVES:" in out
 
+    # Multi-file combined sweep
+    rc2 = cli.main(["--replay-sweep", str(rec), str(rec)])
+    assert rc2 == 0
+    out2 = capsys.readouterr().out
+    assert "COMBINED S1 CALIBRATION SWEEP (2 FILES," in out2
+
+
+def test_news_c1_blocks_whipsaw_bounce_with_low_3s_velocity() -> None:
+    """Reproduces live Trade #5: 1s down-up whipsaw (vel=0.6x, +0.23/3s) must NOT trigger NEWS_STEEP_C1."""
+    t0 = 1764090000.0
+    eng = S1VelocitySurferEngine(cfg=S1SurferConfig(leg_lot=0.01, max_legs=6))
+    bull_ctx = {"bias": 1, "label": "BULL_RES_BREAK", "support": 3445.0, "resistance": 3455.0}
+    bid = 3460.00
+    spread = 0.40
+    opens = 0
+    for step in range(4 * 32):
+        sec = step * 0.25
+        if sec < 24.0:
+            delta = 0.04 if (step % 4 < 2) else -0.04
+        elif sec < 25.0:
+            delta = -0.15  # 1s dip -$0.60
+        elif sec < 26.0:
+            delta = +0.18  # 1s whipsaw bounce +$0.72 -> net 3s move only +$0.12!
+        else:
+            delta = 0.0
+        bid = round(bid + delta, 2)
+        for ev in eng.on_tick(ts=t0 + sec, bid=bid, ask=round(bid + spread, 2), m1_context=bull_ctx):
+            if ev["type"] == "OPEN_L1":
+                opens += 1
+    assert opens == 0
+
+
+def test_sr_wall_guard_blocks_buying_right_under_m1_resistance() -> None:
+    """Reproduces live Trades #1/#2: never BUY right inside M1 Resistance ceiling wall before clean break."""
+    _, ticks = make_synthetic_s1_session(mode="normal_c3")
+    # Flip synthetic bear ticks into a bull surge that runs straight into Resistance ceiling
+    base_px = 3452.00
+    bull_ticks: list[tuple[float, float, float]] = []
+    for ts, bid, _ask in ticks:
+        inv_bid = round(base_px + (ticks[0][1] - bid), 2)
+        bull_ticks.append((ts, inv_bid, round(inv_bid + 0.39, 2)))
+
+    # Place closed M1 Resistance just above the end of C3 so the whole C3 push runs right into the wall
+    res_wall = round(bull_ticks[4 * 27 - 1][1] + 0.35, 2)
+    bull_ctx = {"bias": 1, "label": "BULL_TREND", "support": 3445.0, "resistance": res_wall}
+    eng = S1VelocitySurferEngine(cfg=S1SurferConfig(leg_lot=0.01, max_legs=6, sr_wall_buffer_price=0.80))
+
+    opens_at_wall = 0
+    for ts, bid, ask in bull_ticks[: 4 * 27]:
+        for ev in eng.on_tick(ts=ts, bid=bid, ask=ask, m1_context=bull_ctx):
+            if ev["type"] == "OPEN_L1":
+                opens_at_wall += 1
+
+    assert opens_at_wall == 0
+    assert eng.signals_blocked_m1 >= 1
+
+
 
