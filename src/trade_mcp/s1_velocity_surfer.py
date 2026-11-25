@@ -177,12 +177,17 @@ class S1SurferConfig:
     decel_min_hold_sec: float = 1.5
     decel_loss_cut_sec: float = 2.0  # cut dead/stalled losing 1s scalp quickly instead of holding 5s
     disable_decel_exit: bool = False  # wave-rider mode: ride normal 2-5s breaths via structural SL & trail
+    decel_only_in_loss_1l: bool = False  # hybrid: cut stalled 1L losers fast after decel_loss_cut_sec, never cut winners
     candle_cap_adds: bool = True  # when False (wave-rider), winner pyramiding continues across multi-second waves
     sl_min_breathing_room: float = 0.0  # min $ gap between locked SL and live exit price (prevents $0.20 choke-outs)
+    be_arm_price: float = 0.0  # lock 1L to breakeven (+$0.08) once open gain reaches this $ amount (0=off)
+    require_be_on_add: bool = False  # risk-free pyramid gate: only add L2..L6 if post-add SL >= new_avg_entry
     s1_reversal_cut_body: float = 0.30  # cut 1L immediately if a completed S1 candle reverses >= $0.30 in loss
     trail_arm_price: float = 0.35
     trail_min_pullback: float = 0.45
+    trail_max_pullback_price: float = 0.0  # optional hard $ cap on pullback from peak (prevents $12 giveback on 6L!)
     trail_giveback_frac: float = 0.35
+    multi_leg_giveback_frac: float = 0.0  # optional tighter giveback fraction once basket reaches >= 2 legs
     steep_giveback_frac: float = 0.22
     max_hold_sec: float = 120.0
     win_cooldown_sec: float = 2.0
@@ -397,8 +402,23 @@ class S1VelocitySurferEngine:
         self.cooldown_until = ts + cd
         return rec
 
+    def _can_add_risk_free(self, *, side: str, bid: float, ask: float, fill_px: float) -> bool:
+        """True if adding one leg keeps post-add locked SL safely at/beyond new_avg_entry with breathing room."""
+        if not self.cfg.require_be_on_add or self.basket is None:
+            return True
+        b = self.basket
+        old_vol = float(b["total_volume"])
+        new_vol = round(old_vol + self.cfg.leg_lot, 2)
+        new_avg = (float(b["avg_entry"]) * old_vol + fill_px * self.cfg.leg_lot) / new_vol
+        breath = max(0.0, self.cfg.sl_min_breathing_room)
+        if side == "buy":
+            proj_sl = bid - breath
+            return proj_sl >= (new_avg + 0.05)
+        proj_sl = ask + breath
+        return proj_sl <= (new_avg - 0.05)
+
     def _lock_basket_stop(self, *, bid: float = 0.0, ask: float = 0.0, lock_half_profit: bool = False) -> float:
-        """Tighten basket SL: Leg-1 BE at 2 legs, basket profit-floor at 3+ legs, 50% lock in C4 caution."""
+        """Tighten basket SL: optional 1L BE, Leg-1/basket BE at 2+ legs, 50% lock in C4 caution."""
         assert self.basket is not None
         b = self.basket
         side = b["side"]
@@ -408,8 +428,16 @@ class S1VelocitySurferEngine:
         cur_sl = float(b["stop"])
 
         target_sl = cur_sl
-        if n_legs == 2:
-            target_sl = (ent1 + 0.05) if side == "buy" else (ent1 - 0.05)
+        if n_legs == 1 and self.cfg.be_arm_price > 0.0 and bid > 0 and ask > 0:
+            ex = bid if side == "buy" else ask
+            gain = (ex - avg_ent) if side == "buy" else (avg_ent - ex)
+            if gain >= self.cfg.be_arm_price:
+                target_sl = (ent1 + 0.08) if side == "buy" else (ent1 - 0.08)
+        elif n_legs == 2:
+            if self.cfg.require_be_on_add:
+                target_sl = (avg_ent + 0.05) if side == "buy" else (avg_ent - 0.05)
+            else:
+                target_sl = (ent1 + 0.05) if side == "buy" else (ent1 - 0.05)
         elif n_legs >= 3:
             target_sl = (avg_ent + 0.05) if side == "buy" else (avg_ent - 0.05)
 
@@ -531,7 +559,8 @@ class S1VelocitySurferEngine:
                         last_ent = float(b["legs"][-1]["entry"])
                         last_net = (bid - last_ent) if side == "buy" else (last_ent - ask)
                         safe_sl = (bid > b["stop"]) if side == "buy" else (ask < b["stop"])
-                        if last_net >= self.cfg.add_min_profit_price and safe_sl:
+                        risk_free_ok = self._can_add_risk_free(side=side, bid=bid, ask=ask, fill_px=fill_px)
+                        if last_net >= self.cfg.add_min_profit_price and safe_sl and risk_free_ok:
                             old_vol = float(b["total_volume"])
                             new_vol = round(old_vol + self.cfg.leg_lot, 2)
                             new_avg = round((float(b["avg_entry"]) * old_vol + fill_px * self.cfg.leg_lot) / new_vol, 4)
@@ -539,7 +568,8 @@ class S1VelocitySurferEngine:
                             b["total_volume"] = new_vol
                             b["avg_entry"] = new_avg
                             b["last_leg_ts"] = ts
-                            new_sl = self._lock_basket_stop(bid=bid, ask=ask, lock_half_profit=(b["wave_candle_num"] >= 4))
+                            lock_half = (b["wave_candle_num"] >= 4) and (not self.cfg.disable_decel_exit)
+                            new_sl = self._lock_basket_stop(bid=bid, ask=ask, lock_half_profit=lock_half)
                             events.append({
                                 "type": "FIRE_ADD",
                                 "wave_id": b["wave_id"],
@@ -632,6 +662,15 @@ class S1VelocitySurferEngine:
             if signed_vel_2s > b["peak_vel"]:
                 b["peak_vel"] = signed_vel_2s
 
+            # Optional 1L Free-Ride Breakeven Arm: once 1L clears be_arm_price, lock SL at BE (+$0.08)
+            if (
+                self.cfg.be_arm_price > 0.0
+                and len(b["legs"]) == 1
+                and not b["stop_locked"]
+                and avg_gain >= self.cfg.be_arm_price
+            ):
+                self._lock_basket_stop(bid=bid, ask=ask, lock_half_profit=False)
+
             # Priority 1: Hard / Locked Basket SL
             sl_hit = (bid <= b["stop"]) if side == "buy" else (ask >= b["stop"])
             if sl_hit:
@@ -659,16 +698,39 @@ class S1VelocitySurferEngine:
                         events.append({"type": "CLOSE_ALL", "wave": closed})
                         self._update_dd(bid, ask)
                         return events
+            elif (
+                self.cfg.decel_only_in_loss_1l
+                and len(b["legs"]) == 1
+                and avg_gain <= 0.0
+                and hold_sec >= self.cfg.decel_loss_cut_sec
+                and has_2s
+            ):
+                # Hybrid fast-loss-cut: cut dead/reversing 1L losers quickly while NEVER touching winners!
+                if signed_vel_2s <= 0.0:
+                    b["decel_ticks"] += 1
+                else:
+                    b["decel_ticks"] = 0
+                if b["decel_ticks"] >= self.cfg.decel_confirm_ticks:
+                    closed = self._close_basket(ex_px, ts, "stalled_loss_cut")
+                    events.append({"type": "CLOSE_ALL", "wave": closed})
+                    self._update_dd(bid, ask)
+                    return events
 
-            # Priority 3: Tight Tick-Trail (tighter after extreme blow-off or C4+ caution in micro-scalp mode!)
+            # Priority 3: Tight Tick-Trail (tighter on multi-leg baskets + optional hard pullback cap!)
             if self.cfg.disable_decel_exit:
-                eff_giveback = self.cfg.trail_giveback_frac
-                min_pb = self.cfg.trail_min_pullback
+                if self.cfg.multi_leg_giveback_frac > 0.0 and len(b["legs"]) >= 2:
+                    eff_giveback = self.cfg.multi_leg_giveback_frac
+                    min_pb = min(self.cfg.trail_min_pullback, 1.15)
+                else:
+                    eff_giveback = self.cfg.trail_giveback_frac
+                    min_pb = self.cfg.trail_min_pullback
             else:
                 eff_giveback = self.cfg.steep_giveback_frac if (b["extreme_blowoff"] or b["wave_candle_num"] >= 4) else self.cfg.trail_giveback_frac
                 min_pb = self.cfg.trail_min_pullback * (0.75 if b["extreme_blowoff"] else 1.0)
             if avg_gain >= self.cfg.trail_arm_price or (b["stop_locked"] and max_exc >= self.cfg.trail_arm_price):
                 allow_pb = max(min_pb, eff_giveback * max(0.0, max_exc))
+                if self.cfg.trail_max_pullback_price > 0.0:
+                    allow_pb = min(allow_pb, max(min_pb, self.cfg.trail_max_pullback_price))
                 if pullback >= allow_pb and avg_gain > 0:
                     closed = self._close_basket(ex_px, ts, "tick_trail_exit")
                     events.append({"type": "CLOSE_ALL", "wave": closed})
@@ -709,7 +771,12 @@ class S1VelocitySurferEngine:
                     mom_ok = signed_vel_2s >= (0.35 * b["peak_vel"]) and vel_ratio >= min_vel_req
                 else:
                     mom_ok = signed_vel_2s > 0.0
-                if last_net >= self.cfg.add_min_profit_price and mom_ok:
+                est_fill = ask if side == "buy" else bid
+                if (
+                    last_net >= self.cfg.add_min_profit_price
+                    and mom_ok
+                    and self._can_add_risk_free(side=side, bid=bid, ask=ask, fill_px=est_fill)
+                ):
                     self.pending_order = {
                         "kind": "add",
                         "side": side,
@@ -1172,6 +1239,92 @@ def replay_calibration_sweep(
                 trail_min_pullback=2.00,
                 trail_giveback_frac=0.30,
                 max_hold_sec=300.0,
+                loss_cooldown_sec=30.0,
+                consec_loss_cooldown_sec=60.0,
+            ),
+        ),
+        (
+            "v2.4_SAFE_RIP4",
+            S1SurferConfig(
+                leg_lot=leg_lot,
+                max_legs=max_legs,
+                vel_mult=3.0,
+                min_burst_price=1.20,
+                min_60s_move_price=4.0,
+                add_interval_sec=2.0,
+                add_min_profit_price=1.00,
+                min_stop_price=1.80,
+                max_stop_price=2.60,
+                disable_decel_exit=True,
+                candle_cap_adds=False,
+                sl_min_breathing_room=1.10,
+                be_arm_price=1.40,
+                require_be_on_add=True,
+                s1_reversal_cut_body=0.0,
+                trail_arm_price=1.80,
+                trail_min_pullback=1.20,
+                trail_max_pullback_price=2.80,
+                trail_giveback_frac=0.32,
+                multi_leg_giveback_frac=0.18,
+                max_hold_sec=240.0,
+                loss_cooldown_sec=30.0,
+                consec_loss_cooldown_sec=60.0,
+            ),
+        ),
+        (
+            "v2.4_SAFE_HYBRID",
+            S1SurferConfig(
+                leg_lot=leg_lot,
+                max_legs=max_legs,
+                vel_mult=3.2,
+                min_burst_price=1.50,
+                min_60s_move_price=5.5,
+                add_interval_sec=2.0,
+                add_min_profit_price=1.00,
+                min_stop_price=1.60,
+                max_stop_price=2.40,
+                disable_decel_exit=True,
+                candle_cap_adds=False,
+                sl_min_breathing_room=1.10,
+                be_arm_price=1.40,
+                require_be_on_add=True,
+                s1_reversal_cut_body=0.0,
+                trail_arm_price=1.80,
+                trail_min_pullback=1.20,
+                trail_max_pullback_price=2.80,
+                trail_giveback_frac=0.32,
+                multi_leg_giveback_frac=0.18,
+                max_hold_sec=240.0,
+                loss_cooldown_sec=30.0,
+                consec_loss_cooldown_sec=60.0,
+            ),
+        ),
+        (
+            "v2.4_SAFE_FASTCUT",
+            S1SurferConfig(
+                leg_lot=leg_lot,
+                max_legs=max_legs,
+                vel_mult=3.2,
+                min_burst_price=1.50,
+                min_60s_move_price=5.5,
+                add_interval_sec=2.0,
+                add_min_profit_price=1.00,
+                min_stop_price=1.60,
+                max_stop_price=2.40,
+                decel_loss_cut_sec=3.0,
+                disable_decel_exit=True,
+                decel_only_in_loss_1l=True,
+                candle_cap_adds=False,
+                sl_min_breathing_room=1.10,
+                be_arm_price=1.40,
+                require_be_on_add=True,
+                s1_reversal_cut_body=0.0,
+                trail_arm_price=1.80,
+                trail_min_pullback=1.20,
+                trail_max_pullback_price=2.80,
+                trail_giveback_frac=0.32,
+                multi_leg_giveback_frac=0.18,
+                max_hold_sec=240.0,
                 loss_cooldown_sec=30.0,
                 consec_loss_cooldown_sec=60.0,
             ),

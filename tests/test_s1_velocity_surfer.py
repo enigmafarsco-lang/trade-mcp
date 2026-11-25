@@ -476,6 +476,79 @@ def test_v23_wave_rider_survives_stair_step_breaths_and_pyramids() -> None:
     assert w0["net_pnl_usd"] > 5.0
 
 
+def test_v24_safe_pyramid_never_turns_winner_into_multi_leg_loser() -> None:
+    """Risk-free pyramid gate + 1L BE arm + pullback cap + loss-only fast cut all hold mathematically."""
+    t0 = 1_764_095_000.0
+    bull_ctx = {"bias": 1, "label": "BULL_TREND", "support": 3440.0, "resistance": 3530.0}
+    cfg = S1SurferConfig(
+        leg_lot=0.01,
+        max_legs=4,
+        vel_mult=3.0,
+        min_burst_price=1.20,
+        min_60s_move_price=4.0,
+        add_interval_sec=2.0,
+        add_min_profit_price=1.00,
+        min_stop_price=1.80,
+        max_stop_price=2.60,
+        decel_loss_cut_sec=3.0,
+        disable_decel_exit=True,
+        decel_only_in_loss_1l=True,
+        candle_cap_adds=False,
+        sl_min_breathing_room=1.10,
+        be_arm_price=1.40,
+        require_be_on_add=True,
+        s1_reversal_cut_body=0.0,
+        trail_arm_price=1.80,
+        trail_min_pullback=1.20,
+        trail_max_pullback_price=2.80,
+        trail_giveback_frac=0.32,
+        multi_leg_giveback_frac=0.18,
+        max_hold_sec=240.0,
+    )
+    # Case 1: +$1.60 pop followed by immediate -$2.00 reversal -> MUST stay 1L (no premature L2!) & exit >= $0 via BE!
+    eng1 = S1VelocitySurferEngine(cfg=cfg)
+    spread = 0.40
+    bid = 3450.00
+    for step in range(4 * 52):
+        sec = step * 0.25
+        if sec < 35.0:
+            bid = round(3450.00 + (5.00 * sec / 35.0), 2)
+        elif sec < 38.0:
+            bid = round(bid + 0.16, 2)  # triggers L1 around ~3456.8
+        elif sec < 41.0:
+            bid = round(bid + 0.16, 2)  # pops +$1.80 above L1 -> arms 1L BE, NOT enough for risk-free L2 ($2.65)!
+        else:
+            bid = round(bid - 0.12, 2)  # reverses back down
+        eng1.on_tick(ts=t0 + sec, bid=bid, ask=round(bid + spread, 2), m1_context=bull_ctx)
+        if eng1.basket is not None and len(eng1.basket["legs"]) >= 2:
+            # Invariant: ANY multi-leg basket MUST already have SL >= avg_entry + 0.04!
+            assert eng1.basket["stop"] >= eng1.basket["avg_entry"] + 0.04
+    assert len(eng1.waves_closed) >= 1
+    assert eng1.waves_closed[0]["legs_count"] == 1
+    assert eng1.waves_closed[0]["net_pnl_usd"] >= 0.0
+
+    # Case 2: Big +$20 trend run followed by -$3.00 pullback -> pyramids risk-free AND caps giveback <= $2.80!
+    eng2 = S1VelocitySurferEngine(cfg=cfg)
+    bid = 3450.00
+    for step in range(4 * 80):
+        sec = step * 0.25
+        if sec < 35.0:
+            bid = round(3450.00 + (5.00 * sec / 35.0), 2)
+        elif sec < 60.0:
+            bid = round(bid + 0.22, 2)  # big +$22 wave
+        else:
+            bid = round(bid - 0.20, 2)  # sharp reversal -> capped pullback trail exits near top!
+        eng2.on_tick(ts=t0 + sec, bid=bid, ask=round(bid + spread, 2), m1_context=bull_ctx)
+        if eng2.basket is not None and len(eng2.basket["legs"]) >= 2:
+            assert eng2.basket["stop"] >= eng2.basket["avg_entry"] + 0.04
+    assert len(eng2.waves_closed) >= 1
+    w2 = eng2.waves_closed[0]
+    assert w2["legs_count"] >= 2
+    assert w2["exit_reason"] == "tick_trail_exit"
+    assert w2["net_pnl_usd"] > 20.0
+
+
+
 
 
 

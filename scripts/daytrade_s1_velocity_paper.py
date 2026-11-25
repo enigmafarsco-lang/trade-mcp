@@ -158,8 +158,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--replay", default="", help="Replay a recorded logs/s1_ticks_*.jsonl file offline")
     parser.add_argument("--replay-all", action="store_true", help="Show ALL waves in --replay (no 80-wave cap)")
     parser.add_argument("--replay-sweep", nargs="+", default=[], help="Compare S1 calibration profiles across 1 or more recorded tick JSONL files")
+    parser.add_argument("--show-profile", default="", help="Print per-file wave list for a specific profile during --replay-sweep")
     parser.add_argument("--rebuild-m1", action="store_true", help="Rebuild causal M1 context from recorded ticks during --replay")
     parser.add_argument("--wave-rider", action="store_true", help="Enable v2.3 breath-proof Wave-Rider exits (no 1.8s panic decel cut, wider trail & SL breathing room)")
+    parser.add_argument("--safe-hybrid", action="store_true", help="Enable v2.4 Safe-Pyramid Hybrid (fast 1L loss cut, BE arm, risk-free pyramid gate, capped pullback trail)")
     parser.add_argument("--sl-breath", type=float, default=None, help="Minimum $ breathing room between locked SL and current bid/ask")
     parser.add_argument("--mock", action="store_true", help="Run deterministic offline synthetic waterfall verification")
     args = parser.parse_args(argv)
@@ -170,7 +172,36 @@ def main(argv: list[str] | None = None) -> int:
     leg_lot = max(0.01, min(0.05, round(args.leg_lot, 2)))
     max_legs = max(1, min(6, int(args.max_legs)))
 
-    if args.wave_rider:
+    if args.safe_hybrid:
+        cfg = S1SurferConfig(
+            leg_lot=leg_lot,
+            max_legs=max_legs,
+            vel_mult=args.vel_mult,
+            min_burst_price=args.min_burst,
+            min_60s_move_price=args.min_60s_move,
+            max_spread_price=args.max_spread,
+            add_interval_sec=max(2.0, args.add_interval),
+            add_min_profit_price=max(1.00, args.add_profit),
+            min_stop_price=1.60,
+            max_stop_price=2.40,
+            decel_loss_cut_sec=3.0,
+            disable_decel_exit=True,
+            decel_only_in_loss_1l=True,
+            candle_cap_adds=False,
+            sl_min_breathing_room=1.10 if args.sl_breath is None else max(0.0, args.sl_breath),
+            be_arm_price=1.40,
+            require_be_on_add=True,
+            s1_reversal_cut_body=0.0,
+            trail_arm_price=1.80,
+            trail_min_pullback=1.20,
+            trail_max_pullback_price=2.80,
+            trail_giveback_frac=0.32,
+            multi_leg_giveback_frac=0.18,
+            max_hold_sec=240.0,
+            loss_cooldown_sec=30.0,
+            consec_loss_cooldown_sec=60.0,
+        )
+    elif args.wave_rider:
         cfg = S1SurferConfig(
             leg_lot=leg_lot,
             max_legs=max_legs,
@@ -259,8 +290,10 @@ def main(argv: list[str] | None = None) -> int:
                 f"=== S1 VELOCITY CALIBRATION SWEEP (ORDERS=0) ===\nFILE={p0} TICKS={rows0[0]['ticks_replayed']}",
                 rows0,
             )
-            best = max(rows0, key=lambda x: (x["realized_pnl_usd"], -x["max_dd_usd"]))
-            print(f"\n--- BEST PROFILE WAVES: {best['profile']} (NET=${best['realized_pnl_usd']:+.2f}, DD=${best['max_dd_usd']:.2f}) ---")
+            chosen = [r for r in rows0 if r["profile"] == args.show_profile] if args.show_profile else []
+            best = chosen[0] if chosen else max(rows0, key=lambda x: (x["realized_pnl_usd"], -x["max_dd_usd"]))
+            hdr = "PROFILE WAVES" if chosen else "BEST PROFILE WAVES"
+            print(f"\n--- {hdr}: {best['profile']} (NET=${best['realized_pnl_usd']:+.2f}, DD=${best['max_dd_usd']:.2f}) ---")
             _print_waves(best["waves"], show_all=True)
         else:
             for p, rows in per_file_rows:
@@ -302,6 +335,13 @@ def main(argv: list[str] | None = None) -> int:
                 f"\n=== COMBINED S1 CALIBRATION SWEEP ({len(per_file_rows)} FILES, {tot_ticks} TICKS, ORDERS=0) ===",
                 combined,
             )
+            if args.show_profile:
+                for p, rows in per_file_rows:
+                    match = [r for r in rows if r["profile"] == args.show_profile]
+                    if match:
+                        r0 = match[0]
+                        print(f"\n--- {args.show_profile} WAVES ON {p.name} (NET=${r0['realized_pnl_usd']:+.2f}, DD=${r0['max_dd_usd']:.2f}) ---")
+                        _print_waves(r0["waves"], show_all=True)
         return 0
 
     if args.replay:
