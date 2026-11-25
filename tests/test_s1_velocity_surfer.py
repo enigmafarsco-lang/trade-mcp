@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
+import time
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -13,6 +16,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import daytrade_s1_velocity_paper as cli  # noqa: E402
 
+from trade_mcp.bridge.native import to_epoch  # noqa: E402
 from trade_mcp.s1_velocity_surfer import (  # noqa: E402
     S1SurferConfig,
     S1VelocitySurferEngine,
@@ -164,3 +168,108 @@ def test_s1_cli_mock_and_replay_smoke(
     assert rc2 == 0
     out2 = capsys.readouterr().out
     assert "S1 VELOCITY REPLAY (ORDERS=0)" in out2
+
+
+def test_server_now_naive_broker_clock_matches_compact_bars_in_non_utc_timezone() -> None:
+    """Regression: naive broker wall-clock times must NOT shift by host OS timezone (e.g. Asia/Tehran +03:30)."""
+    class _StubFeed:
+        def _call(self, tool: str, args: dict[str, object]) -> dict[str, object]:
+            assert tool == "get_time_information"
+            return {"trade_server_time": "2026-11-25 17:15:30"}
+
+    old_tz = os.environ.get("TZ")
+    try:
+        os.environ["TZ"] = "Asia/Tehran"
+        if hasattr(time, "tzset"):
+            time.tzset()
+        srv_ts, srv_dt = cli._server_now(_StubFeed())  # type: ignore[arg-type]
+    finally:
+        if old_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old_tz
+        if hasattr(time, "tzset"):
+            time.tzset()
+
+    # Build 40 M1 bars using to_epoch() on naive broker timestamps just like compact_bars() does
+    bars: list[list[float]] = []
+    px = 3500.0
+    for i in range(40):
+        t_dt = srv_dt.replace(second=0) - timedelta(minutes=(40 - i))
+        ts = float(to_epoch(t_dt.strftime("%Y-%m-%d %H:%M:%S")))
+        o = px
+        c = px - 0.6
+        bars.append([ts, o, o + 0.3, c - 0.3, c, 100.0])
+        px = c
+
+    ctx = analyze_m1_sr_context(bars, server_now_ts=srv_ts)
+    assert ctx["label"] != "INSUFFICIENT_M1"
+    assert ctx["bias"] == -1
+    assert ctx["support"] is not None and ctx["resistance"] is not None
+
+
+def test_live_m1_support_break_unlocks_sell_from_chop_neutral() -> None:
+    """When closed M1 is CHOP_NEUTRAL, live breakdown below closed M1 support unlocks SELL immediately."""
+    _, ticks = make_synthetic_s1_session(mode="normal_c3")
+    chop_ctx = {
+        "bias": 0,
+        "label": "CHOP_NEUTRAL",
+        "support": ticks[0][1] - 0.40,
+        "resistance": ticks[0][1] + 5.00,
+        "atr_m1": 2.0,
+        "pullback_resume": False,
+        "last_close": ticks[0][1],
+    }
+    eng = S1VelocitySurferEngine(cfg=S1SurferConfig(leg_lot=0.01, max_legs=6))
+    opens: list[dict[str, object]] = []
+    for ts, bid, ask in ticks:
+        for ev in eng.on_tick(ts=ts, bid=bid, ask=ask, m1_context=chop_ctx):
+            if ev["type"] == "OPEN_L1":
+                opens.append(ev)
+
+    assert len(opens) >= 1
+    assert opens[0]["side"] == "sell"
+    assert opens[0]["m1_label"] == "LIVE_M1_SUP_BREAK"
+    assert eng.waves_closed[0]["net_pnl_usd"] > 0
+
+
+def test_replay_rebuilds_causal_m1_when_recording_had_insufficient_m1(tmp_path: Path) -> None:
+    """Reproduces the live recording with INSUFFICIENT_M1 labels and verifies causal M1 rebuild catches the crash."""
+    t0 = 1764083600.0
+    rec = tmp_path / "broken_m1_ticks.jsonl"
+    bid = 3463.00
+    spread = 0.39
+    rows = 0
+    with rec.open("w", encoding="utf-8") as fh:
+        # 3 minutes of calm sideways range (3462..3465) @ 2 Hz, then sharp crash down!
+        for step in range(2 * 220):  # 220 seconds
+            sec = step * 0.5
+            if sec < 180.0:
+                delta = 0.08 if (step % 8 < 4) else -0.08
+            elif sec < 182.0:
+                delta = -0.25  # breaks below support + 2 bearish S1 candles
+            elif sec < 192.0:
+                delta = -0.35  # crash wave!
+            else:
+                delta = +0.03  # stalls
+            bid = round(bid + delta, 2)
+            fh.write(
+                json.dumps(
+                    {
+                        "ts": round(t0 + sec, 3),
+                        "bid": bid,
+                        "ask": round(bid + spread, 2),
+                        "m1": {"bias": 0, "label": "INSUFFICIENT_M1"},
+                    }
+                )
+                + "\n"
+            )
+            rows += 1
+
+    rep = replay_recorded_ticks(rec, cfg=S1SurferConfig(leg_lot=0.01, max_legs=6))
+    assert rep["ticks_replayed"] == rows
+    assert rep["rebuilt_m1_ticks"] == rows
+    assert rep["waves_count"] >= 1
+    assert rep["realized_pnl_usd"] > 0
+    assert rep["orders_submitted"] == 0
+

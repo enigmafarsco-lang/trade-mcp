@@ -643,6 +643,19 @@ class S1VelocitySurferEngine:
             return events
 
         m1_bias = int(m1_context.get("bias", 0))
+        m1_label = str(m1_context.get("label", "M1_OK"))
+        m1_sup = m1_context.get("support")
+        m1_res = m1_context.get("resistance")
+        # Live causal M1 S/R break: if closed M1 is neutral/choppy right before a news shock,
+        # breaking cleanly beyond closed M1 Swing Support/Resistance unlocks direction immediately!
+        if m1_bias == 0:
+            if m1_sup is not None and mid < (float(m1_sup) - 0.25):
+                m1_bias = -1
+                m1_label = "LIVE_M1_SUP_BREAK"
+            elif m1_res is not None and mid > (float(m1_res) + 0.25):
+                m1_bias = 1
+                m1_label = "LIVE_M1_RES_BREAK"
+
         triggered_regime: str | None = None
         burst_dir = 0
         wave_cnum = 3
@@ -697,7 +710,7 @@ class S1VelocitySurferEngine:
                     "stop_dist": round(sdist, 4),
                     "vel_ratio": vel_ratio,
                     "move_3s": round(move_3s, 3),
-                    "m1_label": str(m1_context.get("label", "M1_OK")),
+                    "m1_label": m1_label,
                 }
 
         self._update_dd(bid, ask)
@@ -739,15 +752,64 @@ def append_jsonl_private(path: Path, row: dict[str, Any]) -> None:
     os.chmod(path, 0o600)
 
 
+def _mini_m1_context(closed_bars: list[list[float]]) -> dict[str, Any]:
+    """Strictly causal mini M1 S/R & direction context for short live recordings (< 25 closed M1 bars)."""
+    if len(closed_bars) < 2:
+        return {
+            "bias": 0,
+            "label": "SYNTH_M1_WARMUP",
+            "support": None,
+            "resistance": None,
+            "atr_m1": 0.0,
+            "pullback_resume": False,
+            "last_close": closed_bars[-1][4] if closed_bars else 0.0,
+        }
+    window = closed_bars[-15:]
+    prev = window[:-1]
+    last = window[-1]
+    sup = min(b[3] for b in prev)
+    res = max(b[2] for b in prev)
+    c = float(last[4])
+    o = float(last[1])
+    net_dir = c - float(window[0][1])
+    bias = 0
+    label = "SYNTH_M1_CHOP"
+    if c < sup or (c < o and net_dir < -0.50):
+        bias = -1
+        label = "SYNTH_M1_BEAR"
+    elif c > res or (c > o and net_dir > 0.50):
+        bias = 1
+        label = "SYNTH_M1_BULL"
+    return {
+        "bias": bias,
+        "label": label,
+        "support": round(sup, 3),
+        "resistance": round(res, 3),
+        "atr_m1": round(statistics.mean(max(b[2] - b[3], 0.1) for b in window), 3),
+        "pullback_resume": False,
+        "last_close": round(c, 3),
+    }
+
+
 def replay_recorded_ticks(
     tick_jsonl_path: Path,
     *,
     cfg: S1SurferConfig | None = None,
     initial_capital_usd: float = 1000.0,
+    rebuild_m1: bool = False,
 ) -> dict[str, Any]:
     eng = S1VelocitySurferEngine(cfg=cfg or S1SurferConfig(), initial_capital_usd=initial_capital_usd)
     tick_count = 0
+    rebuilt_m1_ticks = 0
     last_bid, last_ask = 0.0, 0.0
+
+    # Strictly causal M1 bar aggregator from recorded live ticks (used automatically when
+    # recorded M1 labels are missing / INSUFFICIENT_M1 / WARMING_UP, or when rebuild_m1=True)
+    synth_m1_bars: list[list[float]] = []
+    cur_m1_bucket: int | None = None
+    cur_m1_bar: list[float] | None = None
+    synth_m1_ctx: dict[str, Any] = {"bias": 0, "label": "SYNTH_M1_WARMUP", "support": None, "resistance": None}
+
     with tick_jsonl_path.open("r", encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
@@ -757,7 +819,36 @@ def replay_recorded_ticks(
             ts = float(row["ts"])
             bid = float(row["bid"])
             ask = float(row["ask"])
-            m1_ctx = row.get("m1") or {"bias": 0, "label": "REPLAY_NONE"}
+            mid = 0.5 * (bid + ask)
+
+            m1_bucket = int(ts // 60) * 60
+            if cur_m1_bar is None:
+                cur_m1_bucket = m1_bucket
+                cur_m1_bar = [float(m1_bucket), mid, mid, mid, mid, 1.0]
+            elif m1_bucket > int(cur_m1_bucket or 0):
+                synth_m1_bars.append(cur_m1_bar)
+                if len(synth_m1_bars) > 120:
+                    synth_m1_bars = synth_m1_bars[-120:]
+                if len(synth_m1_bars) >= 25:
+                    synth_m1_ctx = analyze_m1_sr_context(synth_m1_bars, server_now_ts=ts)
+                else:
+                    synth_m1_ctx = _mini_m1_context(synth_m1_bars)
+                cur_m1_bucket = m1_bucket
+                cur_m1_bar = [float(m1_bucket), mid, mid, mid, mid, 1.0]
+            else:
+                cur_m1_bar[2] = max(cur_m1_bar[2], mid)
+                cur_m1_bar[3] = min(cur_m1_bar[3], mid)
+                cur_m1_bar[4] = mid
+                cur_m1_bar[5] += 1.0
+
+            rec_m1 = row.get("m1")
+            rec_lbl = str(rec_m1.get("label", "")) if isinstance(rec_m1, dict) else ""
+            if rebuild_m1 or not isinstance(rec_m1, dict) or rec_lbl in ("", "INSUFFICIENT_M1", "WARMING_UP", "REPLAY_NONE"):
+                m1_ctx = synth_m1_ctx
+                rebuilt_m1_ticks += 1
+            else:
+                m1_ctx = rec_m1
+
             eng.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_ctx)
             last_bid, last_ask = bid, ask
             tick_count += 1
@@ -766,6 +857,7 @@ def replay_recorded_ticks(
         eng._close_basket(ex, eng.last_metrics.get("ts", 0.0), "eof_replay")
     s = eng.summary(last_bid, last_ask)
     s["ticks_replayed"] = tick_count
+    s["rebuilt_m1_ticks"] = rebuilt_m1_ticks
     s["waves"] = eng.waves_closed
     return s
 

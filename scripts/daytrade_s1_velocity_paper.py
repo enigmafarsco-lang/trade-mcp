@@ -34,7 +34,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from daytrade_m1_paper_window import ReadOnlyNativeFeed  # noqa: E402
 from daytrade_mt5_readonly_check import Blocked, compact_bars, loopback_native, timestamp  # noqa: E402
 
-from trade_mcp.bridge.native import McpError, find  # noqa: E402
+from trade_mcp.bridge.native import McpError, find, to_epoch  # noqa: E402
 from trade_mcp.config import Config, load_dotenv  # noqa: E402
 from trade_mcp.daytrade_paper import resolve_pricing_basis  # noqa: E402
 from trade_mcp.s1_velocity_surfer import (  # noqa: E402
@@ -61,11 +61,13 @@ def _server_now(feed: ReadOnlyNativeFeed) -> tuple[float, datetime]:
     dt = timestamp(raw_time)
     if dt is None:
         raise Blocked("timestamp_unverified")
-    return float(dt.timestamp()), dt.replace(tzinfo=None)
+    # CRITICAL: use to_epoch(raw_time) — NOT dt.timestamp() — so naive broker wall-clock times
+    # stay in the exact same epoch reference as compact_bars() regardless of host OS timezone!
+    return float(to_epoch(raw_time)), dt.replace(tzinfo=None)
 
 
-def _fetch_m1_bars(feed: ReadOnlyNativeFeed, *, now_label: datetime, limit: int = 120) -> list[list[float]]:
-    start = now_label - timedelta(hours=6)
+def _fetch_m1_bars(feed: ReadOnlyNativeFeed, *, now_label: datetime, limit: int = 200) -> list[list[float]]:
+    start = now_label - timedelta(hours=3)
     end = now_label + timedelta(minutes=2)
     body = feed._call(
         "get_chart_history",
@@ -152,6 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--minutes", type=float, default=0.0, help="Run duration minutes (0 = until Ctrl+C)")
     parser.add_argument("--no-record", action="store_true", help="Disable recording ticks to logs/s1_ticks_*.jsonl")
     parser.add_argument("--replay", default="", help="Replay a recorded logs/s1_ticks_*.jsonl file offline")
+    parser.add_argument("--rebuild-m1", action="store_true", help="Rebuild causal M1 context from recorded ticks during --replay")
     parser.add_argument("--mock", action="store_true", help="Run deterministic offline synthetic waterfall verification")
     args = parser.parse_args(argv)
 
@@ -176,18 +179,20 @@ def main(argv: list[str] | None = None) -> int:
         rep_path = Path(args.replay)
         if not rep_path.is_absolute():
             rep_path = ROOT / rep_path
-        res = replay_recorded_ticks(rep_path, cfg=cfg, initial_capital_usd=args.capital)
+        res = replay_recorded_ticks(rep_path, cfg=cfg, initial_capital_usd=args.capital, rebuild_m1=args.rebuild_m1)
+        rebuilt_note = f" | M1_REBUILT_FROM_TICKS={res['rebuilt_m1_ticks']}" if res.get("rebuilt_m1_ticks", 0) > 0 else ""
         print(
             f"=== S1 VELOCITY REPLAY (ORDERS=0) ===\n"
             f"FILE={rep_path} TICKS={res['ticks_replayed']} WAVES={res['waves_count']} ({res['total_legs_executed']}L, "
             f"{res['wins']}W/{res['losses']}L WR={res['win_rate_pct']}%) | NET=${res['realized_pnl_usd']:+.2f} "
-            f"PF={res['pf']} DD=${res['max_dd_usd']:.2f} | blocked(sp={res['signals_blocked_spread']}, m1={res['signals_blocked_m1']})"
+            f"PF={res['pf']} DD=${res['max_dd_usd']:.2f} | blocked(sp={res['signals_blocked_spread']}, m1={res['signals_blocked_m1']}){rebuilt_note}"
         )
-        for w in res["waves"][-20:]:
+        for w in res["waves"][-30:]:
             print(
-                f"  #{w['wave_id']} {w['side'].upper():4s} {w['legs_count']}L/{w['total_volume']:.2f}lot "
-                f"{w['avg_entry']:.2f}->{w['exit_price']:.2f} PnL=${w['net_pnl_usd']:+6.2f} "
-                f"hold={w['hold_seconds']:5.1f}s ({w['exit_reason']})"
+                f"  #{w['wave_id']:2d} [{w.get('regime', 'S1'):13s}] {w['side'].upper():4s} "
+                f"{w['legs_count']}L/{w['total_volume']:.2f}lot {w['avg_entry']:.2f}->{w['exit_price']:.2f} "
+                f"PnL=${w['net_pnl_usd']:+6.2f} hold={w['hold_seconds']:5.1f}s C{w.get('s1_candles_elapsed', 0)} "
+                f"({w['exit_reason']})"
             )
         return 0
 
@@ -263,10 +268,10 @@ def main(argv: list[str] | None = None) -> int:
                 while not stop_requested:
                     loop_t0 = time.monotonic()
                     try:
-                        if (loop_t0 - last_m1_mono) >= 25.0 or last_m1_mono == 0.0:
+                        if (loop_t0 - last_m1_mono) >= 15.0 or last_m1_mono == 0.0:
                             srv_ts, srv_dt = _server_now(feed)
                             clock_offset = srv_ts - time.time()
-                            m1_bars = _fetch_m1_bars(feed, now_label=srv_dt, limit=100)
+                            m1_bars = _fetch_m1_bars(feed, now_label=srv_dt, limit=200)
                             m1_ctx = analyze_m1_sr_context(m1_bars, server_now_ts=srv_ts)
                             last_m1_mono = loop_t0
 
@@ -281,7 +286,12 @@ def main(argv: list[str] | None = None) -> int:
                                         "ts": round(now_ts, 3),
                                         "bid": last_bid,
                                         "ask": last_ask,
-                                        "m1": {"bias": m1_ctx["bias"], "label": m1_ctx["label"]},
+                                        "m1": {
+                                            "bias": m1_ctx["bias"],
+                                            "label": m1_ctx["label"],
+                                            "support": m1_ctx.get("support"),
+                                            "resistance": m1_ctx.get("resistance"),
+                                        },
                                     },
                                     ensure_ascii=False,
                                 )
