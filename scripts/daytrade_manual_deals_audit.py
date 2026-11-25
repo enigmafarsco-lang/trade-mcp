@@ -59,7 +59,7 @@ def _iso_utc(ep: float) -> str:
 
 
 def _parse_deal_time(row: dict[str, Any]) -> int:
-    for key in ("time", "datetime", "deal_time", "execution_time", "timestamp", "date", "time_utc", "time_msc"):
+    for key in ("open_time", "close_time", "time", "datetime", "deal_time", "execution_time", "timestamp", "date", "time_utc", "time_msc"):
         val = find(row, key)
         if val is None or val == "":
             continue
@@ -182,6 +182,8 @@ def analyze_manual_deals(
             "entry_price": round(entry_px, 4),
             "exit_price": round(exit_px, 4),
             "signed_price_move": round(signed_move, 4),
+            "opened_at": opened_at,
+            "closed_at": closed_at,
             "opened_utc": _iso_utc(opened_at),
             "closed_utc": _iso_utc(closed_at),
             "hold_seconds": hold_sec,
@@ -219,6 +221,22 @@ def analyze_manual_deals(
     comms = [t["commission_per_lot_usd"] for t in closed_trades]
     m1_aligned = [t for t in closed_trades if t["m1_context"] and t["m1_context"]["aligned_with_m1_bar"]]
     m1_known = [t for t in closed_trades if t["m1_context"]]
+
+    events: list[tuple[int, int, float]] = []
+    for t in closed_trades:
+        if t["opened_at"] > 0:
+            events.append((t["opened_at"], 1, float(t["volume"])))
+            events.append((max(t["opened_at"], t["closed_at"]), -1, -float(t["volume"])))
+    events.sort(key=lambda e: (e[0], -e[1]))  # count opens before same-second closes
+    cur_pos, cur_lot = 0, 0.0
+    max_conc_pos, max_conc_lot = 0, 0.0
+    for _, dp, dl in events:
+        cur_pos += dp
+        cur_lot += dl
+        if cur_pos > max_conc_pos:
+            max_conc_pos = cur_pos
+        if cur_lot > max_conc_lot:
+            max_conc_lot = cur_lot
 
     hold_stats = {
         "min_sec": min(holds) if holds else None,
@@ -265,6 +283,8 @@ def analyze_manual_deals(
         "avg_loss_usd": avg_l,
         "payoff_ratio": payoff,
         "max_drawdown_usd": round(max_dd, 2),
+        "max_concurrent_positions": max_conc_pos,
+        "max_concurrent_lots": round(max_conc_lot, 4),
         "hold_seconds_stats": hold_stats,
         "empirical_contract_multiplier_median": round(float(statistics.median(mults)), 2) if mults else None,
         "empirical_commission_per_lot_median": round(float(statistics.median(comms)), 2) if comms else None,
@@ -316,6 +336,11 @@ def _format_summary(report: dict[str, Any]) -> str:
         f"\nTOTAL ({report['hours_requested']}h): {a['trades_closed']}t ({a['wins']}W/{a['losses']}L, WR={a['win_rate_pct']}%) | "
         f"NET=${a['net_pnl_usd']:+.2f} | PF={a['profit_factor']} | DD=${a['max_drawdown_usd']} | "
         f"AVG_W=${a['avg_win_usd']} AVG_L=${a['avg_loss_usd']} PAYOFF={a['payoff_ratio']}"
+    )
+    lines.append(
+        f"HOLD_SEC: min={h['min_sec']}s med={h['median_sec']}s mean={h['mean_sec']}s max={h['max_sec']}s | "
+        f"MAX_CONCURRENT: {a['max_concurrent_positions']} pos / {a['max_concurrent_lots']:.2f} lots | "
+        f"M1_ALIGNED={a['m1_bar_alignment_pct']}%"
     )
     if report.get("sample_deal_keys"):
         lines.append(f"RAW_DEAL_KEYS: {report['sample_deal_keys']}")
