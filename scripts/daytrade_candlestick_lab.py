@@ -141,6 +141,7 @@ def _print_summary(report: dict[str, Any]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Strictly read-only Candlestick & 1-2 Bar OOS Discovery Lab.")
     parser.add_argument("--symbol", default="XAUUSD_i", help="Broker symbol (default: XAUUSD_i)")
+    parser.add_argument("--m1-days", type=int, default=45, help="M1 history days (0 to skip; default 45)")
     parser.add_argument("--m5-days", type=int, default=540, help="M5 history days (0 to skip)")
     parser.add_argument("--m15-days", type=int, default=750, help="M15 history days (0 to skip)")
     parser.add_argument("--h1-days", type=int, default=1825, help="H1 history days (also builds H4 & D1; default 5yr)")
@@ -199,6 +200,12 @@ def main(argv: list[str] | None = None) -> int:
                 quote = parse_quote(row)
                 live_spread = round(max(quote["ask"] - quote["bid"], spec["point"]), 6)
 
+                if args.m1_days > 0:
+                    m1_bars, _meta = _paginate_period_retry(feed, "M1", args.m1_days, 60)
+                    tf_results.append(evaluate_timeframe_candlesticks(
+                        tf_label="M1", bars=m1_bars, spec=spec, spread_px=live_spread,
+                        min_train_n=40, min_test_n=20, mc_trials=args.mc_trials,
+                    ))
                 if args.m5_days > 0:
                     m5_bars, _meta = _paginate_period_retry(feed, "M5", args.m5_days, 300)
                     tf_results.append(evaluate_timeframe_candlesticks(
