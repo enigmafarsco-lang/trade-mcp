@@ -343,6 +343,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         tool_calls: dict[str, int] = {}
+        chart_warnings: list[str] = []
         if args.mock:
             deals, m1_bars = _mock_deals_and_bars()
         else:
@@ -386,32 +387,51 @@ def main(argv: list[str] | None = None) -> int:
                 deals = _parse_deals(raw_hist)
 
                 m1_bars = []
-                if deals:
-                    d_min = min(d["time"] for d in deals) - 1800
-                    d_max = max(d["time"] for d in deals) + 300
-                    # Cap chart fetch to 48h window around deals to keep call fast and bounded.
+                valid_times = [
+                    int(d["time"]) for d in deals
+                    if int(d.get("time") or 0) > 0 and (not args.symbol or d.get("symbol") == args.symbol)
+                ]
+                if not valid_times:
+                    valid_times = [int(d["time"]) for d in deals if int(d.get("time") or 0) > 0]
+                if valid_times:
+                    now_cap = int(max(utc_now, srv_now))
+                    d_max = min(max(valid_times) + 300, now_cap)
+                    d_min = min(valid_times) - 1800
                     d_min = max(d_min, d_max - 48 * 3600)
-                    raw_m1 = _call(
-                        "get_chart_history",
-                        {
-                            "datetime_from": iso(datetime.fromtimestamp(d_min, tz=timezone.utc)),
-                            "datetime_to": iso(datetime.fromtimestamp(d_max, tz=timezone.utc)),
-                            "symbol": args.symbol,
-                            "period": "M1",
-                            "limit": 4000,
-                        },
-                    )
-                    for row in records(raw_m1, "candles", "rates", "bars", "history", "data"):
-                        t_ep = to_epoch(find(row, "time", "datetime", "date", "timestamp"))
-                        if t_ep > 0:
-                            m1_bars.append({
-                                "time": t_ep,
-                                "open": as_float(find(row, "open")),
-                                "high": as_float(find(row, "high")),
-                                "low": as_float(find(row, "low")),
-                                "close": as_float(find(row, "close")),
-                                "tick_volume": as_float(find(row, "tick_volume", "volume", "tick_count")),
-                            })
+                    if d_min >= d_max:
+                        d_min = d_max - 3600
+                    # Fetch M1 context in <=23h chunks so broker limit/range rules never reject the request.
+                    seen_m1: set[int] = set()
+                    cur_end = d_max
+                    while cur_end > d_min:
+                        cur_start = max(d_min, cur_end - 23 * 3600)
+                        try:
+                            raw_m1 = _call(
+                                "get_chart_history",
+                                {
+                                    "datetime_from": datetime.fromtimestamp(cur_start, tz=timezone.utc).isoformat(timespec="seconds"),
+                                    "datetime_to": datetime.fromtimestamp(cur_end, tz=timezone.utc).isoformat(timespec="seconds"),
+                                    "symbol": args.symbol,
+                                    "period": "M1",
+                                    "limit": 1440,
+                                },
+                            )
+                        except McpError as exc:
+                            chart_warnings.append(f"M1 context chunk skipped ({cur_start}..{cur_end}): {exc}")
+                            break
+                        for row in records(raw_m1, "candles", "rates", "bars", "history", "data"):
+                            t_ep = to_epoch(find(row, "time", "datetime", "date", "timestamp"))
+                            if t_ep > 0 and t_ep not in seen_m1:
+                                seen_m1.add(t_ep)
+                                m1_bars.append({
+                                    "time": t_ep,
+                                    "open": as_float(find(row, "open")),
+                                    "high": as_float(find(row, "high")),
+                                    "low": as_float(find(row, "low")),
+                                    "close": as_float(find(row, "close")),
+                                    "tick_volume": as_float(find(row, "tick_volume", "volume", "tick_count")),
+                                })
+                        cur_end = cur_start
 
         analysis = analyze_manual_deals(deals, symbol=args.symbol, m1_bars=m1_bars)
         report: dict[str, Any] = {
@@ -427,6 +447,7 @@ def main(argv: list[str] | None = None) -> int:
             "warnings": [
                 "Strictly read-only deal audit: zero orders were created, modified, or submitted.",
                 "Use Demo account only for manual scalping experiments.",
+                *chart_warnings,
             ],
         }
         saved = _save_private_json(out_path, report)
