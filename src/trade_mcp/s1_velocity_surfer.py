@@ -803,12 +803,13 @@ def _mini_m1_context(closed_bars: list[list[float]]) -> dict[str, Any]:
     c = float(last[4])
     o = float(last[1])
     net_dir = c - float(window[0][1])
+    full_dir = c - float(closed_bars[0][1])
     bias = 0
     label = "SYNTH_M1_CHOP"
-    if c < sup or (c < o and net_dir < -0.50):
+    if c < sup or (c < o and net_dir < -0.80 and full_dir <= 0.0):
         bias = -1
         label = "SYNTH_M1_BEAR"
-    elif c > res or (c > o and net_dir > 0.50):
+    elif c > res or (c > o and net_dir > 0.80 and full_dir >= 0.0):
         bias = 1
         label = "SYNTH_M1_BULL"
     return {
@@ -944,13 +945,28 @@ def replay_calibration_sweep(
             ),
         ),
         (
+            "v2.1_FASTCUT_1.3",
+            S1SurferConfig(
+                leg_lot=leg_lot,
+                max_legs=max_legs,
+                vel_mult=3.0,
+                min_burst_price=1.30,
+                add_min_profit_price=0.18,
+                decel_min_hold_sec=1.2,
+                decel_loss_cut_sec=1.5,
+                s1_reversal_cut_body=0.22,
+                loss_cooldown_sec=25.0,
+                consec_loss_cooldown_sec=50.0,
+            ),
+        ),
+        (
             "v2.1_STRONG_1.5",
             S1SurferConfig(
                 leg_lot=leg_lot,
                 max_legs=max_legs,
                 vel_mult=3.2,
                 min_burst_price=1.50,
-                add_min_profit_price=0.30,
+                add_min_profit_price=0.18,
                 loss_cooldown_sec=25.0,
                 consec_loss_cooldown_sec=50.0,
             ),
@@ -962,7 +978,7 @@ def replay_calibration_sweep(
                 max_legs=max_legs,
                 vel_mult=3.5,
                 min_burst_price=2.00,
-                add_min_profit_price=0.35,
+                add_min_profit_price=0.18,
                 loss_cooldown_sec=30.0,
                 consec_loss_cooldown_sec=60.0,
             ),
@@ -977,7 +993,7 @@ def replay_calibration_sweep(
                 news_c1_mult=4.5,
                 news_c1_min_body=0.65,
                 c2_min_confirm_body=0.25,
-                add_min_profit_price=0.25,
+                add_min_profit_price=0.18,
                 loss_cooldown_sec=25.0,
                 consec_loss_cooldown_sec=50.0,
             ),
