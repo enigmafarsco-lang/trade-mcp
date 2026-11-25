@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from daytrade_m1_paper_window import _save_private_json  # noqa: E402
-from daytrade_mt5_readonly_check import Blocked, loopback_native, timestamp  # noqa: E402
+from daytrade_mt5_readonly_check import Blocked, loopback_native  # noqa: E402
 
 from trade_mcp.bridge.native import (  # noqa: E402
     as_float,
@@ -137,16 +137,25 @@ def analyze_manual_deals(
         comm_per_lot = round(abs(commission + fee) / out_vol, 2) if out_vol > 0 else 0.0
 
         m1_ctx: dict[str, Any] | None = None
-        bar = m1_by_min.get(opened_at - (opened_at % 60))
+        bar_min = opened_at - (opened_at % 60)
+        bar = m1_by_min.get(bar_min)
         if bar is not None:
             o, h, low, c = float(bar["open"]), float(bar["high"]), float(bar["low"]), float(bar["close"])
             m1_dir = "buy" if c > o else ("sell" if c < o else "flat")
+            b_prev1 = m1_by_min.get(bar_min - 60)
+            b_prev5 = m1_by_min.get(bar_min - 300)
+            b_prev15 = m1_by_min.get(bar_min - 900)
+            ref_c = float(b_prev1["close"]) if b_prev1 is not None else o
+            pre5 = round(ref_c - float(b_prev5["open"]), 2) if b_prev5 is not None else None
+            pre15 = round(ref_c - float(b_prev15["open"]), 2) if b_prev15 is not None else None
             m1_ctx = {
                 "m1_range_price": round(h - low, 4),
                 "m1_body_price": round(abs(c - o), 4),
                 "m1_dir": m1_dir,
                 "aligned_with_m1_bar": m1_dir == side,
                 "m1_tick_volume": float(bar.get("tick_volume") or 0.0),
+                "pre5m_move": pre5,
+                "pre15m_move": pre15,
             }
 
         closed_trades.append({
@@ -269,12 +278,21 @@ def _format_summary(report: dict[str, Any]) -> str:
         lines.append("\n--- LAST TRADES (up to 30) ---")
         for t in a["trades"][-30:]:
             m1 = t["m1_context"]
-            m1_s = f"m1_rng=${m1['m1_range_price']} aligned={m1['aligned_with_m1_bar']}" if m1 else "m1=n/a"
+            if m1:
+                pre_parts = []
+                if m1.get("pre5m_move") is not None:
+                    pre_parts.append(f"pre5m={m1['pre5m_move']:+.2f}")
+                if m1.get("pre15m_move") is not None:
+                    pre_parts.append(f"pre15m={m1['pre15m_move']:+.2f}")
+                pre_s = (" " + " ".join(pre_parts)) if pre_parts else ""
+                m1_s = f"m1_rng=${m1['m1_range_price']} aligned={m1['aligned_with_m1_bar']}{pre_s}"
+            else:
+                m1_s = "m1=n/a"
             lines.append(
-                f"  #{t['position_id']} {t['side'].upper():4s} {t['volume']:.2f}lot "
+                f"  {t['opened_utc']} #{t['position_id']} {t['side'].upper():4s} {t['volume']:.2f}lot "
                 f"{t['entry_price']:.2f}->{t['exit_price']:.2f} ({t['signed_price_move']:+.2f}) "
-                f"hold={t['hold_seconds']:3d}s net=${t['net_usd']:+6.2f} "
-                f"(gross=${t['gross_profit_usd']:+6.2f} comm=${t['commission_usd']:.2f}) "
+                f"hold={t['hold_seconds']:4d}s net=${t['net_usd']:+7.2f} "
+                f"(gross=${t['gross_profit_usd']:+7.2f} comm=${t['commission_usd']:.2f}) "
                 f"mult={t['implied_multiplier']} {m1_s}"
             )
     if report.get("log_path"):
@@ -318,7 +336,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if not (1 <= args.hours <= 720):
         raise SystemExit("--hours must be between 1 and 720")
-    out_path = Path(args.out) if args.out else Path("logs") / f"{timestamp()}-manual-deals-audit.json"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out_path = Path(args.out) if args.out else Path("logs") / f"{stamp}-manual-deals-audit.json"
+    if not args.out and out_path.exists():
+        out_path = Path("logs") / f"{stamp}-{int(time.time() * 1000) % 10000}-manual-deals-audit.json"
 
     try:
         tool_calls: dict[str, int] = {}
@@ -366,7 +387,7 @@ def main(argv: list[str] | None = None) -> int:
 
                 m1_bars = []
                 if deals:
-                    d_min = min(d["time"] for d in deals) - 300
+                    d_min = min(d["time"] for d in deals) - 1800
                     d_max = max(d["time"] for d in deals) + 300
                     # Cap chart fetch to 48h window around deals to keep call fast and bounded.
                     d_min = max(d_min, d_max - 48 * 3600)
