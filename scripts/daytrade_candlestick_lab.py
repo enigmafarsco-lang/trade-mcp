@@ -34,6 +34,7 @@ from daytrade_mt5_readonly_check import (  # noqa: E402
     exact_symbol,
     loopback_native,
     reported_spec,
+    timestamp,
 )
 from daytrade_mt5_readonly_check import quote as parse_quote  # noqa: E402
 
@@ -186,9 +187,18 @@ def main(argv: list[str] | None = None) -> int:
         else:
             load_dotenv(ROOT / ".env")
             cfg = Config.from_env()
-            url = loopback_native(cfg.mt5_mcp_url)
-            feed = ReadOnlyNativeFeed(url, cfg.mt5_mcp_token, symbol, timeout=45.0)
-            try:
+            if cfg.backend != "native":
+                raise Blocked("native_backend_required")
+            with loopback_native():
+                feed = ReadOnlyNativeFeed(cfg.mcp_url, cfg.mcp_token, symbol)
+                feed.connect()
+                clock = feed._call("get_time_information", {})
+                raw_time = find(clock, "trade_server_time") or find(clock, "trade_server_last_known_time")
+                dt = timestamp(raw_time)
+                if dt is None:
+                    raise Blocked("timestamp_unverified")
+                now_label = dt.replace(tzinfo=None)
+
                 row = exact_symbol(
                     feed._call("get_marketwatch_symbols", {"symbol": symbol, "limit": 15, "include_hidden": True}),
                     symbol,
@@ -201,25 +211,37 @@ def main(argv: list[str] | None = None) -> int:
                 live_spread = round(max(quote["ask"] - quote["bid"], spec["point"]), 6)
 
                 if args.m1_days > 0:
-                    m1_bars, _meta = _paginate_period_retry(feed, "M1", args.m1_days, 60)
+                    m1_bars, _meta = _paginate_period_retry(
+                        feed, period="M1", now_label=now_label,
+                        total_days=args.m1_days, chunk_days=1, stop_after_consecutive_empty=4,
+                    )
                     tf_results.append(evaluate_timeframe_candlesticks(
                         tf_label="M1", bars=m1_bars, spec=spec, spread_px=live_spread,
                         min_train_n=40, min_test_n=20, mc_trials=args.mc_trials,
                     ))
                 if args.m5_days > 0:
-                    m5_bars, _meta = _paginate_period_retry(feed, "M5", args.m5_days, 300)
+                    m5_bars, _meta = _paginate_period_retry(
+                        feed, period="M5", now_label=now_label,
+                        total_days=args.m5_days, chunk_days=4, stop_after_consecutive_empty=4,
+                    )
                     tf_results.append(evaluate_timeframe_candlesticks(
                         tf_label="M5", bars=m5_bars, spec=spec, spread_px=live_spread,
                         min_train_n=40, min_test_n=20, mc_trials=args.mc_trials,
                     ))
                 if args.m15_days > 0:
-                    m15_bars, _meta = _paginate_period_retry(feed, "M15", args.m15_days, 900)
+                    m15_bars, _meta = _paginate_period_retry(
+                        feed, period="M15", now_label=now_label,
+                        total_days=args.m15_days, chunk_days=12, stop_after_consecutive_empty=4,
+                    )
                     tf_results.append(evaluate_timeframe_candlesticks(
                         tf_label="M15", bars=m15_bars, spec=spec, spread_px=live_spread,
                         min_train_n=40, min_test_n=20, mc_trials=args.mc_trials,
                     ))
                 if args.h1_days > 0:
-                    h1_bars, _meta = _paginate_period_retry(feed, "H1", args.h1_days, 3600)
+                    h1_bars, _meta = _paginate_period_retry(
+                        feed, period="H1", now_label=now_label,
+                        total_days=args.h1_days, chunk_days=45, stop_after_consecutive_empty=4,
+                    )
                     tf_results.append(evaluate_timeframe_candlesticks(
                         tf_label="H1", bars=h1_bars, spec=spec, spread_px=live_spread,
                         min_train_n=40, min_test_n=20, mc_trials=args.mc_trials,
@@ -234,8 +256,6 @@ def main(argv: list[str] | None = None) -> int:
                         tf_label="D1", bars=d1_bars, spec=spec, spread_px=live_spread,
                         min_train_n=15, min_test_n=8, mc_trials=args.mc_trials,
                     ))
-            finally:
-                feed.close()
 
         report: dict[str, Any] = {
             "ok": True,

@@ -116,3 +116,76 @@ def test_candlestick_cli_mock_smoke() -> None:
     finally:
         if out_file.exists():
             out_file.unlink()
+
+
+def test_candlestick_cli_live_wiring_with_stub_feed(monkeypatch) -> None:
+    scripts_dir = str(Path(__file__).resolve().parents[1] / "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    import daytrade_candlestick_lab as cli  # noqa: E402
+
+    monkeypatch.setenv("TRADE_MCP_ALLOW_TRADING", "false")
+    monkeypatch.setenv("TRADE_MCP_PAPER_TRADING", "true")
+
+    class FakeCfg:
+        backend = "native"
+        mcp_url = "http://127.0.0.1:22346/mcp"
+        mcp_token = "tok"
+
+    class FakeFeed:
+        def __init__(self, url: str, token: str, sym: str) -> None:
+            self.url, self.token, self.symbol = url, token, sym
+            self.connected = False
+
+        def connect(self) -> None:
+            self.connected = True
+
+        def _call(self, tool: str, args: dict[str, object]) -> dict[str, object]:
+            if tool == "get_time_information":
+                return {"trade_server_time": "2026-11-24T12:00:00Z"}
+            if tool == "get_marketwatch_symbols":
+                return {
+                    "symbols": [{
+                        "name": "XAUUSD_i",
+                        "bid": 3600.0,
+                        "ask": 3600.34,
+                        "point": 0.01,
+                        "trade_tick_size": 0.01,
+                        "trade_tick_value": 0.10,
+                        "trade_contract_size": 100.0,
+                        "currency_base": "XAU",
+                        "currency_profit": "USD",
+                        "volume_min": 0.01,
+                        "volume_max": 50.0,
+                        "volume_step": 0.01,
+                        "trade_stops_level": 0.0,
+                    }]
+                }
+            raise AssertionError(f"Unexpected tool {tool}")
+
+    sample_bars = make_synthetic_bars_with_embedded_edge(n_bars=260, bar_seconds=3600, seed=5)
+    calls: list[tuple[str, int, int]] = []
+
+    def fake_paginate(feed, *, period, now_label, total_days, chunk_days, stop_after_consecutive_empty):
+        calls.append((period, total_days, chunk_days))
+        return sample_bars, {"bars": len(sample_bars)}
+
+    monkeypatch.setattr(cli, "load_dotenv", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli.Config, "from_env", staticmethod(lambda: FakeCfg()))
+    monkeypatch.setattr(cli, "ReadOnlyNativeFeed", FakeFeed)
+    monkeypatch.setattr(cli, "_paginate_period_retry", fake_paginate)
+
+    out_file = Path("logs/_pytest_candlestick_live_wiring.json")
+    try:
+        rc = cli.main([
+            "--symbol", "XAUUSD_i",
+            "--m1-days", "5", "--m5-days", "0", "--m15-days", "0", "--h1-days", "30",
+            "--mc-trials", "20", "--summary", "--out", str(out_file),
+        ])
+        assert rc == 0
+        assert calls == [("M1", 5, 1), ("H1", 30, 45)]
+        assert out_file.exists()
+    finally:
+        if out_file.exists():
+            out_file.unlink()
+
