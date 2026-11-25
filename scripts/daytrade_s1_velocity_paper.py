@@ -86,24 +86,32 @@ def _print_event(ev: dict[str, Any]) -> None:
     now_str = datetime.now(timezone.utc).strftime("%H:%M:%S")
     if et == "OPEN_L1":
         print(
-            f"[{now_str}] [S1 OPEN L1] #{ev['wave_id']} {ev['side'].upper()} @ {ev['entry']:.2f} "
-            f"| vel={ev['vel_ratio']:.1f}x ({ev['move_3s']:+.2f}/3s) | M1={ev['m1_label']} "
-            f"| SL={ev['stop']:.2f} (sp={ev['spread']:.2f})",
+            f"[{now_str}] [S1 OPEN L1 | {ev.get('regime')} C{ev.get('candle_num')}] #{ev['wave_id']} "
+            f"{ev['side'].upper()} @ {ev['entry']:.2f} | vel={ev['vel_ratio']:.1f}x slope={ev.get('slope_mult', 0):.1f}x "
+            f"({ev['move_3s']:+.2f}/3s) | M1={ev['m1_label']} | SL={ev['stop']:.2f} (sp={ev['spread']:.2f})",
+            flush=True,
+        )
+    elif et == "C2_CONFIRMED":
+        tag = "EXTREME_BLOWOFF" if ev.get("extreme_blowoff") else "GOOD_SLOPE"
+        print(
+            f"[{now_str}] [S1 C2 CONFIRMED -> C3 UNLOCKED] #{ev['wave_id']} {ev['side'].upper()} "
+            f"c2_body={ev['c2_body']:+.2f} ({tag})",
             flush=True,
         )
     elif et == "FIRE_ADD":
         print(
-            f"[{now_str}] [S1 FIRE +L{ev['leg_num']}] #{ev['wave_id']} {ev['side'].upper()} @ {ev['add_price']:.2f} "
-            f"(prev +${ev['last_leg_net']:.2f}) -> {ev['total_volume']:.2f} lot avg={ev['avg_entry']:.2f} "
+            f"[{now_str}] [S1 FIRE +L{ev['leg_num']} | C{ev.get('candle_num')}] #{ev['wave_id']} {ev['side'].upper()} "
+            f"@ {ev['add_price']:.2f} (prev +${ev['last_leg_net']:.2f}) -> {ev['total_volume']:.2f} lot avg={ev['avg_entry']:.2f} "
             f"| SL locked @ {ev['stop']:.2f} (vel={ev['vel_ratio']:.1f}x)",
             flush=True,
         )
     elif et == "CLOSE_ALL":
         w = ev["wave"]
         print(
-            f"[{now_str}] [S1 CLOSE ALL] #{w['wave_id']} {w['side'].upper()} {w['legs_count']}L/{w['total_volume']:.2f}lot "
-            f"{w['avg_entry']:.2f}->{w['exit_price']:.2f} | PnL=${w['net_pnl_usd']:+.2f} "
-            f"({w['exit_reason']}, hold={w['hold_seconds']:.1f}s) | Eq=${w['equity_after_usd']:.2f}",
+            f"[{now_str}] [S1 CLOSE ALL | {w.get('regime')}] #{w['wave_id']} {w['side'].upper()} "
+            f"{w['legs_count']}L/{w['total_volume']:.2f}lot {w['avg_entry']:.2f}->{w['exit_price']:.2f} "
+            f"| PnL=${w['net_pnl_usd']:+.2f} ({w['exit_reason']}, hold={w['hold_seconds']:.1f}s, C{w.get('s1_candles_elapsed')}) "
+            f"| Eq=${w['equity_after_usd']:.2f}",
             flush=True,
         )
 
@@ -114,12 +122,12 @@ def _print_status(eng: S1VelocitySurferEngine, m1_ctx: dict[str, Any], bid: floa
     now_str = datetime.now(timezone.utc).strftime("%H:%M:%S")
     b = s["open_basket"]
     if b:
-        pos_s = f"{b['side'].upper()} {len(b['legs'])}L/{b['total_volume']:.2f}@{b['avg_entry']:.2f}(SL {b['stop']:.2f})"
+        pos_s = f"{b['side'].upper()} {b['regime']} C{b['wave_candle_num']} {len(b['legs'])}L/{b['total_volume']:.2f}@{b['avg_entry']:.2f}(SL {b['stop']:.2f})"
     else:
         pos_s = "FLAT"
     print(
         f"[{now_str}] [S1 SURFER | ORDERS=0] {bid:.2f}/{ask:.2f} (sp={m.get('spread', 0):.2f}) | "
-        f"vel={m.get('vel_ratio', 0):.1f}x ({m.get('move_3s', 0):+.2f}/3s base={m.get('base_vel', 0):.2f}) | "
+        f"S1(streak={m.get('s1_streak', 0):+d} slope={m.get('s1_slope', 0):.1f}x vel={m.get('vel_ratio', 0):.1f}x) | "
         f"M1={m1_ctx.get('label')} (S={m1_ctx.get('support')} R={m1_ctx.get('resistance')}) | "
         f"Pos=[{pos_s}] | Waves={s['waves_count']} ({s['total_legs_executed']}L, {s['wins']}W/{s['losses']}L) "
         f"Real=${s['realized_pnl_usd']:+.2f} Unr=${s['unrealized_pnl_usd']:+.2f}",
@@ -134,10 +142,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--leg-lot", type=float, default=0.01, help="Lot per winner-pyramid leg (0.01..0.05, default 0.01)")
     parser.add_argument("--max-legs", type=int, default=6, help="Max winner-only legs per wave (1..6, default 6)")
     parser.add_argument("--vel-mult", type=float, default=2.5, help="Eye-speed multiplier vs 90s baseline (default 2.5)")
-    parser.add_argument("--min-burst", type=float, default=0.75, help="Min 3-second $ burst for Leg 1 (default 0.75)")
+    parser.add_argument("--min-burst", type=float, default=0.70, help="Min 3-second $ burst for Leg 1 (default 0.70)")
     parser.add_argument("--max-spread", type=float, default=0.90, help="Max allowed live spread $ (default 0.90)")
-    parser.add_argument("--add-interval", type=float, default=1.0, help="Min seconds between winner legs (default 1.0)")
-    parser.add_argument("--add-profit", type=float, default=0.20, help="Min net $ move on last leg before adding (default 0.20)")
+    parser.add_argument("--add-interval", type=float, default=0.60, help="Min seconds between winner legs (default 0.60)")
+    parser.add_argument("--add-profit", type=float, default=0.15, help="Min net $ move on last leg before adding (default 0.15)")
     parser.add_argument("--decel-ratio", type=float, default=0.28, help="Exit when 2s speed <= this fraction of peak (default 0.28)")
     parser.add_argument("--poll-seconds", type=float, default=0.30, help="Live tick poll interval seconds (default 0.30)")
     parser.add_argument("--status-seconds", type=float, default=15.0, help="Heartbeat print interval seconds (default 15)")

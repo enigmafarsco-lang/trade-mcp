@@ -1,4 +1,4 @@
-"""Hermetic offline tests for S1 Velocity Surfer (M1 S/R + 1s Acceleration + Winner Machine-Gun + Decel Exit)."""
+"""Hermetic offline tests for S1 Velocity Surfer v2 (M1 S/R + C1/C2/C3/C4 S1 Playbook + Winner Machine-Gun + Decel Exit)."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from trade_mcp.s1_velocity_surfer import (  # noqa: E402
 
 
 def test_m1_sr_context_detects_bearish_pullback_resume() -> None:
-    m1_bars, ticks = make_synthetic_s1_session()
+    m1_bars, ticks = make_synthetic_s1_session(mode="normal_c3")
     ctx = analyze_m1_sr_context(m1_bars, server_now_ts=ticks[0][0])
     assert ctx["bias"] == -1
     assert ctx["label"] in ("BEAR_PB_RESUME", "BEAR_SUP_BREAK", "BEAR_TREND")
@@ -31,8 +31,8 @@ def test_m1_sr_context_detects_bearish_pullback_resume() -> None:
     assert ctx["resistance"] > ctx["support"]
 
 
-def test_s1_machine_gun_fires_winner_legs_locks_stop_and_decel_exits() -> None:
-    m1_bars, ticks = make_synthetic_s1_session()
+def test_normal_c3_waits_for_two_s1_candles_then_fires_c3_and_decel_exits() -> None:
+    m1_bars, ticks = make_synthetic_s1_session(mode="normal_c3")
     m1_ctx = analyze_m1_sr_context(m1_bars, server_now_ts=ticks[0][0])
     eng = S1VelocitySurferEngine(cfg=S1SurferConfig(leg_lot=0.01, max_legs=6))
 
@@ -40,57 +40,88 @@ def test_s1_machine_gun_fires_winner_legs_locks_stop_and_decel_exits() -> None:
     for ts, bid, ask in ticks:
         events.extend(eng.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_ctx))
 
-    types = [e["type"] for e in events]
-    assert "OPEN_L1" in types
-    assert types.count("FIRE_ADD") >= 2
-    assert "CLOSE_ALL" in types
+    opens = [e for e in events if e["type"] == "OPEN_L1"]
+    adds = [e for e in events if e["type"] == "FIRE_ADD"]
+    closes = [e for e in events if e["type"] == "CLOSE_ALL"]
+    assert len(opens) >= 1
+    assert opens[0]["regime"] == "NORMAL_C3"
+    assert opens[0]["candle_num"] == 3
+    assert len(adds) >= 2
+    assert len(closes) >= 1
 
-    assert len(eng.waves_closed) >= 1
     w = eng.waves_closed[0]
     assert w["side"] == "sell"
+    assert w["regime"] == "NORMAL_C3"
     assert w["legs_count"] >= 3
-    assert w["exit_reason"] in ("decel_stall_exit", "tick_trail_exit")
+    assert w["exit_reason"] in ("decel_stall_exit", "tick_trail_exit", "profit_floor_hit")
     assert w["net_pnl_usd"] > 0
     assert w["orders_submitted"] == 0
 
 
-def test_s1_never_adds_on_adverse_reversal_hits_hard_sl() -> None:
-    m1_bars, ticks = make_synthetic_s1_session()
+def test_news_steep_c1_probes_confirms_c2_unlocks_c3_and_respects_exhaustion() -> None:
+    m1_bars, ticks = make_synthetic_s1_session(mode="news_steep_confirm")
     m1_ctx = analyze_m1_sr_context(m1_bars, server_now_ts=ticks[0][0])
-    eng = S1VelocitySurferEngine(cfg=S1SurferConfig(leg_lot=0.01, max_legs=6, max_stop_price=2.0))
+    eng = S1VelocitySurferEngine(cfg=S1SurferConfig(leg_lot=0.01, max_legs=6))
 
-    # Take baseline + first 4s of drop (triggers Leg 1), then violently reverse UP $6
-    t_base = ticks[0][0]
-    spread = 0.32
-    bid = ticks[0][1]
-    custom_ticks: list[tuple[float, float, float]] = []
-    for step in range(4 * 40):
-        sec = step * 0.25
-        if sec < 24.0:
-            delta = 0.04 if (step % 4 < 2) else -0.04
-        elif sec < 25.75:
-            delta = -0.18
-        else:
-            delta = +0.35  # violent immediate V-reversal against SELL right after Leg 1 fills!
-        bid = round(bid + delta, 2)
-        custom_ticks.append((t_base + sec, bid, round(bid + spread, 2)))
+    events: list[dict[str, object]] = []
+    for ts, bid, ask in ticks:
+        events.extend(eng.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_ctx))
+
+    opens = [e for e in events if e["type"] == "OPEN_L1"]
+    confirms = [e for e in events if e["type"] == "C2_CONFIRMED"]
+    adds = [e for e in events if e["type"] == "FIRE_ADD"]
+    assert len(opens) >= 1
+    assert opens[0]["regime"] == "NEWS_STEEP_C1"
+    assert len(confirms) >= 1
+    assert len(adds) >= 2
+    assert eng.waves_closed[0]["net_pnl_usd"] > 0
+    assert eng.waves_closed[0]["legs_count"] >= 3
+
+
+def test_news_steep_c1_fakeout_cuts_immediately_on_c2_reversal() -> None:
+    m1_bars, ticks = make_synthetic_s1_session(mode="news_steep_fakeout")
+    m1_ctx = analyze_m1_sr_context(m1_bars, server_now_ts=ticks[0][0])
+    eng = S1VelocitySurferEngine(cfg=S1SurferConfig(leg_lot=0.01, max_legs=6))
 
     adds = 0
-    for ts, b, a in custom_ticks:
-        for ev in eng.on_tick(ts=ts, bid=b, ask=a, m1_context=m1_ctx):
+    for ts, bid, ask in ticks:
+        for ev in eng.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_ctx):
             if ev["type"] == "FIRE_ADD":
                 adds += 1
 
     assert adds == 0
     assert len(eng.waves_closed) >= 1
-    first = eng.waves_closed[0]
-    assert first["legs_count"] == 1
-    assert first["exit_reason"] == "hard_stop_loss"
-    assert first["net_pnl_usd"] < 0
+    w = eng.waves_closed[0]
+    assert w["regime"] == "NEWS_STEEP_C1"
+    assert w["legs_count"] == 1
+    assert w["exit_reason"] == "c2_unconfirmed_cut"
+
+
+def test_normal_c3_never_averages_down_on_immediate_v_reversal() -> None:
+    m1_bars, ticks = make_synthetic_s1_session(mode="normal_c3")
+    m1_ctx = analyze_m1_sr_context(m1_bars, server_now_ts=ticks[0][0])
+    eng = S1VelocitySurferEngine(cfg=S1SurferConfig(leg_lot=0.01, max_legs=6))
+
+    adds = 0
+    for ts, bid, ask in ticks:
+        if eng.basket is not None:
+            # Immediately reverse straight up +$2.50 right after L1 opens!
+            bid = float(eng.basket["avg_entry"]) + 2.50
+            ask = bid + 0.32
+        for ev in eng.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_ctx):
+            if ev["type"] == "FIRE_ADD":
+                adds += 1
+        if eng.waves_closed:
+            break
+
+    assert adds == 0
+    assert len(eng.waves_closed) == 1
+    assert eng.waves_closed[0]["legs_count"] == 1
+    assert eng.waves_closed[0]["exit_reason"] == "hard_stop_loss"
 
 
 def test_s1_tick_record_and_offline_replay_match(tmp_path: Path) -> None:
-    m1_bars, ticks = make_synthetic_s1_session()
+    m1_bars, ticks = make_synthetic_s1_session(mode="normal_c3")
     m1_ctx = analyze_m1_sr_context(m1_bars, server_now_ts=ticks[0][0])
 
     rec_file = tmp_path / "ticks.jsonl"
@@ -118,11 +149,11 @@ def test_s1_cli_mock_and_replay_smoke(
     assert rc == 0
     out = capsys.readouterr().out
     assert "OK=True ORDERS=0 MODE=mock_s1" in out
-    assert "[S1 OPEN L1]" in out
-    assert "[S1 FIRE +L2]" in out
-    assert "[S1 CLOSE ALL]" in out
+    assert "[S1 OPEN L1" in out
+    assert "[S1 FIRE +L2" in out
+    assert "[S1 CLOSE ALL" in out
 
-    m1_bars, ticks = make_synthetic_s1_session()
+    m1_bars, ticks = make_synthetic_s1_session(mode="news_steep_confirm")
     m1_ctx = analyze_m1_sr_context(m1_bars, server_now_ts=ticks[0][0])
     rec = tmp_path / "sample_ticks.jsonl"
     with rec.open("w", encoding="utf-8") as fh:

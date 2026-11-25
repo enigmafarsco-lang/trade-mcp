@@ -1,20 +1,26 @@
-"""S1 Velocity Surfer: M1 S/R Context + 1-Second Acceleration + Winner-Only 6-Leg Machine Gun + Deceleration Exit.
+"""S1 Velocity Surfer v2: M1 S/R + S1 Candle-Count (C1/C2/C3/C4) Playbook + Winner Machine-Gun + Decel Exit.
 
-Faithfully models a dual-chart tape scalper (M1 structure + 1-second velocity chart)
-with strict real-account protections and ZERO broker orders (Paper-only / replay):
-  1. M1 Chart Context (closed bars only): EMA9/21 trend direction, 15-bar Swing S/R,
-     pullback-resume detection, and guard against firing straight into an untouched S/R wall.
-  2. 1-Second Velocity Ratio (S1): compares live 3-second directional speed against
-     rolling 90-second baseline "eye speed" (triggers when speed >= vel_mult x baseline
-     with high directional straightness/efficiency and live spread within cap).
-  3. 1-Second Winner-Only Machine Gun (Legs 1..max_legs): adds Leg k+1 after >= 1s
-     ONLY when the most recent leg is ALREADY in net profit after spread and velocity
-     is still accelerating — NEVER averages down into losers. Automatically tightens
-     the basket stop-loss to Leg-1 breakeven at 2 legs and basket profit-floor at 3+ legs.
-  4. Deceleration Exit: closes ALL open legs immediately when 2-second directional
-     velocity decays below decel_ratio * peak_vel (or on tight tick-trail / hard SL).
-  5. Realistic execution latency (default 250ms) and lossless sub-second JSONL tick
-     recording + offline replay backtesting on real recorded Alpari ticks.
+Faithfully implements the dual-chart M1 + 1-Second (S1) tape playbook with strict
+real-account protections and ZERO broker orders (Paper-only + tick recorder/replay):
+
+  1. Chart 1 (M1 closed bars): trend direction, Swing Support/Resistance, and pullback-resume.
+  2. Chart 2 (S1 1-second OHLC candles built from 0.25s-0.30s live Bid/Ask ticks):
+     - Normal Session Regime (`NORMAL_C3`): waits for 2 consecutive same-direction S1
+       candles (C1, C2) with >= vel_mult (2.5x) acceleration, then enters on Candle 3 (C3)
+       when C3 continues in the M1 direction.
+     - News / Session-Open Steep Shock Regime (`NEWS_STEEP_C1`): when C1 prints an
+       explosive steep candle (>= news_c1_mult x baseline body) aligned with M1:
+         * C1-C2 Probe: opens light probe (capped at probe_max_legs=2) and waits for C2
+           to confirm direction — if C2 reverses (fake news wick), cuts IMMEDIATELY!
+         * C3 Full-Send: once C2 confirms and prior leg is in net profit, unlocks rapid
+           winner-only legs up to max_legs (6) with automatic BE / profit-floor SL lock.
+         * C4 Slope-Adaptive Exhaustion Guard:
+             - Extreme vertical blow-off (>= extreme_slope_mult): stops adding after C3
+               and tightens deceleration/trail exit immediately before V-snapback.
+             - Moderate/good slope: C4 Caution mode locks 50% of unrealized profit and
+               blocks new adds on C5+ (exit management only).
+  3. Instant Deceleration Exit: closes ALL open legs when 2-second directional speed
+     drops below decel_ratio * peak_vel, or on tight tick-trail / locked profit-floor / hard SL.
 """
 
 from __future__ import annotations
@@ -75,20 +81,16 @@ def analyze_m1_sr_context(
     h = float(last[2])
     low = float(last[3])
 
-    # Check if there was a recent counter-trend pullback in last 5 bars followed by resume
     recent5 = window[-6:-1]
     had_green_pb = any(b[4] > b[1] for b in recent5)
     had_red_pb = any(b[4] < b[1] for b in recent5)
-    # Also detect clean slope over last 10 closed M1 bars
     slope10 = c - window[-11][4]
 
     bias = 0
     label = "CHOP_NEUTRAL"
     pb_resume = False
 
-    # Bearish structure: EMA9 < EMA21 and price below EMA21 (or broke below 15-bar support)
     if (ema9[-1] < ema21[-1] and c <= ema21[-1] and slope10 <= 0) or (c < sup and c < o):
-        # Guard: avoid firing SELL straight into an unbroken 15-bar support with strong lower-wick rejection
         lower_wick = min(o, c) - low
         rng = max(h - low, 1e-9)
         dist_to_sup = c - sup
@@ -105,7 +107,6 @@ def analyze_m1_sr_context(
             else:
                 label = "BEAR_TREND"
 
-    # Bullish structure: EMA9 > EMA21 and price above EMA21 (or broke above 15-bar resistance)
     elif (ema9[-1] > ema21[-1] and c >= ema21[-1] and slope10 >= 0) or (c > res and c > o):
         upper_wick = h - max(o, c)
         rng = max(h - low, 1e-9)
@@ -138,29 +139,38 @@ def analyze_m1_sr_context(
 class S1SurferConfig:
     leg_lot: float = 0.01
     max_legs: int = 6
+    probe_max_legs: int = 2  # light probe cap during news C1-C2 before C2 confirms
     multiplier: float = 100.0
     burst_window_sec: float = 3.0
     decel_window_sec: float = 2.0
     baseline_sec: int = 90
     min_baseline_samples: int = 12
-    base_vel_floor: float = 0.18  # minimum baseline $/3s so dead flat ticks never trigger
-    vel_mult: float = 2.5  # trigger Leg 1 when live 3s speed >= vel_mult * baseline
-    min_burst_price: float = 0.75  # minimum $ move in 3s for Leg 1
-    min_efficiency: float = 0.65  # directional straightness over burst window
-    max_spread_price: float = 0.90  # skip new entries/adds if news spread blows out above this
-    latency_sec: float = 0.25  # realistic fill latency
-    add_interval_sec: float = 1.0  # minimum 1 second between winner-pyramid legs
-    add_min_profit_price: float = 0.20  # last leg must be >= +$0.20 net of spread before firing next leg
-    add_min_vel_ratio: float = 1.4  # still accelerating relative to baseline to add
-    initial_stop_mult: float = 1.25  # initial hard SL = max(burst * mult, spread*3.5, min_stop)
+    base_vel_floor: float = 0.18  # minimum baseline $/3s
+    base_s1_body_floor: float = 0.08  # minimum baseline 1-second candle body $
+    vel_mult: float = 2.5  # normal-session C3 trigger: live 3s speed >= 2.5x baseline
+    news_c1_mult: float = 5.0  # news steep C1 probe: |body(C1)| >= 5x baseline S1 body
+    news_c1_min_body: float = 0.55  # minimum $ body for steep news C1 probe
+    extreme_slope_mult: float = 9.0  # extreme vertical blow-off -> stop adding at C5+ & tighten exit
+    extreme_3s_move: float = 3.50  # or >= $3.50 move in 3s counts as extreme blow-off
+    min_burst_price: float = 0.70  # minimum 3s move for normal C3 entry
+    min_efficiency: float = 0.65
+    max_spread_price: float = 0.90
+    latency_sec: float = 0.25
+    add_interval_sec: float = 0.60  # winner add cadence
+    c3_add_interval_sec: float = 0.35  # rapid-fire inside confirmed C3 when prior leg is in profit
+    add_min_profit_price: float = 0.15  # last leg must be >= +$0.15 net of spread before firing next leg
+    add_min_vel_ratio: float = 1.4
+    initial_stop_mult: float = 1.25
     min_stop_price: float = 1.50
     max_stop_price: float = 3.50
-    decel_ratio: float = 0.28  # exit when 2s speed drops <= 28% of peak speed
-    decel_confirm_ticks: int = 2  # consecutive slow ticks to confirm deceleration
+    decel_ratio: float = 0.28
+    steep_decel_ratio: float = 0.45  # tighter decel exit after extreme blow-off
+    decel_confirm_ticks: int = 2
     decel_min_hold_sec: float = 2.0
-    trail_arm_price: float = 0.35  # arm tight tick trail once basket avg gain >= $0.35
+    trail_arm_price: float = 0.35
     trail_min_pullback: float = 0.45
     trail_giveback_frac: float = 0.35
+    steep_giveback_frac: float = 0.22
     max_hold_sec: float = 120.0
     win_cooldown_sec: float = 2.0
     loss_cooldown_sec: float = 6.0
@@ -168,14 +178,15 @@ class S1SurferConfig:
 
 @dataclass
 class S1VelocitySurferEngine:
-    """Stateful real-time 1-second velocity + winner-only 6-leg machine gun + deceleration exit."""
+    """Stateful real-time M1 S/R + S1 Candle-Count (C1/C2/C3/C4) + Winner Machine-Gun + Decel Exit."""
 
     cfg: S1SurferConfig = field(default_factory=S1SurferConfig)
     initial_capital_usd: float = 1000.0
 
-    # Rolling tick & 1-second history
+    # Rolling tick & 1-second OHLC candle history
     ticks: deque[tuple[float, float, float, float]] = field(default_factory=deque)  # (ts, bid, ask, mid)
-    sec_series: deque[tuple[int, float]] = field(default_factory=deque)  # (sec_epoch, last_mid)
+    s1_bars: deque[dict[str, Any]] = field(default_factory=deque)  # completed 1-second OHLC bars
+    cur_s1: dict[str, Any] | None = None
 
     # Live position / order state
     pending_order: dict[str, Any] | None = None
@@ -195,7 +206,8 @@ class S1VelocitySurferEngine:
     def __post_init__(self) -> None:
         self.peak_equity_usd = float(self.initial_capital_usd)
 
-    def _record_tick(self, ts: float, bid: float, ask: float) -> float:
+    def _record_tick(self, ts: float, bid: float, ask: float) -> tuple[float, dict[str, Any] | None]:
+        """Update tick deque and 1-second OHLC candles; return (mid, newly_completed_s1_bar)."""
         mid = 0.5 * (bid + ask)
         self.ticks.append((ts, bid, ask, mid))
         keep_sec = max(self.cfg.burst_window_sec + 4.0, 12.0)
@@ -203,17 +215,29 @@ class S1VelocitySurferEngine:
             self.ticks.popleft()
 
         sec_ep = int(ts)
-        if self.sec_series and self.sec_series[-1][0] == sec_ep:
-            self.sec_series[-1] = (sec_ep, mid)
+        completed_bar: dict[str, Any] | None = None
+        if self.cur_s1 is None:
+            self.cur_s1 = {"sec": sec_ep, "o": mid, "h": mid, "l": mid, "c": mid}
+        elif sec_ep > self.cur_s1["sec"]:
+            # Finalize previous 1-second candle
+            prev = self.cur_s1
+            prev["body"] = round(prev["c"] - prev["o"], 5)
+            prev["rng"] = round(prev["h"] - prev["l"], 5)
+            self.s1_bars.append(prev)
+            completed_bar = prev
+            max_hist = self.cfg.baseline_sec + 30
+            while len(self.s1_bars) > max_hist:
+                self.s1_bars.popleft()
+            # Open new forming candle from previous close (continuous tape) or current mid
+            self.cur_s1 = {"sec": sec_ep, "o": prev["c"], "h": max(prev["c"], mid), "l": min(prev["c"], mid), "c": mid}
         else:
-            self.sec_series.append((sec_ep, mid))
-        max_hist = self.cfg.baseline_sec + 25
-        while len(self.sec_series) > max_hist:
-            self.sec_series.popleft()
-        return mid
+            self.cur_s1["h"] = max(self.cur_s1["h"], mid)
+            self.cur_s1["l"] = min(self.cur_s1["l"], mid)
+            self.cur_s1["c"] = mid
+
+        return mid, completed_bar
 
     def _window_move_and_eff(self, ts: float, win_sec: float) -> tuple[float, float, bool]:
-        """Return (signed_move, efficiency, has_span) over the last `win_sec` seconds."""
         if len(self.ticks) < 2:
             return 0.0, 0.0, False
         cutoff = ts - win_sec
@@ -232,25 +256,53 @@ class S1VelocitySurferEngine:
         eff = (abs(net) / path) if path > 1e-9 else 0.0
         return net, eff, True
 
-    def _baseline_velocity(self, ts: float) -> tuple[float, int]:
-        """Rolling median of past 3s absolute moves excluding the active burst window."""
-        if len(self.sec_series) < 6:
-            return self.cfg.base_vel_floor, 0
+    def _baselines(self, ts: float) -> tuple[float, float, int]:
+        """Return (base_vel_3s, base_s1_body, sample_count) from past completed S1 bars."""
+        if len(self.s1_bars) < 6:
+            return self.cfg.base_vel_floor, self.cfg.base_s1_body_floor, 0
         step = max(1, int(round(self.cfg.burst_window_sec)))
         exclude_after = int(ts) - step - 1
-        arr = list(self.sec_series)
-        samples: list[float] = []
+        arr = list(self.s1_bars)
+        vel_samples: list[float] = []
+        body_samples: list[float] = []
         for idx in range(step, len(arr)):
-            t_cur, m_cur = arr[idx]
-            if t_cur > exclude_after:
+            bar = arr[idx]
+            if bar["sec"] > exclude_after:
                 break
-            t_prev, m_prev = arr[idx - step]
-            if 1 <= (t_cur - t_prev) <= (step + 3):
-                samples.append(abs(m_cur - m_prev))
-        if len(samples) < self.cfg.min_baseline_samples:
-            return self.cfg.base_vel_floor, len(samples)
-        med = float(statistics.median(samples))
-        return max(med, self.cfg.base_vel_floor), len(samples)
+            body_samples.append(abs(float(bar["body"])))
+            prev = arr[idx - step]
+            if 1 <= (bar["sec"] - prev["sec"]) <= (step + 3):
+                vel_samples.append(abs(float(bar["c"]) - float(prev["c"])))
+        if len(vel_samples) < self.cfg.min_baseline_samples:
+            return self.cfg.base_vel_floor, self.cfg.base_s1_body_floor, len(vel_samples)
+        base_vel = max(float(statistics.median(vel_samples)), self.cfg.base_vel_floor)
+        base_body = max(float(statistics.median(body_samples)), self.cfg.base_s1_body_floor)
+        return base_vel, base_body, len(vel_samples)
+
+    def _s1_candle_streak(self, base_body: float) -> tuple[int, int, float, float]:
+        """Return (streak_count, streak_dir, c1_slope_mult, last_slope_mult) on completed S1 candles."""
+        if not self.s1_bars:
+            return 0, 0, 0.0, 0.0
+        arr = list(self.s1_bars)
+        last = arr[-1]
+        last_body = float(last["body"])
+        min_dir_body = max(0.03, base_body * 0.35)
+        if abs(last_body) < min_dir_body:
+            return 0, 0, 0.0, 0.0
+        sdir = 1 if last_body > 0 else -1
+        count = 1
+        first_body = abs(last_body)
+        for k in range(len(arr) - 2, -1, -1):
+            b = arr[k]
+            if (arr[k + 1]["sec"] - b["sec"]) > 2:
+                break
+            bd = float(b["body"])
+            if (sdir == 1 and bd >= min_dir_body) or (sdir == -1 and bd <= -min_dir_body):
+                count += 1
+                first_body = abs(bd)
+            else:
+                break
+        return count, sdir, round(first_body / base_body, 2), round(abs(last_body) / base_body, 2)
 
     def unrealized_pnl_usd(self, bid: float, ask: float) -> float:
         if not self.basket or bid <= 0 or ask <= 0:
@@ -279,6 +331,7 @@ class S1VelocitySurferEngine:
         rec = {
             "wave_id": b["wave_id"],
             "side": b["side"],
+            "regime": b["regime"],
             "legs_count": len(b["legs"]),
             "total_volume": b["total_volume"],
             "avg_entry": b["avg_entry"],
@@ -290,6 +343,9 @@ class S1VelocitySurferEngine:
             "closed_at": float(ts),
             "closed_utc": _iso_utc(ts),
             "hold_seconds": round(max(0.0, ts - b["opened_at"]), 2),
+            "s1_candles_elapsed": int(b["wave_candle_num"]),
+            "peak_slope_mult": round(float(b["peak_slope_mult"]), 2),
+            "extreme_blowoff": bool(b["extreme_blowoff"]),
             "peak_vel": round(b["peak_vel"], 3),
             "m1_label": b["m1_label"],
             "net_pnl_usd": pnl,
@@ -303,8 +359,8 @@ class S1VelocitySurferEngine:
         self.cooldown_until = ts + cd
         return rec
 
-    def _lock_basket_stop(self) -> float:
-        """Tighten basket SL to Leg-1 BE at 2 legs and overall profit floor at 3+ legs."""
+    def _lock_basket_stop(self, *, bid: float = 0.0, ask: float = 0.0, lock_half_profit: bool = False) -> float:
+        """Tighten basket SL: Leg-1 BE at 2 legs, basket profit-floor at 3+ legs, 50% lock in C4 caution."""
         assert self.basket is not None
         b = self.basket
         side = b["side"]
@@ -313,18 +369,23 @@ class S1VelocitySurferEngine:
         avg_ent = float(b["avg_entry"])
         cur_sl = float(b["stop"])
 
+        target_sl = cur_sl
         if n_legs == 2:
-            # Lock Leg 1 at breakeven (+$0.05 cushion)
             target_sl = (ent1 + 0.05) if side == "buy" else (ent1 - 0.05)
         elif n_legs >= 3:
-            # Lock ENTIRE basket average entry at >= breakeven (+$0.05 net cushion)
             target_sl = (avg_ent + 0.05) if side == "buy" else (avg_ent - 0.05)
-        else:
-            return cur_sl
+
+        if lock_half_profit and bid > 0 and ask > 0:
+            ex = bid if side == "buy" else ask
+            gain = (ex - avg_ent) if side == "buy" else (avg_ent - ex)
+            if gain > 0.30:
+                half_sl = (avg_ent + 0.50 * gain) if side == "buy" else (avg_ent - 0.50 * gain)
+                target_sl = max(target_sl, half_sl) if side == "buy" else min(target_sl, half_sl)
 
         new_sl = max(cur_sl, target_sl) if side == "buy" else min(cur_sl, target_sl)
-        b["stop"] = round(new_sl, 4)
-        b["stop_locked"] = True
+        if new_sl != cur_sl:
+            b["stop"] = round(new_sl, 4)
+            b["stop_locked"] = True
         return b["stop"]
 
     def on_tick(
@@ -335,17 +396,18 @@ class S1VelocitySurferEngine:
         ask: float,
         m1_context: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        """Process one live Bid/Ask sample (e.g., every 0.25s-0.5s) and return events."""
+        """Process one live Bid/Ask sample (~0.25s-0.30s) and return execution/management events."""
         events: list[dict[str, Any]] = []
         if bid <= 0 or ask <= 0 or ask < bid:
             return events
 
         spread = round(ask - bid, 5)
-        self._record_tick(ts, bid, ask)
+        mid, completed_s1 = self._record_tick(ts, bid, ask)
         move_3s, eff_3s, has_3s = self._window_move_and_eff(ts, self.cfg.burst_window_sec)
         move_2s, _, has_2s = self._window_move_and_eff(ts, self.cfg.decel_window_sec)
-        base_vel, base_n = self._baseline_velocity(ts)
+        base_vel, base_body, base_n = self._baselines(ts)
         vel_ratio = round(abs(move_3s) / base_vel, 2) if (has_3s and base_vel > 0) else 0.0
+        streak_n, streak_dir, c1_slope, last_slope = self._s1_candle_streak(base_body)
 
         self.last_metrics = {
             "ts": ts,
@@ -356,8 +418,11 @@ class S1VelocitySurferEngine:
             "move_2s": round(move_2s, 3),
             "eff_3s": round(eff_3s, 2),
             "base_vel": round(base_vel, 3),
+            "base_s1_body": round(base_body, 3),
             "base_samples": base_n,
             "vel_ratio": vel_ratio,
+            "s1_streak": streak_n * streak_dir,
+            "s1_slope": last_slope,
             "m1_bias": int(m1_context.get("bias", 0)),
             "m1_label": str(m1_context.get("label", "UNKNOWN")),
         }
@@ -372,9 +437,18 @@ class S1VelocitySurferEngine:
                 if po["kind"] == "open" and self.basket is None:
                     sdist = po["stop_dist"]
                     stop_px = round((fill_px - sdist) if side == "buy" else (fill_px + sdist), 4)
+                    regime = po["regime"]
+                    start_cnum = int(po["wave_candle_num"])  # 2 if entered right after steep C1; 3 if entered on C3
+                    init_slope = float(po["slope_mult"])
+                    is_extreme = init_slope >= self.cfg.extreme_slope_mult or abs(move_3s) >= self.cfg.extreme_3s_move
                     self.basket = {
                         "wave_id": self.next_wave_id,
                         "side": side,
+                        "regime": regime,
+                        "c2_confirmed": regime != "NEWS_STEEP_C1",  # NEWS_STEEP_C1 waits for C2 close confirmation!
+                        "wave_candle_num": start_cnum,
+                        "peak_slope_mult": init_slope,
+                        "extreme_blowoff": is_extreme,
                         "legs": [{"entry": round(fill_px, 4), "volume": self.cfg.leg_lot, "ts": ts}],
                         "total_volume": round(self.cfg.leg_lot, 2),
                         "avg_entry": round(fill_px, 4),
@@ -392,47 +466,87 @@ class S1VelocitySurferEngine:
                         "type": "OPEN_L1",
                         "wave_id": self.basket["wave_id"],
                         "side": side,
+                        "regime": regime,
+                        "candle_num": start_cnum,
                         "entry": round(fill_px, 4),
                         "stop": stop_px,
                         "vel_ratio": po["vel_ratio"],
+                        "slope_mult": init_slope,
                         "move_3s": po["move_3s"],
                         "m1_label": po["m1_label"],
                         "spread": spread,
                     })
-                elif po["kind"] == "add" and self.basket is not None and len(self.basket["legs"]) < self.cfg.max_legs:
+                elif po["kind"] == "add" and self.basket is not None:
                     b = self.basket
-                    # Re-verify latest leg is still in profit at actual delayed fill tick (no accidental avg-down!)
-                    last_ent = float(b["legs"][-1]["entry"])
-                    last_net = (bid - last_ent) if side == "buy" else (last_ent - ask)
-                    safe_sl = (bid > b["stop"]) if side == "buy" else (ask < b["stop"])
-                    if last_net >= self.cfg.add_min_profit_price and safe_sl:
-                        old_vol = float(b["total_volume"])
-                        new_vol = round(old_vol + self.cfg.leg_lot, 2)
-                        new_avg = round((float(b["avg_entry"]) * old_vol + fill_px * self.cfg.leg_lot) / new_vol, 4)
-                        b["legs"].append({"entry": round(fill_px, 4), "volume": self.cfg.leg_lot, "ts": ts})
-                        b["total_volume"] = new_vol
-                        b["avg_entry"] = new_avg
-                        b["last_leg_ts"] = ts
-                        new_sl = self._lock_basket_stop()
-                        events.append({
-                            "type": "FIRE_ADD",
-                            "wave_id": b["wave_id"],
-                            "side": side,
-                            "leg_num": len(b["legs"]),
-                            "add_price": round(fill_px, 4),
-                            "total_volume": new_vol,
-                            "avg_entry": new_avg,
-                            "stop": new_sl,
-                            "last_leg_net": round(last_net, 3),
-                            "vel_ratio": vel_ratio,
-                        })
+                    eff_max_legs = self.cfg.probe_max_legs if not b["c2_confirmed"] else self.cfg.max_legs
+                    if len(b["legs"]) < eff_max_legs:
+                        last_ent = float(b["legs"][-1]["entry"])
+                        last_net = (bid - last_ent) if side == "buy" else (last_ent - ask)
+                        safe_sl = (bid > b["stop"]) if side == "buy" else (ask < b["stop"])
+                        if last_net >= self.cfg.add_min_profit_price and safe_sl:
+                            old_vol = float(b["total_volume"])
+                            new_vol = round(old_vol + self.cfg.leg_lot, 2)
+                            new_avg = round((float(b["avg_entry"]) * old_vol + fill_px * self.cfg.leg_lot) / new_vol, 4)
+                            b["legs"].append({"entry": round(fill_px, 4), "volume": self.cfg.leg_lot, "ts": ts})
+                            b["total_volume"] = new_vol
+                            b["avg_entry"] = new_avg
+                            b["last_leg_ts"] = ts
+                            new_sl = self._lock_basket_stop(bid=bid, ask=ask, lock_half_profit=(b["wave_candle_num"] >= 4))
+                            events.append({
+                                "type": "FIRE_ADD",
+                                "wave_id": b["wave_id"],
+                                "side": side,
+                                "regime": b["regime"],
+                                "candle_num": b["wave_candle_num"],
+                                "leg_num": len(b["legs"]),
+                                "add_price": round(fill_px, 4),
+                                "total_volume": new_vol,
+                                "avg_entry": new_avg,
+                                "stop": new_sl,
+                                "last_leg_net": round(last_net, 3),
+                                "vel_ratio": vel_ratio,
+                            })
 
-        # 2) Manage open basket (Priority: Hard/Locked SL -> Deceleration Exit -> Tick Trail -> Max Hold -> Machine-Gun Add)
+        # 2) Manage open basket (S1 candle progression + C2 confirm/cut + C4 caution + SL/Decel/Trail + Machine-Gun Add)
         if self.basket is not None:
             b = self.basket
             side = b["side"]
+            sdir = 1 if side == "buy" else -1
             ex_px = bid if side == "buy" else ask
             hold_sec = ts - b["opened_at"]
+
+            # Track S1 candle progression inside active wave whenever a 1-second candle closes
+            if completed_s1 is not None and completed_s1["sec"] >= int(b["opened_at"]):
+                c_body = float(completed_s1["body"])
+                c_slope = abs(c_body) / base_body if base_body > 0 else 0.0
+                if c_slope > b["peak_slope_mult"]:
+                    b["peak_slope_mult"] = c_slope
+                if c_slope >= self.cfg.extreme_slope_mult or abs(move_3s) >= self.cfg.extreme_3s_move:
+                    b["extreme_blowoff"] = True
+
+                # News C1 Probe -> check C2 close confirmation!
+                if not b["c2_confirmed"] and b["wave_candle_num"] == 2:
+                    if (sdir == 1 and c_body > 0) or (sdir == -1 and c_body < 0):
+                        b["c2_confirmed"] = True
+                        b["wave_candle_num"] = 3  # now entering Candle 3 ("کله‌خری" unlocked!)
+                        events.append({
+                            "type": "C2_CONFIRMED",
+                            "wave_id": b["wave_id"],
+                            "side": side,
+                            "c2_body": round(c_body, 3),
+                            "extreme_blowoff": b["extreme_blowoff"],
+                        })
+                    else:
+                        # Fake steep C1 wick: C2 reversed -> cut immediately instead of hoping!
+                        closed = self._close_basket(ex_px, ts, "c2_unconfirmed_cut")
+                        events.append({"type": "CLOSE_ALL", "wave": closed})
+                        self._update_dd(bid, ask)
+                        return events
+                else:
+                    b["wave_candle_num"] += 1
+                    # On C4+ in moderate slope, tighten stop to lock 50% of open profit ("کندل ۴ با احتیاط")
+                    if b["wave_candle_num"] >= 4:
+                        self._lock_basket_stop(bid=bid, ask=ask, lock_half_profit=True)
 
             # Update best favorable exit price and peak 2s velocity
             if side == "buy":
@@ -460,9 +574,10 @@ class S1VelocitySurferEngine:
                 self._update_dd(bid, ask)
                 return events
 
-            # Priority 2: 1-Second Deceleration / Velocity Stall ("وقتی شتاب کم شد سریع می‌بندم!")
+            # Priority 2: Slope-Adaptive Deceleration Exit ("وقتی شتاب کم شد سریع می‌بندم!")
+            eff_decel = self.cfg.steep_decel_ratio if (b["extreme_blowoff"] and b["wave_candle_num"] >= 4) else self.cfg.decel_ratio
             if hold_sec >= self.cfg.decel_min_hold_sec and has_2s:
-                if signed_vel_2s <= (self.cfg.decel_ratio * b["peak_vel"]):
+                if signed_vel_2s <= (eff_decel * b["peak_vel"]):
                     b["decel_ticks"] += 1
                 else:
                     b["decel_ticks"] = 0
@@ -472,9 +587,10 @@ class S1VelocitySurferEngine:
                     self._update_dd(bid, ask)
                     return events
 
-            # Priority 3: Tight Tick-Trail once profitable
+            # Priority 3: Tight Tick-Trail (tighter after extreme blow-off or C4+ caution!)
+            eff_giveback = self.cfg.steep_giveback_frac if (b["extreme_blowoff"] or b["wave_candle_num"] >= 4) else self.cfg.trail_giveback_frac
             if avg_gain >= self.cfg.trail_arm_price or (b["stop_locked"] and max_exc >= self.cfg.trail_arm_price):
-                allow_pb = max(self.cfg.trail_min_pullback, self.cfg.trail_giveback_frac * max(0.0, max_exc))
+                allow_pb = max(self.cfg.trail_min_pullback * (0.75 if b["extreme_blowoff"] else 1.0), eff_giveback * max(0.0, max_exc))
                 if pullback >= allow_pb and avg_gain > 0:
                     closed = self._close_basket(ex_px, ts, "tick_trail_exit")
                     events.append({"type": "CLOSE_ALL", "wave": closed})
@@ -488,19 +604,29 @@ class S1VelocitySurferEngine:
                 self._update_dd(bid, ask)
                 return events
 
-            # Priority 5: Schedule 1-second Winner-Only Machine Gun Add (Legs 2..max_legs)
+            # Priority 5: Slope- & Candle-Aware Winner-Only Machine-Gun Add
+            # - Extreme vertical blow-off: ride C3 + C4 (2 full candles after confirm), stop adds at C5+
+            # - Good/moderate slope: full speed on C3, C4-C5 Caution (50% profit locked + stronger vel), stop at C6+
+            cnum = int(b["wave_candle_num"])
+            can_add_by_candle = not ((b["extreme_blowoff"] and cnum >= 5) or cnum >= 6)
+
+            eff_max_legs = self.cfg.probe_max_legs if not b["c2_confirmed"] else self.cfg.max_legs
+            eff_interval = self.cfg.c3_add_interval_sec if (b["c2_confirmed"] and cnum in (3, 4)) else self.cfg.add_interval_sec
+
             if (
-                self.pending_order is None
-                and len(b["legs"]) < self.cfg.max_legs
-                and (ts - b["last_leg_ts"]) >= self.cfg.add_interval_sec
+                can_add_by_candle
+                and self.pending_order is None
+                and len(b["legs"]) < eff_max_legs
+                and (ts - b["last_leg_ts"]) >= eff_interval
                 and spread <= self.cfg.max_spread_price
             ):
                 last_ent = float(b["legs"][-1]["entry"])
                 last_net = (bid - last_ent) if side == "buy" else (last_ent - ask)
+                min_vel_req = self.cfg.add_min_vel_ratio * (1.25 if cnum == 4 else 1.0)
                 if (
                     last_net >= self.cfg.add_min_profit_price
                     and signed_vel_2s >= (0.35 * b["peak_vel"])
-                    and vel_ratio >= self.cfg.add_min_vel_ratio
+                    and vel_ratio >= min_vel_req
                 ):
                     self.pending_order = {
                         "kind": "add",
@@ -511,19 +637,46 @@ class S1VelocitySurferEngine:
             self._update_dd(bid, ask)
             return events
 
-        # 3) Flat: watch for 2.5x+ 1-Second Acceleration aligned with M1 S/R Context
-        if self.pending_order is not None or ts < self.cooldown_until or not has_3s:
+        # 3) Flat: evaluate BOTH Playbook Regimes (M1 Bias MUST match S1 direction!)
+        if self.pending_order is not None or ts < self.cooldown_until or base_n < self.cfg.min_baseline_samples:
             self._update_dd(bid, ask)
             return events
 
-        if base_n < self.cfg.min_baseline_samples:
-            self._update_dd(bid, ask)
-            return events
+        m1_bias = int(m1_context.get("bias", 0))
+        triggered_regime: str | None = None
+        burst_dir = 0
+        wave_cnum = 3
+        slope_metric = last_slope
 
-        min_req_move = max(self.cfg.min_burst_price, spread * 2.2)
-        if abs(move_3s) >= min_req_move and vel_ratio >= self.cfg.vel_mult and eff_3s >= self.cfg.min_efficiency:
-            burst_dir = 1 if move_3s > 0 else -1
-            m1_bias = int(m1_context.get("bias", 0))
+        # Regime A: News / Session-Open Steep C1 Probe (just closed steep Candle 1!)
+        if completed_s1 is not None and streak_n == 1 and streak_dir != 0:
+            c1_abs = abs(float(completed_s1["body"]))
+            if (
+                last_slope >= self.cfg.news_c1_mult
+                and c1_abs >= max(self.cfg.news_c1_min_body, spread * 1.6)
+            ):
+                triggered_regime = "NEWS_STEEP_C1"
+                burst_dir = streak_dir
+                wave_cnum = 2  # entering right as C2 opens; wait for C2 close confirmation
+                slope_metric = last_slope
+
+        # Regime B: Normal Active Session C3 Entry (2 completed same-color S1 candles + C3 continuing!)
+        if triggered_regime is None and has_3s and streak_n >= 2 and streak_dir != 0:
+            last_close = float(self.s1_bars[-1]["c"])
+            c3_continuing = (mid > last_close) if streak_dir == 1 else (mid < last_close)
+            min_req_move = max(self.cfg.min_burst_price, spread * 2.2)
+            if (
+                c3_continuing
+                and (move_3s * streak_dir) >= min_req_move
+                and vel_ratio >= self.cfg.vel_mult
+                and eff_3s >= self.cfg.min_efficiency
+            ):
+                triggered_regime = "NORMAL_C3"
+                burst_dir = streak_dir
+                wave_cnum = 3
+                slope_metric = max(c1_slope, last_slope)
+
+        if triggered_regime is not None and burst_dir != 0:
             if spread > self.cfg.max_spread_price:
                 self.signals_blocked_spread += 1
             elif m1_bias != burst_dir:
@@ -537,6 +690,9 @@ class S1VelocitySurferEngine:
                 self.pending_order = {
                     "kind": "open",
                     "side": side,
+                    "regime": triggered_regime,
+                    "wave_candle_num": wave_cnum,
+                    "slope_mult": slope_metric,
                     "fill_ts": ts + self.cfg.latency_sec,
                     "stop_dist": round(sdist, 4),
                     "vel_ratio": vel_ratio,
@@ -576,7 +732,6 @@ class S1VelocitySurferEngine:
 
 
 def append_jsonl_private(path: Path, row: dict[str, Any]) -> None:
-    """Append one JSON record to an owner-only (0600) JSONL file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     with os.fdopen(fd, "a", encoding="utf-8") as fh:
@@ -590,7 +745,6 @@ def replay_recorded_ticks(
     cfg: S1SurferConfig | None = None,
     initial_capital_usd: float = 1000.0,
 ) -> dict[str, Any]:
-    """Deterministically replay a recorded sub-second JSONL tick file offline."""
     eng = S1VelocitySurferEngine(cfg=cfg or S1SurferConfig(), initial_capital_usd=initial_capital_usd)
     tick_count = 0
     last_bid, last_ask = 0.0, 0.0
@@ -607,7 +761,6 @@ def replay_recorded_ticks(
             eng.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_ctx)
             last_bid, last_ask = bid, ask
             tick_count += 1
-    # Force-close any open basket at end of recording
     if eng.basket is not None and last_bid > 0 and last_ask > 0:
         ex = last_bid if eng.basket["side"] == "buy" else last_ask
         eng._close_basket(ex, eng.last_metrics.get("ts", 0.0), "eof_replay")
@@ -617,18 +770,23 @@ def replay_recorded_ticks(
     return s
 
 
-def make_synthetic_s1_session() -> tuple[list[list[float]], list[tuple[float, float, float]]]:
-    """Deterministic synthetic M1 bearish pullback-resume + 0.25s tick waterfall & deceleration."""
+def make_synthetic_s1_session(*, mode: str = "normal_c3") -> tuple[list[list[float]], list[tuple[float, float, float]]]:
+    """Deterministic synthetic M1 bearish pullback-resume + 0.25s S1 tick sessions.
+
+    Modes:
+      - "normal_c3": 24s calm baseline -> 2 normal bearish S1 candles -> C3+ acceleration -> stall exit
+      - "news_steep_confirm": 24s calm -> explosive C1 -> confirming C2 -> full-send C3 -> stall exit
+      - "news_steep_fakeout": 24s calm -> explosive C1 -> reversing C2 -> instant c2_unconfirmed_cut
+    """
     t0 = 1764080000.0
-    # 30 closed M1 bars: downtrend -> 2-bar green pullback -> red resume bar
     m1_bars: list[list[float]] = []
     px = 3520.0
     for i in range(30):
         ts = t0 - (30 - i) * 60.0
         if i in (26, 27):
-            chg = +1.1  # 2-bar pullback up
+            chg = +1.1
         elif i == 29:
-            chg = -1.8  # red resume bar
+            chg = -1.8
         else:
             chg = -0.8
         o = px
@@ -636,22 +794,46 @@ def make_synthetic_s1_session() -> tuple[list[list[float]], list[tuple[float, fl
         m1_bars.append([ts, round(o, 2), round(max(o, c) + 0.4, 2), round(min(o, c) - 0.4, 2), round(c, 2), 150.0])
         px = c
 
-    # 140s of 0.25s live ticks: 30s calm noise -> 12s accelerating drop -> 8s stall/bounce
     ticks: list[tuple[float, float, float]] = []
     bid = px
     spread = 0.32
     t = t0 + 10.0
-    for step in range(4 * 55):  # 55 seconds @ 4 Hz
+    for step in range(4 * 48):  # 48 seconds @ 4 Hz
         sec = step * 0.25
         if sec < 24.0:
-            # Calm normal baseline (~$0.20 per 3s jitter)
             delta = 0.04 if (step % 4 < 2) else -0.04
-        elif sec < 36.0:
-            # 12-second accelerating waterfall drop (~$1.60 per 3s = ~8x baseline!)
-            delta = -0.18
+        elif mode == "normal_c3":
+            if sec < 26.0:
+                # 2 moderate bearish S1 candles (~$0.36/s each, below news_c1_min_body=0.55!)
+                delta = -0.09
+            elif sec < 33.0:
+                # C3+ good smooth acceleration (~$0.64/s, below extreme blow-off)
+                delta = -0.16
+            else:
+                delta = +0.02
+        elif mode == "news_steep_confirm":
+            if sec < 25.0:
+                # Explosive steep C1 (~$0.80/s!)
+                delta = -0.20
+            elif sec < 26.0:
+                # Confirming C2 (~$0.68/s)
+                delta = -0.17
+            elif sec < 30.0:
+                # C3 full-send + C4 follow-through
+                delta = -0.28
+            else:
+                delta = +0.03
+        elif mode == "news_steep_fakeout":
+            if sec < 25.0:
+                # Explosive steep C1 (~$0.80/s)
+                delta = -0.20
+            elif sec < 26.0:
+                # C2 REVERSES UP (fake news wick!)
+                delta = +0.18
+            else:
+                delta = +0.25
         else:
-            # Momentum stalls & slightly bounces -> triggers deceleration exit!
-            delta = +0.02
+            delta = 0.0
         bid = round(bid + delta, 2)
         ticks.append((t + sec, bid, round(bid + spread, 2)))
     return m1_bars, ticks
