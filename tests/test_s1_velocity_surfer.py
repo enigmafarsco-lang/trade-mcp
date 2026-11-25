@@ -585,6 +585,53 @@ def test_build_s1_profile_config_and_shallow_breath_survives_loss_cut() -> None:
     assert eng.waves_closed[0]["net_pnl_usd"] > 3.0
 
 
+def test_live_report_snapshot_writes_atomic_git_safe_json(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Periodic --report-file helper validates reports/ path, rejects traversal, and writes atomic JSON."""
+    monkeypatch.setattr(cli, "ROOT", tmp_path)
+    (tmp_path / "reports" / "paper_live").mkdir(parents=True)
+
+    # Reject outside reports/ or logs/, and reject non-.json
+    with pytest.raises(ValueError, match="inside reports/ or logs/"):
+        cli._ensure_in_reports_or_logs(tmp_path / "outside.json")
+    with pytest.raises(ValueError, match=r"end with \.json"):
+        cli._ensure_in_reports_or_logs(tmp_path / "reports" / "paper_live" / "bad.txt")
+
+    rep_path = cli._ensure_in_reports_or_logs(tmp_path / "reports" / "paper_live" / "s1_test.json")
+    m1_bars, ticks = make_synthetic_s1_session(mode="normal_c3")
+    m1_ctx = analyze_m1_sr_context(m1_bars, server_now_ts=ticks[0][0])
+    eng = S1VelocitySurferEngine(cfg=build_s1_profile_config("v2.1_DEFAULT", leg_lot=0.01, max_legs=6))
+    for ts, bid, ask in ticks:
+        eng.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_ctx)
+
+    payload = cli._build_live_report_payload(
+        eng=eng,
+        symbol="XAUUSD_i",
+        profile_label="v2.4_GOLD_RIP5.5",
+        status="running",
+        started_utc="2026-11-25T17:00:00+00:00",
+        elapsed_minutes=12.5,
+        m1_ctx=m1_ctx,
+        last_bid=ticks[-1][1],
+        last_ask=ticks[-1][2],
+        ticks_processed=len(ticks),
+        ticks_recorded=len(ticks),
+        reconnect_count=0,
+        consecutive_errors=0,
+    )
+    cli._write_atomic_json(rep_path, payload)
+    loaded = json.loads(rep_path.read_text(encoding="utf-8"))
+    assert loaded["schema"] == "s1_velocity_paper_live_v1"
+    assert loaded["orders_submitted"] == 0
+    assert loaded["profile"] == "v2.4_GOLD_RIP5.5"
+    assert loaded["summary"]["waves_count"] >= 1
+    assert len(loaded["hourly_summary"]) >= 1
+    assert len(loaded["waves"]) == loaded["summary"]["waves_count"]
+
+
+
 
 
 

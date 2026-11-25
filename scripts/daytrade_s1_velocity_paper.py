@@ -57,6 +57,121 @@ def _ensure_in_logs(path: Path) -> Path:
     return resolved
 
 
+def _ensure_in_reports_or_logs(path: Path) -> Path:
+    resolved = path.resolve()
+    allowed_roots = ((ROOT / "reports").resolve(), (ROOT / "logs").resolve())
+    if not any(root == resolved.parent or root in resolved.parents for root in allowed_roots):
+        raise ValueError(f"Report path must sit inside reports/ or logs/: {path}")
+    if resolved.suffix.lower() != ".json":
+        raise ValueError(f"Report path must end with .json: {path}")
+    return resolved
+
+
+def _build_live_report_payload(
+    *,
+    eng: S1VelocitySurferEngine,
+    symbol: str,
+    profile_label: str,
+    status: str,
+    started_utc: str,
+    elapsed_minutes: float,
+    m1_ctx: dict[str, Any],
+    last_bid: float,
+    last_ask: float,
+    ticks_processed: int,
+    ticks_recorded: int,
+    reconnect_count: int,
+    consecutive_errors: int,
+) -> dict[str, Any]:
+    s = eng.summary(last_bid, last_ask)
+    wins = [w["net_pnl_usd"] for w in eng.waves_closed if w["net_pnl_usd"] > 0]
+    losses = [w["net_pnl_usd"] for w in eng.waves_closed if w["net_pnl_usd"] <= 0]
+    s["avg_win_usd"] = round(sum(wins) / len(wins), 2) if wins else 0.0
+    s["avg_loss_usd"] = round(sum(losses) / len(losses), 2) if losses else 0.0
+
+    hourly_map: dict[str, dict[str, Any]] = {}
+    for w in eng.waves_closed:
+        hour_key = str(w.get("opened_utc", ""))[:13] or "unknown"
+        bucket = hourly_map.setdefault(
+            hour_key,
+            {"hour_utc": hour_key, "waves": 0, "wins": 0, "losses": 0, "net_pnl_usd": 0.0},
+        )
+        bucket["waves"] += 1
+        pnl = float(w.get("net_pnl_usd", 0.0))
+        if pnl > 0:
+            bucket["wins"] += 1
+        else:
+            bucket["losses"] += 1
+        bucket["net_pnl_usd"] = round(bucket["net_pnl_usd"] + pnl, 4)
+
+    open_basket: dict[str, Any] | None = None
+    if eng.basket is not None:
+        b = eng.basket
+        open_basket = {
+            "wave_id": b["wave_id"],
+            "side": b["side"],
+            "regime": b["regime"],
+            "legs_count": len(b["legs"]),
+            "total_volume": b["total_volume"],
+            "avg_entry": b["avg_entry"],
+            "stop": b["stop"],
+            "stop_locked": b["stop_locked"],
+            "m1_label": b["m1_label"],
+        }
+
+    cfg = eng.cfg
+    return {
+        "schema": "s1_velocity_paper_live_v1",
+        "orders_submitted": 0,
+        "status": status,
+        "symbol": symbol,
+        "profile": profile_label,
+        "started_utc": started_utc,
+        "updated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "elapsed_minutes": round(elapsed_minutes, 2),
+        "config": {
+            "leg_lot": cfg.leg_lot,
+            "max_legs": cfg.max_legs,
+            "vel_mult": cfg.vel_mult,
+            "min_burst_price": cfg.min_burst_price,
+            "min_60s_move_price": cfg.min_60s_move_price,
+            "min_stop_price": cfg.min_stop_price,
+            "max_stop_price": cfg.max_stop_price,
+            "require_be_on_add": cfg.require_be_on_add,
+            "be_arm_price": cfg.be_arm_price,
+            "sl_min_breathing_room": cfg.sl_min_breathing_room,
+            "trail_arm_price": cfg.trail_arm_price,
+            "trail_min_pullback": cfg.trail_min_pullback,
+            "trail_max_pullback_price": cfg.trail_max_pullback_price,
+            "decel_only_in_loss_1l": cfg.decel_only_in_loss_1l,
+            "loss_cut_min_loss_price": cfg.loss_cut_min_loss_price,
+        },
+        "summary": s,
+        "live_state": {
+            "ticks_processed": ticks_processed,
+            "ticks_recorded": ticks_recorded,
+            "last_bid": round(last_bid, 4),
+            "last_ask": round(last_ask, 4),
+            "last_spread": round(max(0.0, last_ask - last_bid), 4),
+            "last_m1_label": m1_ctx.get("label", ""),
+            "last_m1_bias": m1_ctx.get("bias", 0),
+            "last_move_60s": round(float(eng.last_metrics.get("move_60s", 0.0)), 3),
+            "reconnect_count": reconnect_count,
+            "consecutive_errors": consecutive_errors,
+        },
+        "open_basket": open_basket,
+        "hourly_summary": [hourly_map[k] for k in sorted(hourly_map.keys())],
+        "waves": eng.waves_closed,
+    }
+
+
+def _write_atomic_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(tmp_path, path)
+
+
 def _server_now(feed: ReadOnlyNativeFeed) -> tuple[float, datetime]:
     clock = feed._call("get_time_information", {})
     raw_time = find(clock, "trade_server_time") or find(clock, "trade_server_last_known_time")
@@ -154,6 +269,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--decel-ratio", type=float, default=0.28, help="Exit when 2s speed <= this fraction of peak (default 0.28)")
     parser.add_argument("--poll-seconds", type=float, default=0.30, help="Live tick poll interval seconds (default 0.30)")
     parser.add_argument("--status-seconds", type=float, default=15.0, help="Heartbeat print interval seconds (default 15)")
+    parser.add_argument("--report-file", default="", help="Continuously write compact git-safe live JSON summary to reports/... or logs/...")
+    parser.add_argument("--report-seconds", type=float, default=300.0, help="Periodic flush interval seconds for --report-file (default 300 = 5m)")
     parser.add_argument("--minutes", type=float, default=0.0, help="Run duration minutes (0 = until Ctrl+C)")
     parser.add_argument("--no-record", action="store_true", help="Disable recording ticks to logs/s1_ticks_*.jsonl")
     parser.add_argument("--replay", default="", help="Replay a recorded logs/s1_ticks_*.jsonl file offline")
@@ -390,6 +507,13 @@ def main(argv: list[str] | None = None) -> int:
     ts_tag = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     tick_path = _ensure_in_logs(ROOT / "logs" / f"s1_ticks_{args.symbol}_{ts_tag}.jsonl")
     journal_path = _ensure_in_logs(ROOT / "logs" / "s1_surfer_waves.jsonl")
+    report_path: Path | None = None
+    if args.report_file:
+        rp = Path(args.report_file)
+        if not rp.is_absolute():
+            rp = ROOT / rp
+        report_path = _ensure_in_reports_or_logs(rp)
+    report_interval_sec = max(10.0, float(args.report_seconds))
 
     try:
         load_dotenv(ROOT / ".env")
@@ -404,12 +528,14 @@ def main(argv: list[str] | None = None) -> int:
             cfg.multiplier = float(mult)
 
             eng = S1VelocitySurferEngine(cfg=cfg, initial_capital_usd=args.capital)
+            started_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
             print(
                 f"[START | S1 VELOCITY SURFER | PAPER ONLY | ORDERS=0] {args.symbol} | PROFILE={active_profile_label} | "
                 f"Leg={leg_lot:.2f}x{max_legs} (max {leg_lot * max_legs:.2f} lot ONLY in profit) | "
                 f"vel>={cfg.vel_mult}x burst>=${cfg.min_burst_price} 60s>=${cfg.min_60s_move_price} maxSp=${cfg.max_spread_price} "
                 f"| poll={args.poll_seconds}s"
-                + ("" if args.no_record else f" | REC={tick_path.name}"),
+                + ("" if args.no_record else f" | REC={tick_path.name}")
+                + ("" if report_path is None else f" | REPORT={report_path.relative_to(ROOT)} ({int(report_interval_sec)}s)"),
                 flush=True,
             )
 
@@ -417,13 +543,39 @@ def main(argv: list[str] | None = None) -> int:
             deadline = (t_start + args.minutes * 60.0) if args.minutes > 0 else None
             last_m1_mono = 0.0
             last_status_mono = 0.0
+            last_report_mono = 0.0
             m1_ctx: dict[str, Any] = {"bias": 0, "label": "WARMING_UP", "support": None, "resistance": None}
             last_bid, last_ask = quote["bid"], quote["ask"]
+            ticks_processed = 0
             ticks_recorded = 0
+            reconnect_count = 0
+            consecutive_errors = 0
+
+            def _flush_report(status_label: str) -> None:
+                if report_path is None:
+                    return
+                payload = _build_live_report_payload(
+                    eng=eng,
+                    symbol=args.symbol,
+                    profile_label=active_profile_label,
+                    status=status_label,
+                    started_utc=started_utc,
+                    elapsed_minutes=(time.monotonic() - t_start) / 60.0,
+                    m1_ctx=m1_ctx,
+                    last_bid=last_bid,
+                    last_ask=last_ask,
+                    ticks_processed=ticks_processed,
+                    ticks_recorded=ticks_recorded,
+                    reconnect_count=reconnect_count,
+                    consecutive_errors=consecutive_errors,
+                )
+                _write_atomic_json(report_path, payload)
 
             # Keep server clock offset so we don't have to call get_time_information on every 0.3s tick
             srv_ts0, _ = _server_now(feed)
             clock_offset = srv_ts0 - time.time()
+            _flush_report("running")
+            last_report_mono = time.monotonic()
 
             tick_fh = None
             if not args.no_record:
@@ -444,8 +596,14 @@ def main(argv: list[str] | None = None) -> int:
                             last_m1_mono = loop_t0
 
                         q = feed.fetch_quote()
-                        last_bid, last_ask = q["bid"], q["ask"]
+                        bid_now, ask_now = float(q["bid"]), float(q["ask"])
+                        if bid_now <= 0.0 or ask_now <= 0.0 or ask_now < bid_now:
+                            time.sleep(max(0.5, args.poll_seconds))
+                            continue
+                        last_bid, last_ask = bid_now, ask_now
+                        consecutive_errors = 0
                         now_ts = time.time() + clock_offset
+                        ticks_processed += 1
 
                         if tick_fh is not None:
                             tick_fh.write(
@@ -471,16 +629,34 @@ def main(argv: list[str] | None = None) -> int:
                                 tick_fh.flush()
 
                         evs = eng.on_tick(ts=now_ts, bid=last_bid, ask=last_ask, m1_context=m1_ctx)
+                        wave_closed_now = False
                         for ev in evs:
                             _print_event(ev)
                             if ev["type"] == "CLOSE_ALL":
                                 append_jsonl_private(journal_path, ev["wave"])
+                                wave_closed_now = True
+
+                        if wave_closed_now or (loop_t0 - last_report_mono) >= report_interval_sec:
+                            _flush_report("running")
+                            last_report_mono = loop_t0
 
                         if (loop_t0 - last_status_mono) >= args.status_seconds:
                             _print_status(eng, m1_ctx, last_bid, last_ask)
                             last_status_mono = loop_t0
-                    except (Blocked, McpError, OSError) as exc:
-                        print(f"[WARN] Transient tick read error ({exc}); retrying...", file=sys.stderr, flush=True)
+                    except (Blocked, McpError, OSError, TimeoutError, ValueError) as exc:
+                        consecutive_errors += 1
+                        reconnect_count += 1
+                        backoff = min(15.0, float(consecutive_errors))
+                        print(
+                            f"[WARN] Transient tick read error ({exc}); retry #{consecutive_errors} in {backoff:.0f}s...",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        if (loop_t0 - last_report_mono) >= report_interval_sec:
+                            with contextlib.suppress(Exception):
+                                _flush_report("running")
+                                last_report_mono = loop_t0
+                        time.sleep(backoff)
                         with contextlib.suppress(Exception):
                             feed.connect()
 
@@ -500,12 +676,15 @@ def main(argv: list[str] | None = None) -> int:
                 _print_event({"type": "CLOSE_ALL", "wave": w})
                 append_jsonl_private(journal_path, w)
 
+            _flush_report("stopped")
+
             s = eng.summary(last_bid, last_ask)
             print(
                 f"=== S1 VELOCITY SURFER STOPPED (ORDERS=0) ===\n"
                 f"WAVES={s['waves_count']} ({s['total_legs_executed']}L, {s['wins']}W/{s['losses']}L WR={s['win_rate_pct']}%) | "
                 f"NET=${s['realized_pnl_usd']:+.2f} PF={s['pf']} DD=${s['max_dd_usd']:.2f} | "
                 f"TICKS_REC={ticks_recorded}"
+                + ("" if report_path is None else f" | REPORT={report_path.relative_to(ROOT)}")
                 + ("" if args.no_record else f" | REPLAY: python3 scripts/daytrade_s1_velocity_paper.py --replay-sweep {tick_path}"),
                 flush=True,
             )
