@@ -58,14 +58,31 @@ def _iso_utc(ep: float) -> str:
     return datetime.fromtimestamp(ep, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _parse_deals(raw: Any) -> list[dict[str, Any]]:
+def _parse_deal_time(row: dict[str, Any]) -> int:
+    for key in ("time", "datetime", "deal_time", "execution_time", "timestamp", "date", "time_utc", "time_msc"):
+        val = find(row, key)
+        if val is None or val == "":
+            continue
+        if isinstance(val, (int, float)) and float(val) > 1e12:
+            return int(float(val) // 1000)
+        ep = to_epoch(val)
+        if ep > 0:
+            return ep
+    return 0
+
+
+def _parse_deals(raw: Any) -> tuple[list[dict[str, Any]], list[str]]:
     out: list[dict[str, Any]] = []
     seen: set[int] = set()
+    sample_keys: list[str] = []
     for row in records(raw, "deals"):
+        if not sample_keys and isinstance(row, dict):
+            sample_keys = sorted(str(k) for k in row)
         ticket = deal_ticket(row)
         if ticket in seen:
             continue
         seen.add(ticket)
+        px = as_float(find(row, "price", "deal_price", "execution_price", "price_open", "open_price", "fill_price"))
         out.append({
             "ticket": ticket,
             "position_id": as_int(find(row, "position_id", "position")),
@@ -73,16 +90,16 @@ def _parse_deals(raw: Any) -> list[dict[str, Any]]:
             "type": deal_side(row),
             "entry": deal_entry(row),
             "volume": as_float(find(row, "volume", "lots")),
-            "price": as_float(find(row, "price")),
+            "price": px,
             "profit": float(financial(find(row, "profit")) or 0.0),
             "swap": float(financial(find(row, "swap", "swaps")) or 0.0),
             "commission": float(financial(find(row, "commission")) or 0.0),
             "fee": float(financial(find(row, "fee")) or 0.0),
             "magic": as_int(find(row, "magic", "magic_number")),
-            "time": to_epoch(find(row, "time", "datetime")),
+            "time": _parse_deal_time(row),
         })
     out.sort(key=lambda d: (d["time"], d["ticket"]))
-    return out
+    return out, sample_keys
 
 
 def analyze_manual_deals(
@@ -295,8 +312,15 @@ def _format_summary(report: dict[str, Any]) -> str:
                 f"(gross=${t['gross_profit_usd']:+7.2f} comm=${t['commission_usd']:.2f}) "
                 f"mult={t['implied_multiplier']} {m1_s}"
             )
+    lines.append(
+        f"\nTOTAL ({report['hours_requested']}h): {a['trades_closed']}t ({a['wins']}W/{a['losses']}L, WR={a['win_rate_pct']}%) | "
+        f"NET=${a['net_pnl_usd']:+.2f} | PF={a['profit_factor']} | DD=${a['max_drawdown_usd']} | "
+        f"AVG_W=${a['avg_win_usd']} AVG_L=${a['avg_loss_usd']} PAYOFF={a['payoff_ratio']}"
+    )
+    if report.get("sample_deal_keys"):
+        lines.append(f"RAW_DEAL_KEYS: {report['sample_deal_keys']}")
     if report.get("log_path"):
-        lines.append(f"\nSAVED: {report['log_path']}")
+        lines.append(f"SAVED: {report['log_path']}")
     return "\n".join(lines)
 
 
@@ -344,6 +368,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         tool_calls: dict[str, int] = {}
         chart_warnings: list[str] = []
+        sample_keys: list[str] = []
         if args.mock:
             deals, m1_bars = _mock_deals_and_bars()
         else:
@@ -384,7 +409,7 @@ def main(argv: list[str] | None = None) -> int:
                         "limit": 10000,
                     },
                 )
-                deals = _parse_deals(raw_hist)
+                deals, sample_keys = _parse_deals(raw_hist)
 
                 m1_bars = []
                 valid_times = [
@@ -443,6 +468,7 @@ def main(argv: list[str] | None = None) -> int:
             "orders_submitted": 0,
             "hours_requested": args.hours,
             "analysis": analysis,
+            "sample_deal_keys": sample_keys if any(d["time"] == 0 or d["price"] == 0 for d in deals) else [],
             "mt5_tool_calls": tool_calls,
             "warnings": [
                 "Strictly read-only deal audit: zero orders were created, modified, or submitted.",
