@@ -176,6 +176,9 @@ class S1SurferConfig:
     decel_confirm_ticks: int = 2
     decel_min_hold_sec: float = 1.5
     decel_loss_cut_sec: float = 2.0  # cut dead/stalled losing 1s scalp quickly instead of holding 5s
+    disable_decel_exit: bool = False  # wave-rider mode: ride normal 2-5s breaths via structural SL & trail
+    candle_cap_adds: bool = True  # when False (wave-rider), winner pyramiding continues across multi-second waves
+    sl_min_breathing_room: float = 0.0  # min $ gap between locked SL and live exit price (prevents $0.20 choke-outs)
     s1_reversal_cut_body: float = 0.30  # cut 1L immediately if a completed S1 candle reverses >= $0.30 in loss
     trail_arm_price: float = 0.35
     trail_min_pullback: float = 0.45
@@ -417,6 +420,14 @@ class S1VelocitySurferEngine:
                 half_sl = (avg_ent + 0.50 * gain) if side == "buy" else (avg_ent - 0.50 * gain)
                 target_sl = max(target_sl, half_sl) if side == "buy" else min(target_sl, half_sl)
 
+        # Never suffocate a winning trade by placing SL closer than sl_min_breathing_room to live bid/ask!
+        if self.cfg.sl_min_breathing_room > 0.0 and bid > 0 and ask > 0:
+            ex = bid if side == "buy" else ask
+            if side == "buy":
+                target_sl = min(target_sl, ex - self.cfg.sl_min_breathing_room)
+            else:
+                target_sl = max(target_sl, ex + self.cfg.sl_min_breathing_room)
+
         new_sl = max(cur_sl, target_sl) if side == "buy" else min(cur_sl, target_sl)
         if new_sl != cur_sl:
             b["stop"] = round(new_sl, 4)
@@ -598,7 +609,10 @@ class S1VelocitySurferEngine:
                         self._update_dd(bid, ask)
                         return events
                     # On C4+ in moderate slope, tighten stop to lock 50% of open profit ("کندل ۴ با احتیاط")
-                    if b["wave_candle_num"] >= 4:
+                    # In wave-rider mode (disable_decel_exit=True), only lock 50% once gain >= trail_arm_price!
+                    if b["wave_candle_num"] >= 4 and (
+                        not self.cfg.disable_decel_exit or cur_gain >= self.cfg.trail_arm_price
+                    ):
                         self._lock_basket_stop(bid=bid, ask=ask, lock_half_profit=True)
 
             # Update best favorable exit price and peak 2s velocity
@@ -631,24 +645,30 @@ class S1VelocitySurferEngine:
                 return events
 
             # Priority 2: Slope-Adaptive Deceleration Exit ("وقتی شتاب کم شد سریع می‌بندم!")
-            eff_decel = self.cfg.steep_decel_ratio if (b["extreme_blowoff"] and b["wave_candle_num"] >= 4) else self.cfg.decel_ratio
-            if hold_sec >= self.cfg.decel_min_hold_sec and has_2s:
-                if signed_vel_2s <= (eff_decel * b["peak_vel"]):
-                    b["decel_ticks"] += 1
-                else:
-                    b["decel_ticks"] = 0
-                if b["decel_ticks"] >= self.cfg.decel_confirm_ticks and (
-                    avg_gain > 0 or signed_vel_2s < 0 or hold_sec >= self.cfg.decel_loss_cut_sec
-                ):
-                    closed = self._close_basket(ex_px, ts, "decel_stall_exit")
-                    events.append({"type": "CLOSE_ALL", "wave": closed})
-                    self._update_dd(bid, ask)
-                    return events
+            if not self.cfg.disable_decel_exit:
+                eff_decel = self.cfg.steep_decel_ratio if (b["extreme_blowoff"] and b["wave_candle_num"] >= 4) else self.cfg.decel_ratio
+                if hold_sec >= self.cfg.decel_min_hold_sec and has_2s:
+                    if signed_vel_2s <= (eff_decel * b["peak_vel"]):
+                        b["decel_ticks"] += 1
+                    else:
+                        b["decel_ticks"] = 0
+                    if b["decel_ticks"] >= self.cfg.decel_confirm_ticks and (
+                        avg_gain > 0 or signed_vel_2s < 0 or hold_sec >= self.cfg.decel_loss_cut_sec
+                    ):
+                        closed = self._close_basket(ex_px, ts, "decel_stall_exit")
+                        events.append({"type": "CLOSE_ALL", "wave": closed})
+                        self._update_dd(bid, ask)
+                        return events
 
-            # Priority 3: Tight Tick-Trail (tighter after extreme blow-off or C4+ caution!)
-            eff_giveback = self.cfg.steep_giveback_frac if (b["extreme_blowoff"] or b["wave_candle_num"] >= 4) else self.cfg.trail_giveback_frac
+            # Priority 3: Tight Tick-Trail (tighter after extreme blow-off or C4+ caution in micro-scalp mode!)
+            if self.cfg.disable_decel_exit:
+                eff_giveback = self.cfg.trail_giveback_frac
+                min_pb = self.cfg.trail_min_pullback
+            else:
+                eff_giveback = self.cfg.steep_giveback_frac if (b["extreme_blowoff"] or b["wave_candle_num"] >= 4) else self.cfg.trail_giveback_frac
+                min_pb = self.cfg.trail_min_pullback * (0.75 if b["extreme_blowoff"] else 1.0)
             if avg_gain >= self.cfg.trail_arm_price or (b["stop_locked"] and max_exc >= self.cfg.trail_arm_price):
-                allow_pb = max(self.cfg.trail_min_pullback * (0.75 if b["extreme_blowoff"] else 1.0), eff_giveback * max(0.0, max_exc))
+                allow_pb = max(min_pb, eff_giveback * max(0.0, max_exc))
                 if pullback >= allow_pb and avg_gain > 0:
                     closed = self._close_basket(ex_px, ts, "tick_trail_exit")
                     events.append({"type": "CLOSE_ALL", "wave": closed})
@@ -663,13 +683,17 @@ class S1VelocitySurferEngine:
                 return events
 
             # Priority 5: Slope- & Candle-Aware Winner-Only Machine-Gun Add
-            # - Extreme vertical blow-off: ride C3 + C4 (2 full candles after confirm), stop adds at C5+
-            # - Good/moderate slope: full speed on C3, C4-C5 Caution (50% profit locked + stronger vel), stop at C6+
+            # - Micro-scalp mode (candle_cap_adds=True): stop adds at C5+ on extreme blow-off, C6+ on moderate slope
+            # - Wave-rider mode (candle_cap_adds=False): add winner legs across the full wave on real $1+ steps!
             cnum = int(b["wave_candle_num"])
-            can_add_by_candle = not ((b["extreme_blowoff"] and cnum >= 5) or cnum >= 6)
+            if self.cfg.candle_cap_adds:
+                can_add_by_candle = not ((b["extreme_blowoff"] and cnum >= 5) or cnum >= 6)
+                eff_interval = self.cfg.c3_add_interval_sec if (b["c2_confirmed"] and cnum in (3, 4)) else self.cfg.add_interval_sec
+            else:
+                can_add_by_candle = True
+                eff_interval = self.cfg.add_interval_sec
 
             eff_max_legs = self.cfg.probe_max_legs if not b["c2_confirmed"] else self.cfg.max_legs
-            eff_interval = self.cfg.c3_add_interval_sec if (b["c2_confirmed"] and cnum in (3, 4)) else self.cfg.add_interval_sec
 
             if (
                 can_add_by_candle
@@ -680,12 +704,12 @@ class S1VelocitySurferEngine:
             ):
                 last_ent = float(b["legs"][-1]["entry"])
                 last_net = (bid - last_ent) if side == "buy" else (last_ent - ask)
-                min_vel_req = self.cfg.add_min_vel_ratio * (1.25 if cnum == 4 else 1.0)
-                if (
-                    last_net >= self.cfg.add_min_profit_price
-                    and signed_vel_2s >= (0.35 * b["peak_vel"])
-                    and vel_ratio >= min_vel_req
-                ):
+                if self.cfg.candle_cap_adds:
+                    min_vel_req = self.cfg.add_min_vel_ratio * (1.25 if cnum == 4 else 1.0)
+                    mom_ok = signed_vel_2s >= (0.35 * b["peak_vel"]) and vel_ratio >= min_vel_req
+                else:
+                    mom_ok = signed_vel_2s > 0.0
+                if last_net >= self.cfg.add_min_profit_price and mom_ok:
                     self.pending_order = {
                         "kind": "add",
                         "side": side,
@@ -1078,6 +1102,78 @@ def replay_calibration_sweep(
                 add_min_profit_price=0.18,
                 loss_cooldown_sec=25.0,
                 consec_loss_cooldown_sec=50.0,
+            ),
+        ),
+        (
+            "v2.3_WAVE_RIP4",
+            S1SurferConfig(
+                leg_lot=leg_lot,
+                max_legs=max_legs,
+                vel_mult=3.0,
+                min_burst_price=1.20,
+                min_60s_move_price=4.0,
+                add_interval_sec=2.5,
+                add_min_profit_price=1.00,
+                min_stop_price=2.20,
+                max_stop_price=3.50,
+                disable_decel_exit=True,
+                candle_cap_adds=False,
+                sl_min_breathing_room=1.20,
+                s1_reversal_cut_body=0.0,
+                trail_arm_price=1.80,
+                trail_min_pullback=1.40,
+                trail_giveback_frac=0.35,
+                max_hold_sec=180.0,
+                loss_cooldown_sec=30.0,
+                consec_loss_cooldown_sec=60.0,
+            ),
+        ),
+        (
+            "v2.3_WAVE_RIP5.5",
+            S1SurferConfig(
+                leg_lot=leg_lot,
+                max_legs=max_legs,
+                vel_mult=3.2,
+                min_burst_price=1.50,
+                min_60s_move_price=5.5,
+                add_interval_sec=3.0,
+                add_min_profit_price=1.20,
+                min_stop_price=2.50,
+                max_stop_price=3.80,
+                disable_decel_exit=True,
+                candle_cap_adds=False,
+                sl_min_breathing_room=1.40,
+                s1_reversal_cut_body=0.0,
+                trail_arm_price=2.00,
+                trail_min_pullback=1.60,
+                trail_giveback_frac=0.32,
+                max_hold_sec=240.0,
+                loss_cooldown_sec=30.0,
+                consec_loss_cooldown_sec=60.0,
+            ),
+        ),
+        (
+            "v2.3_WAVE_WIDE",
+            S1SurferConfig(
+                leg_lot=leg_lot,
+                max_legs=max_legs,
+                vel_mult=3.0,
+                min_burst_price=1.40,
+                min_60s_move_price=4.5,
+                add_interval_sec=4.0,
+                add_min_profit_price=1.50,
+                min_stop_price=2.80,
+                max_stop_price=4.20,
+                disable_decel_exit=True,
+                candle_cap_adds=False,
+                sl_min_breathing_room=1.80,
+                s1_reversal_cut_body=0.0,
+                trail_arm_price=2.50,
+                trail_min_pullback=2.00,
+                trail_giveback_frac=0.30,
+                max_hold_sec=300.0,
+                loss_cooldown_sec=30.0,
+                consec_loss_cooldown_sec=60.0,
             ),
         ),
     ]

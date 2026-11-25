@@ -159,6 +159,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--replay-all", action="store_true", help="Show ALL waves in --replay (no 80-wave cap)")
     parser.add_argument("--replay-sweep", nargs="+", default=[], help="Compare S1 calibration profiles across 1 or more recorded tick JSONL files")
     parser.add_argument("--rebuild-m1", action="store_true", help="Rebuild causal M1 context from recorded ticks during --replay")
+    parser.add_argument("--wave-rider", action="store_true", help="Enable v2.3 breath-proof Wave-Rider exits (no 1.8s panic decel cut, wider trail & SL breathing room)")
+    parser.add_argument("--sl-breath", type=float, default=None, help="Minimum $ breathing room between locked SL and current bid/ask")
     parser.add_argument("--mock", action="store_true", help="Run deterministic offline synthetic waterfall verification")
     args = parser.parse_args(argv)
 
@@ -168,17 +170,42 @@ def main(argv: list[str] | None = None) -> int:
     leg_lot = max(0.01, min(0.05, round(args.leg_lot, 2)))
     max_legs = max(1, min(6, int(args.max_legs)))
 
-    cfg = S1SurferConfig(
-        leg_lot=leg_lot,
-        max_legs=max_legs,
-        vel_mult=args.vel_mult,
-        min_burst_price=args.min_burst,
-        min_60s_move_price=args.min_60s_move,
-        max_spread_price=args.max_spread,
-        add_interval_sec=args.add_interval,
-        add_min_profit_price=args.add_profit,
-        decel_ratio=args.decel_ratio,
-    )
+    if args.wave_rider:
+        cfg = S1SurferConfig(
+            leg_lot=leg_lot,
+            max_legs=max_legs,
+            vel_mult=args.vel_mult,
+            min_burst_price=args.min_burst,
+            min_60s_move_price=args.min_60s_move,
+            max_spread_price=args.max_spread,
+            add_interval_sec=max(2.5, args.add_interval),
+            add_min_profit_price=max(1.00, args.add_profit),
+            min_stop_price=2.50,
+            max_stop_price=3.80,
+            disable_decel_exit=True,
+            candle_cap_adds=False,
+            sl_min_breathing_room=1.40 if args.sl_breath is None else max(0.0, args.sl_breath),
+            s1_reversal_cut_body=0.0,
+            trail_arm_price=2.00,
+            trail_min_pullback=1.60,
+            trail_giveback_frac=0.32,
+            max_hold_sec=240.0,
+            loss_cooldown_sec=30.0,
+            consec_loss_cooldown_sec=60.0,
+        )
+    else:
+        cfg = S1SurferConfig(
+            leg_lot=leg_lot,
+            max_legs=max_legs,
+            vel_mult=args.vel_mult,
+            min_burst_price=args.min_burst,
+            min_60s_move_price=args.min_60s_move,
+            max_spread_price=args.max_spread,
+            add_interval_sec=args.add_interval,
+            add_min_profit_price=args.add_profit,
+            decel_ratio=args.decel_ratio,
+            sl_min_breathing_room=0.0 if args.sl_breath is None else max(0.0, args.sl_breath),
+        )
 
     def _print_waves(waves: list[dict[str, Any]], *, show_all: bool = False) -> None:
         subset = waves if (show_all or len(waves) <= 80) else waves[-80:]

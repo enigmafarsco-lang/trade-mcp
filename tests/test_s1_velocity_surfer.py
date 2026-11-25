@@ -412,5 +412,70 @@ def test_min_60s_move_gate_blocks_quiet_chop_and_allows_real_rip() -> None:
     assert eng_rip.waves_closed[0]["net_pnl_usd"] > 0
 
 
+def test_v23_wave_rider_survives_stair_step_breaths_and_pyramids() -> None:
+    """Reproduces live Nov 25 bull rally: Wave-Rider survives -$0.60 breaths without $0.20 SL choke-outs."""
+    t0 = 1_764_090_000.0
+    bull_ctx = {"bias": 1, "label": "BULL_TREND", "support": 3440.0, "resistance": 3510.0}
+    cfg = S1SurferConfig(
+        leg_lot=0.01,
+        max_legs=4,
+        vel_mult=3.0,
+        min_burst_price=1.20,
+        min_60s_move_price=4.0,
+        add_interval_sec=2.5,
+        add_min_profit_price=1.00,
+        min_stop_price=2.20,
+        max_stop_price=3.50,
+        disable_decel_exit=True,
+        candle_cap_adds=False,
+        sl_min_breathing_room=1.20,
+        s1_reversal_cut_body=0.0,
+        trail_arm_price=1.80,
+        trail_min_pullback=1.40,
+        trail_giveback_frac=0.35,
+        max_hold_sec=180.0,
+    )
+    eng = S1VelocitySurferEngine(cfg=cfg)
+    spread = 0.40
+    bid = 3450.00
+    # 35s quiet ramp (+$5.00) so 60s tape move >= $4.00 and baseline is calm,
+    # then a C1-C2-C3 surge followed by a normal -$0.65 breath, then +$8 stair-step rally, then -$2.20 reversal!
+    for step in range(4 * 75):
+        sec = step * 0.25
+        if sec < 35.0:
+            bid = round(3450.00 + (5.00 * sec / 35.0), 2)
+        elif sec < 38.0:
+            # 3s burst +$2.40 -> triggers BUY entry
+            bid = round(bid + 0.20, 2)
+        elif sec < 40.0:
+            # 2s normal stair-step breath (-$0.64) — v2.2 panicked here, v2.3 MUST hold!
+            bid = round(bid - 0.08, 2)
+        elif sec < 55.0:
+            # 15s steady stair-step rally (+$9.00) -> pyramids winner legs
+            bid = round(bid + 0.15, 2)
+        else:
+            # Real reversal (-$2.50+) -> triggers clean tick_trail_exit in solid profit
+            bid = round(bid - 0.20, 2)
+        prev_sl = eng.basket["stop"] if eng.basket is not None else None
+        eng.on_tick(ts=t0 + sec, bid=bid, ask=round(bid + spread, 2), m1_context=bull_ctx)
+        # Breathing room invariant: whenever SL ratchets upward, it must keep >= sl_min_breathing_room below live bid!
+        if (
+            eng.basket is not None
+            and eng.basket["stop_locked"]
+            and prev_sl is not None
+            and eng.basket["stop"] > prev_sl
+        ):
+            assert eng.basket["stop"] <= bid - cfg.sl_min_breathing_room + 1e-6
+
+    assert len(eng.waves_closed) >= 1
+    w0 = eng.waves_closed[0]
+    assert w0["side"] == "buy"
+    assert w0["hold_seconds"] >= 10.0  # survived the 2s breath instead of exiting at 1.8s!
+    assert w0["legs_count"] >= 2  # pyramided winner legs across the multi-second wave
+    assert w0["exit_reason"] == "tick_trail_exit"
+    assert w0["net_pnl_usd"] > 5.0
+
+
+
 
 
