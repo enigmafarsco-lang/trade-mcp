@@ -697,10 +697,10 @@ def test_dynamic_accel_duration_lot_scaler_invariants() -> None:
         hold_sec=90.0,
     )
     assert 0.01 <= short_slow < sustained_fast <= 0.10
-    # Verify ironclad house-money invariant: new_avg leaves >= breathing_room + 0.05 above live ask!
+    # Verify ironclad gap-proof house-money invariant: new_avg leaves >= breathing_room + 0.45 above live ask!
     new_vol = round(0.12 + sustained_fast, 2)
     new_avg = (3481.0 * 0.12 + 3474.0 * sustained_fast) / new_vol
-    assert (new_avg - 0.05 + 1e-6) >= (3474.4 + 1.50)
+    assert (new_avg - 0.45 + 1e-6) >= (3474.4 + 1.50)
 
 
 def test_dynamic_runners_scale_winners_cut_losers_and_run_in_dual_radar_cli(
@@ -753,6 +753,6 @@ def test_dynamic_runners_scale_winners_cut_losers_and_run_in_dual_radar_cli(
     w = eng_fail.waves_closed[0]
     assert w["legs_count"] == 1  # zero adds to loser!
     assert w["exit_reason"] == "hard_stop_loss"
-    assert w["net_pnl_usd"] >= -20.0  # tightly capped hard SL (never -$171 unstopped bleed!)
+    assert w["net_pnl_usd"] >= -8.0  # defensive 0.02 probe caps hard SL tightly (never -$18 or -$171!)
 
 

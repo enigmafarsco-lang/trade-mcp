@@ -309,6 +309,7 @@ class PullbackDipConfig:
     dyn_max_l1_lot: float = 0.06
     dyn_max_leg_lot: float = 0.10
     dyn_max_total_lot: float = 0.50
+    dyn_min_lock_profit: float = 0.45  # gap-proof locked SL cushion above avg_entry on dynamic adds/BE
 
 
 @dataclass
@@ -589,6 +590,7 @@ class PullbackDipEngine:
                                 dir_move_60s=s_sign * self._window_move(sec, mid, 60),
                                 dir_move_5m=s_sign * self._window_move(sec, mid, 300),
                                 hold_sec=max(0.0, ts - float(b["opened_at"])),
+                                min_lock_profit=self.cfg.dyn_min_lock_profit,
                             )
                             rf_ok = add_vol >= 0.01
                         else:
@@ -603,11 +605,12 @@ class PullbackDipEngine:
                             b["total_volume"] = new_v
                             b["avg_entry"] = new_avg
                             b["last_leg_ts"] = ts
+                            lock_pad = max(0.08, self.cfg.dyn_min_lock_profit) if self.cfg.dynamic_sizing else 0.08
                             if side == "buy":
-                                lock_sl = min(new_avg + 0.08, bid - self.cfg.sl_min_breathing_room)
+                                lock_sl = min(new_avg + lock_pad, bid - self.cfg.sl_min_breathing_room)
                                 b["stop"] = round(max(b["stop"], lock_sl), 4)
                             else:
-                                lock_sl = max(new_avg - 0.08, ask + self.cfg.sl_min_breathing_room)
+                                lock_sl = max(new_avg - lock_pad, ask + self.cfg.sl_min_breathing_room)
                                 b["stop"] = round(min(b["stop"], lock_sl), 4)
                             b["stop_locked"] = True
                             events.append({
@@ -643,13 +646,14 @@ class PullbackDipEngine:
 
             # 1L Free-Ride BE arm
             if len(b["legs"]) == 1 and not b["stop_locked"] and avg_gain >= self.cfg.be_arm_price:
+                be_pad = max(0.08, self.cfg.dyn_min_lock_profit) if self.cfg.dynamic_sizing else 0.08
                 if side == "buy":
-                    t_sl = min(b["avg_entry"] + 0.08, bid - self.cfg.sl_min_breathing_room)
+                    t_sl = min(b["avg_entry"] + be_pad, bid - self.cfg.sl_min_breathing_room)
                     if t_sl > b["stop"]:
                         b["stop"] = round(t_sl, 4)
                         b["stop_locked"] = True
                 else:
-                    t_sl = max(b["avg_entry"] - 0.08, ask + self.cfg.sl_min_breathing_room)
+                    t_sl = max(b["avg_entry"] - be_pad, ask + self.cfg.sl_min_breathing_room)
                     if t_sl < b["stop"]:
                         b["stop"] = round(t_sl, 4)
                         b["stop_locked"] = True
@@ -725,6 +729,7 @@ class PullbackDipEngine:
                             dir_move_60s=s_sign * self._window_move(sec, mid, 60),
                             dir_move_5m=s_sign * self._window_move(sec, mid, 300),
                             hold_sec=hold_sec,
+                            min_lock_profit=self.cfg.dyn_min_lock_profit,
                         )
                         >= 0.01
                     )
@@ -1006,32 +1011,33 @@ def pullback_dip_profiles(
                 min_trend_efficiency=0.30,
                 extreme_window_sec=180.0,
                 min_pullback_price=2.0,
-                max_pullback_price=5.5,
-                min_resume_price=0.80,
+                max_pullback_price=4.8,
+                min_resume_price=0.85,
                 use_pivot_stop=True,
                 pivot_lookback_sec=45.0,
                 pivot_stop_buffer=0.70,
                 min_stop_price=2.00,
                 max_stop_price=3.00,
-                be_arm_price=2.30,
+                be_arm_price=2.40,
                 profit_lock_arm_price=3.80,
                 profit_lock_floor_price=1.40,
-                sl_min_breathing_room=1.50,
-                add_step_price=2.00,
-                add_interval_sec=4.0,
+                sl_min_breathing_room=1.60,
+                add_step_price=2.20,
+                add_interval_sec=5.0,
                 trail_arm_price=4.20,
                 trail_min_pullback=2.20,
-                trail_max_pullback=4.80,
-                trail_giveback_frac=0.30,
+                trail_max_pullback=4.50,
+                trail_giveback_frac=0.28,
                 max_hold_sec=600.0,
                 win_cooldown_sec=15.0,
                 loss_cooldown_sec=60.0,
                 consec_loss_cooldown_sec=180.0,
                 active_server_hours=ALPARI_LONDON_NY_HOURS,
                 dynamic_sizing=True,
-                dyn_max_l1_lot=0.06,
+                dyn_max_l1_lot=0.02,
                 dyn_max_leg_lot=0.10,
                 dyn_max_total_lot=0.50,
+                dyn_min_lock_profit=0.45,
             ),
         ),
         (
@@ -1040,12 +1046,12 @@ def pullback_dip_profiles(
                 leg_lot=max(0.02, leg_lot),
                 max_legs=max(14, max_legs),
                 trend_window_sec=300.0,
-                min_trend_move_price=7.0,
-                min_trend_efficiency=0.28,
+                min_trend_move_price=8.0,
+                min_trend_efficiency=0.30,
                 extreme_window_sec=180.0,
-                min_pullback_price=1.60,
-                max_pullback_price=5.5,
-                min_resume_price=0.70,
+                min_pullback_price=2.0,
+                max_pullback_price=5.0,
+                min_resume_price=0.85,
                 use_pivot_stop=True,
                 pivot_lookback_sec=45.0,
                 pivot_stop_buffer=0.70,
@@ -1054,8 +1060,8 @@ def pullback_dip_profiles(
                 be_arm_price=2.60,
                 profit_lock_arm_price=4.50,
                 profit_lock_floor_price=1.80,
-                sl_min_breathing_room=1.50,
-                add_step_price=1.80,
+                sl_min_breathing_room=1.60,
+                add_step_price=2.00,
                 add_interval_sec=4.0,
                 trail_arm_price=5.50,
                 trail_min_pullback=3.20,
@@ -1067,9 +1073,10 @@ def pullback_dip_profiles(
                 consec_loss_cooldown_sec=180.0,
                 active_server_hours=ALPARI_LONDON_NY_HOURS,
                 dynamic_sizing=True,
-                dyn_max_l1_lot=0.06,
+                dyn_max_l1_lot=0.02,
                 dyn_max_leg_lot=0.10,
                 dyn_max_total_lot=0.60,
+                dyn_min_lock_profit=0.45,
             ),
         ),
     ]

@@ -79,6 +79,7 @@ def compute_dynamic_add_lot(
     dir_move_60s: float = 0.0,
     dir_move_5m: float = 0.0,
     hold_sec: float = 0.0,
+    min_lock_profit: float = 0.45,
 ) -> float:
     """Compute Acceleration x Duration scaled winner add lot, strictly capped by house-money risk-free SL cushion."""
     rem = round(max(0.0, max_total_lot - old_vol), 2)
@@ -86,12 +87,13 @@ def compute_dynamic_add_lot(
         return 0.0
 
     breath = max(0.0, breathing_room)
+    pad = max(0.05, float(min_lock_profit))
     if side == "buy":
-        limit_avg = bid - breath - 0.05
+        limit_avg = bid - breath - pad
         cushion = limit_avg - old_avg
         denom = fill_px - limit_avg
     else:
-        limit_avg = ask + breath + 0.05
+        limit_avg = ask + breath + pad
         cushion = old_avg - limit_avg
         denom = limit_avg - fill_px
     if cushion <= 0.0 or denom <= 1e-9:
@@ -269,6 +271,7 @@ class S1SurferConfig:
     dyn_max_l1_lot: float = 0.06
     dyn_max_leg_lot: float = 0.10
     dyn_max_total_lot: float = 0.50
+    dyn_min_lock_profit: float = 0.45  # gap-proof locked SL cushion above avg_entry on dynamic adds/BE
 
 
 @dataclass
@@ -548,19 +551,21 @@ class S1VelocitySurferEngine:
         avg_ent = float(b["avg_entry"])
         cur_sl = float(b["stop"])
 
+        lock_pad = max(0.05, self.cfg.dyn_min_lock_profit) if self.cfg.dynamic_sizing else 0.05
+        be_pad = max(0.08, self.cfg.dyn_min_lock_profit) if self.cfg.dynamic_sizing else 0.08
         target_sl = cur_sl
         if n_legs == 1 and self.cfg.be_arm_price > 0.0 and bid > 0 and ask > 0:
             ex = bid if side == "buy" else ask
             gain = (ex - avg_ent) if side == "buy" else (avg_ent - ex)
             if gain >= self.cfg.be_arm_price:
-                target_sl = (ent1 + 0.08) if side == "buy" else (ent1 - 0.08)
+                target_sl = (ent1 + be_pad) if side == "buy" else (ent1 - be_pad)
         elif n_legs == 2:
             if self.cfg.require_be_on_add:
-                target_sl = (avg_ent + 0.05) if side == "buy" else (avg_ent - 0.05)
+                target_sl = (avg_ent + lock_pad) if side == "buy" else (avg_ent - lock_pad)
             else:
-                target_sl = (ent1 + 0.05) if side == "buy" else (ent1 - 0.05)
+                target_sl = (ent1 + lock_pad) if side == "buy" else (ent1 - lock_pad)
         elif n_legs >= 3:
-            target_sl = (avg_ent + 0.05) if side == "buy" else (avg_ent - 0.05)
+            target_sl = (avg_ent + lock_pad) if side == "buy" else (avg_ent - lock_pad)
 
         if lock_half_profit and bid > 0 and ask > 0:
             ex = bid if side == "buy" else ask
@@ -710,6 +715,7 @@ class S1VelocitySurferEngine:
                                 max_total_lot=self.cfg.dyn_max_total_lot,
                                 dir_move_60s=dir_m60,
                                 hold_sec=max(0.0, ts - float(b["opened_at"])),
+                                min_lock_profit=self.cfg.dyn_min_lock_profit,
                             )
                             risk_free_ok = add_vol >= 0.01
                         else:
@@ -943,6 +949,7 @@ class S1VelocitySurferEngine:
                             max_total_lot=self.cfg.dyn_max_total_lot,
                             dir_move_60s=dir_m60,
                             hold_sec=hold_sec,
+                            min_lock_profit=self.cfg.dyn_min_lock_profit,
                         )
                         >= 0.01
                     )
@@ -1698,9 +1705,10 @@ def s1_calibration_profiles(
                 loss_cooldown_sec=30.0,
                 consec_loss_cooldown_sec=60.0,
                 dynamic_sizing=True,
-                dyn_max_l1_lot=0.06,
+                dyn_max_l1_lot=0.04,
                 dyn_max_leg_lot=0.10,
                 dyn_max_total_lot=0.50,
+                dyn_min_lock_profit=0.45,
             ),
         ),
     ]
