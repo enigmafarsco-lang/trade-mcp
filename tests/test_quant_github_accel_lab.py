@@ -308,6 +308,29 @@ def test_inspect_1816_early_wave_lab_cli(
     assert "EW_SLOPE_150S_24H" in out
 
 
+def test_macro_and_cascade_lab_cli(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    import test_macro_and_cascade_lab as mc_cli
+
+    monkeypatch.setattr(mc_cli, "ROOT", tmp_path)
+    (tmp_path / "logs").mkdir(parents=True)
+    f1 = tmp_path / "logs" / "s1_ticks_XAUUSD_i_20261126.jsonl"
+    ticks = _make_accel_wave_ticks()
+    with f1.open("w", encoding="utf-8") as fh:
+        for ts, bid, ask in ticks:
+            fh.write(json.dumps({"ts": ts, "bid": bid, "ask": ask}) + "\n")
+
+    rc = mc_cli.main(["--start-hm", "14:00", "--end-hm", "14:20"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "MACRO_SESS_8M_60" in out
+    assert "M1_CASCADE_24H" in out
+    assert "HEAD-TO-HEAD: SWAPPING MACRO_WAVE INSIDE AW_V3_24H" in out
+
+
 def test_reverse_engineer_manual_edge_enriches_ticks() -> None:
     import reverse_engineer_manual_edge as rev
 
