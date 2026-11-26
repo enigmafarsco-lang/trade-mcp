@@ -275,6 +275,39 @@ def test_donchian_breakout_and_latest_cli(
     assert "GH_DONCH_M1_30_24H" in out
 
 
+def test_inspect_1816_early_wave_lab_cli(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    import inspect_1816_and_early_wave_lab as ew_cli
+
+    monkeypatch.setattr(ew_cli, "ROOT", tmp_path)
+    (tmp_path / "logs").mkdir(parents=True)
+    f1 = tmp_path / "logs" / "s1_ticks_XAUUSD_i_20261126.jsonl"
+    t0 = 1795716600.0  # 2026-11-26 18:10:00 UTC
+    ticks: list[tuple[float, float, float]] = []
+    for m in range(6):
+        base = 3574.0 + 0.6 * m
+        for s in range(0, 60, 4):
+            mid = base + 0.1 * (s / 60.0)
+            ticks.append((t0 + m * 60 + s, round(mid - 0.18, 2), round(mid + 0.18, 2)))
+    # 5-minute smooth drop -$5.50
+    cur_t = t0 + 6 * 60
+    for s in range(0, 300, 2):
+        mid = 3577.7 - 5.5 * (s / 300.0)
+        ticks.append((cur_t + s, round(mid - 0.18, 2), round(mid + 0.18, 2)))
+    with f1.open("w", encoding="utf-8") as fh:
+        for ts, bid, ask in ticks:
+            fh.write(json.dumps({"ts": ts, "bid": bid, "ask": ask}) + "\n")
+
+    rc = ew_cli.main(["--start-hm", "18:12", "--end-hm", "18:22"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "PART 1: EXACT M1 CANDLES" in out
+    assert "EW_SLOPE_150S_24H" in out
+
+
 def test_reverse_engineer_manual_edge_enriches_ticks() -> None:
     import reverse_engineer_manual_edge as rev
 
