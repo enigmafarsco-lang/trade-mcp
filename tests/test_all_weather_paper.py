@@ -282,3 +282,35 @@ def test_all_weather_risk_multiplier_scales_lots_and_pnl_cleanly(
     assert "RiskMult: 2x" in out
 
 
+def test_multi_symbol_wave_scanner_and_recorder_mock(capsys: pytest.CaptureFixture[str]) -> None:
+    """Verify Alpari wave-symbol discovery, ATR/Spread grading, and --mock CLI (ORDERS=0)."""
+    import record_multi_ticks_live as rml
+
+    rows = [
+        {"name": "XAUUSD_i", "bid": 3570.0, "ask": 3570.4, "digits": 2, "point": 0.01, "visible": True},
+        {"name": "USTEC", "bid": 20980.0, "ask": 20983.0, "digits": 1, "point": 0.1, "visible": False},
+        {"name": "USTEC_i", "bid": 20980.0, "ask": 20981.5, "digits": 1, "point": 0.1, "visible": True},
+        {"name": "GBPJPY_i", "bid": 195.100, "ask": 195.120, "digits": 3, "point": 0.001, "visible": True},
+        {"name": "XAGUSD_i", "bid": 31.400, "ask": 31.430, "digits": 3, "point": 0.001, "visible": False},
+    ]
+    picked = rml.discover_wave_symbols(rows, include_gold=False, max_symbols=6)
+    syms = [p["symbol"] for p in picked]
+    assert "USTEC_i" in syms  # prefers Alpari _i suffix
+    assert "GBPJPY_i" in syms
+    assert "XAGUSD_i" in syms
+    assert "XAUUSD_i" not in syms
+
+    bars = [[float(1700000000 + i * 60), 100.0, 102.0, 99.0, 101.0, 10.0] for i in range(25)]
+    wm = rml._compute_m1_wave_metrics(bars, spread_price=0.40)
+    assert wm["atr_m1"] == 3.0
+    assert wm["atr_to_spread"] == 7.5
+    assert wm["wave_grade"] == "A_EXCELLENT"
+
+    rc = rml.main(["--mock"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "ORDERS=0" in out
+    assert "USTEC_i" in out
+
+
+
