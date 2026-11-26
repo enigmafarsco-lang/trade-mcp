@@ -29,6 +29,10 @@ from trade_mcp.s1_velocity_surfer import (
     S1VelocitySurferEngine,
     build_s1_profile_config,
 )
+from trade_mcp.s10_hybrid_engines import (
+    S10HybridEngine,
+    build_s10_hybrid_profile_config,
+)
 
 
 def _iso_utc(ts: float) -> str:
@@ -267,7 +271,7 @@ class ShockRadar:
 
 
 class DualRadarPaperSuite:
-    """Runs ShockRadar + 5 independent read-only Paper engines side-by-side on one tick stream (ORDERS=0)."""
+    """Runs ShockRadar + 5 core (or 9 with S10 VSA/SR/EMA hybrids) Paper engines side-by-side (ORDERS=0)."""
 
     ENGINE_ORDER: tuple[str, ...] = (
         "v2.5_SHOCK_10",
@@ -275,6 +279,12 @@ class DualRadarPaperSuite:
         "v2.5_SHOCK_8",
         "PB_DIP_V2_SESS",
         "PB_DIP_V2_24H",
+    )
+    HYBRID_ENGINE_ORDER: tuple[str, ...] = (
+        "SR_SWEEP_VSA_24H",
+        "SR_SWEEP_VSA_SESS",
+        "SR_BREAK_VSA_S10",
+        "EMA_RECLAIM_S10",
     )
 
     def __init__(
@@ -284,13 +294,18 @@ class DualRadarPaperSuite:
         leg_lot: float = 0.01,
         max_legs: int = 6,
         radar_cfg: ShockRadarConfig | None = None,
+        include_hybrids: bool = False,
     ) -> None:
         self.initial_capital_usd = float(initial_capital_usd)
         self.leg_lot = float(leg_lot)
         self.max_legs = int(max_legs)
+        self.include_hybrids = bool(include_hybrids)
         self.radar = ShockRadar(cfg=radar_cfg or ShockRadarConfig())
         dip_max_legs = min(4, self.max_legs)
-        self.engines: dict[str, S1VelocitySurferEngine | PullbackDipEngine] = {
+        self.engine_order: tuple[str, ...] = (
+            self.ENGINE_ORDER + self.HYBRID_ENGINE_ORDER if self.include_hybrids else self.ENGINE_ORDER
+        )
+        self.engines: dict[str, S1VelocitySurferEngine | PullbackDipEngine | S10HybridEngine] = {
             "v2.5_SHOCK_10": S1VelocitySurferEngine(
                 cfg=build_s1_profile_config("v2.5_SHOCK_10", leg_lot=self.leg_lot, max_legs=self.max_legs),
                 initial_capital_usd=self.initial_capital_usd,
@@ -312,6 +327,13 @@ class DualRadarPaperSuite:
                 initial_capital_usd=self.initial_capital_usd,
             ),
         }
+        if self.include_hybrids:
+            hyb_max_legs = min(3, self.max_legs)
+            for hname in self.HYBRID_ENGINE_ORDER:
+                self.engines[hname] = S10HybridEngine(
+                    cfg=build_s10_hybrid_profile_config(hname, leg_lot=self.leg_lot, max_legs=hyb_max_legs),
+                    initial_capital_usd=self.initial_capital_usd,
+                )
 
     def set_multiplier(self, multiplier: float) -> None:
         for eng in self.engines.values():
@@ -327,7 +349,7 @@ class DualRadarPaperSuite:
     ) -> dict[str, Any]:
         alert = self.radar.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_context)
         engine_events: list[tuple[str, dict[str, Any]]] = []
-        for name in self.ENGINE_ORDER:
+        for name in self.engine_order:
             eng = self.engines[name]
             for ev in eng.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_context):
                 engine_events.append((name, ev))
@@ -344,7 +366,7 @@ class DualRadarPaperSuite:
         closed_events: list[tuple[str, dict[str, Any]]] = []
         if bid <= 0.0 or ask <= 0.0:
             return closed_events
-        for name in self.ENGINE_ORDER:
+        for name in self.engine_order:
             eng = self.engines[name]
             if eng.basket is None:
                 continue
@@ -372,7 +394,7 @@ class DualRadarPaperSuite:
         consecutive_errors: int,
     ) -> dict[str, Any]:
         eng_payload: dict[str, Any] = {}
-        for name in self.ENGINE_ORDER:
+        for name in self.engine_order:
             eng = self.engines[name]
             s = eng.summary(last_bid, last_ask)
             wins = [w["net_pnl_usd"] for w in eng.waves_closed if w["net_pnl_usd"] > 0]

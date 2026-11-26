@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline forensic tape audit & 12-architecture structural benchmark on real recorded tick JSONL files (ORDERS=0)."""
+"""Offline forensic tape audit & 16-architecture structural benchmark on real recorded tick JSONL files (ORDERS=0)."""
 
 from __future__ import annotations
 
@@ -23,15 +23,15 @@ from trade_mcp.s1_impulse_audit import (  # noqa: E402
 def _print_table(title: str, rows: list[dict[str, Any]]) -> None:
     print(title)
     print(
-        f"{'STRATEGY':16s} | {'WAVES':>5s} | {'LEGS':>4s} | {'W/L':>7s} | {'WR%':>5s} | "
+        f"{'STRATEGY':18s} | {'WAVES':>5s} | {'LEGS':>4s} | {'W/L':>7s} | {'WR%':>5s} | "
         f"{'NET $':>8s} | {'PF':>5s} | {'MaxDD':>6s} | {'AvgW':>6s} | {'AvgL':>6s}"
     )
-    print("-" * 92)
+    print("-" * 94)
     for r in rows:
         pf_s = f"{r['pf']:.2f}" if r["pf"] is not None else "  -  "
         wl_s = f"{r['wins']}/{r['losses']}"
         print(
-            f"{r['strategy']:16s} | {r['waves_count']:5d} | {r['total_legs']:4d} | "
+            f"{r['strategy']:18s} | {r['waves_count']:5d} | {r['total_legs']:4d} | "
             f"{wl_s:>7s} | {r['wr_pct']:5.1f} | {r['net_usd']:+8.2f} | "
             f"{pf_s:>5s} | {r['max_dd_usd']:6.2f} | {r['avg_win']:+6.2f} | {r['avg_loss']:+6.2f}"
         )
@@ -119,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         rows = run_structural_benchmark(ticks, leg_lot=args.leg_lot, max_legs=args.max_legs)
         per_file.append((p, rows))
 
-    print("\n=== PART 2: CAUSAL 12-ARCHITECTURE BENCHMARK PER FILE (ORDERS=0) ===")
+    print("\n=== PART 2: CAUSAL 16-ARCHITECTURE BENCHMARK PER FILE (ORDERS=0) ===")
     for p, rows in per_file:
         by_name = {r["strategy"]: r for r in rows}
         file_rows = list(rows)

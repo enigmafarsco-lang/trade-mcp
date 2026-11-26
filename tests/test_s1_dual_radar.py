@@ -420,3 +420,214 @@ def test_combine_portfolio_waves_chronological_dd() -> None:
     assert res["net_usd"] == 10.5
     assert res["max_dd_usd"] == 2.5
     assert res["pf"] == 5.2
+
+
+def _emit_s10_bar(
+    eng: Any,
+    bar_start_ts: float,
+    mids: list[float],
+    *,
+    spread: float = 0.36,
+    m1_ctx: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Feed a sequence of mid-price ticks evenly spaced inside one 10-second bucket."""
+    events: list[dict[str, Any]] = []
+    n = len(mids)
+    step = 9.0 / max(1, n)
+    half = spread * 0.5
+    for i, m in enumerate(mids):
+        bid = round(m - half, 2)
+        ask = round(m + half, 2)
+        events.extend(eng.on_tick(ts=bar_start_ts + i * step, bid=bid, ask=ask, m1_context=m1_ctx))
+    return events
+
+
+def test_s10_sr_sweep_vsa_trades_stop_hunt_respects_session_and_blocks_vertical_trend() -> None:
+    """SR_SWEEP_VSA_24H catches liquidity sweep + VSA tail to TP, respects session filter, and rejects vertical trends."""
+    from trade_mcp.s10_hybrid_engines import S10HybridEngine, build_s10_hybrid_profile_config
+
+    eng_24h = S10HybridEngine(cfg=build_s10_hybrid_profile_config("SR_SWEEP_VSA_24H", leg_lot=0.01))
+    eng_sess = S10HybridEngine(cfg=build_s10_hybrid_profile_config("SR_SWEEP_VSA_SESS", leg_lot=0.01))
+    rng_ctx = {"bias": 0, "label": "RANGE_NEUTRAL", "support": 3498.0, "resistance": 3502.5}
+
+    # 1) Active London/NY hour (14:00 server): build 40 oscillating 10s bars inside [3498.0, 3502.5] (box_span=$4.50)
+    t0 = float(datetime(2026, 11, 26, 14, 0, 0, tzinfo=timezone.utc).timestamp())
+    for i in range(40):
+        # 5 quote updates per quiet bar, oscillating cleanly between 3498.0 and 3502.5
+        if i % 4 == 0:
+            mids = [3500.0, 3499.0, 3498.0, 3498.8, 3499.5]
+        elif i % 4 == 1:
+            mids = [3499.5, 3500.5, 3501.5, 3502.5, 3501.8]
+        elif i % 4 == 2:
+            mids = [3501.8, 3500.8, 3499.8, 3498.9, 3499.2]
+        else:
+            mids = [3499.2, 3500.1, 3501.0, 3501.9, 3500.2]
+        _emit_s10_bar(eng_24h, t0 + i * 10.0, mids, m1_ctx=rng_ctx)
+        _emit_s10_bar(eng_sess, t0 + i * 10.0, mids, m1_ctx=rng_ctx)
+
+    # Bar 40: bullish stop-hunt wick below 3498.0 -> pokes to 3497.2 (-$0.80), surges 12 updates, closes at 3498.6!
+    sweep_mids = [3498.5, 3498.2, 3497.9, 3497.6, 3497.2, 3497.4, 3497.7, 3498.0, 3498.2, 3498.4, 3498.5, 3498.6]
+    _emit_s10_bar(eng_24h, t0 + 400.0, sweep_mids, m1_ctx=rng_ctx)
+    _emit_s10_bar(eng_sess, t0 + 400.0, sweep_mids, m1_ctx=rng_ctx)
+
+    # Bar 41..43: close bar 40 -> fills BUY after 0.25s latency -> price reverts upward +$4.00 to hit take_profit_hit!
+    rebound = [3498.6, 3498.7, 3499.2, 3499.9, 3500.6, 3501.4, 3502.2, 3503.0]
+    _emit_s10_bar(eng_24h, t0 + 410.0, rebound, m1_ctx=rng_ctx)
+    _emit_s10_bar(eng_sess, t0 + 410.0, rebound, m1_ctx=rng_ctx)
+
+    assert len(eng_24h.waves_closed) == 1
+    assert len(eng_sess.waves_closed) == 1
+    assert eng_24h.waves_closed[0]["side"] == "buy"
+    assert eng_24h.waves_closed[0]["exit_reason"] == "take_profit_hit"
+    assert eng_24h.waves_closed[0]["net_pnl_usd"] >= 2.0
+
+    # 2) Jump to 03:00 Asia off-session (gap reset): SR_SWEEP_VSA_SESS must block while SR_SWEEP_VSA_24H trades!
+    t_asia = float(datetime(2026, 11, 27, 3, 0, 0, tzinfo=timezone.utc).timestamp())
+    for i in range(40):
+        mids = [3500.0, 3498.0, 3499.0, 3502.5, 3500.2]
+        _emit_s10_bar(eng_24h, t_asia + i * 10.0, mids, m1_ctx=rng_ctx)
+        _emit_s10_bar(eng_sess, t_asia + i * 10.0, mids, m1_ctx=rng_ctx)
+    _emit_s10_bar(eng_24h, t_asia + 400.0, sweep_mids, m1_ctx=rng_ctx)
+    _emit_s10_bar(eng_sess, t_asia + 400.0, sweep_mids, m1_ctx=rng_ctx)
+    _emit_s10_bar(eng_24h, t_asia + 410.0, rebound, m1_ctx=rng_ctx)
+    _emit_s10_bar(eng_sess, t_asia + 410.0, rebound, m1_ctx=rng_ctx)
+
+    assert len(eng_24h.waves_closed) == 2
+    assert len(eng_sess.waves_closed) == 1
+    assert eng_sess.signals_blocked_session >= 1
+
+    # 3) Runaway vertical downtrend (eff_5m ~ 1.0 > 0.58) -> sweep fade MUST be blocked by regime guard!
+    eng_trend = S10HybridEngine(cfg=build_s10_hybrid_profile_config("SR_SWEEP_VSA_24H", leg_lot=0.01))
+    t_tr = float(datetime(2026, 11, 27, 14, 0, 0, tzinfo=timezone.utc).timestamp())
+    px = 3520.0
+    for i in range(40):
+        mids = [round(px - 0.10 * k, 2) for k in range(5)]
+        px = mids[-1]
+        _emit_s10_bar(eng_trend, t_tr + i * 10.0, mids, m1_ctx=rng_ctx)
+    # Hammer tail at bottom of runaway crash
+    crash_hammer = [px, px - 0.3, px - 0.7, px - 1.1, px - 1.4, px - 0.9, px - 0.4, px + 0.15, px + 0.25]
+    _emit_s10_bar(eng_trend, t_tr + 400.0, crash_hammer, m1_ctx=rng_ctx)
+    _emit_s10_bar(eng_trend, t_tr + 410.0, [px + 0.3, px + 0.4, px + 0.5], m1_ctx=rng_ctx)
+    assert eng_trend.basket is None
+    assert len(eng_trend.waves_closed) == 0
+    assert eng_trend.signals_blocked_regime >= 1
+
+
+def test_s10_sr_break_vsa_captures_two_candle_breakout_and_resets_on_gap() -> None:
+    """SR_BREAK_VSA_S10 catches 2 clean accelerating VSA candles breaking 15m Resistance and rides runner."""
+    from trade_mcp.s10_hybrid_engines import S10HybridEngine, build_s10_hybrid_profile_config
+
+    eng = S10HybridEngine(cfg=build_s10_hybrid_profile_config("SR_BREAK_VSA_S10", leg_lot=0.01, max_legs=3))
+    bull_ctx = {"bias": 1, "label": "BULL_TREND", "support": 3498.0, "resistance": 3502.0}
+    t0 = float(datetime(2026, 11, 26, 14, 0, 0, tzinfo=timezone.utc).timestamp())
+
+    # 38 calm consolidation bars strictly inside [3498.5, 3502.0] with 4 updates/bar
+    for i in range(38):
+        if i % 2 == 0:
+            mids = [3500.0, 3499.0, 3498.5, 3500.5]
+        else:
+            mids = [3500.5, 3501.4, 3502.0, 3501.2]
+        _emit_s10_bar(eng, t0 + i * 10.0, mids, m1_ctx=bull_ctx)
+
+    # Bar 38 (B1) + Bar 39 (B2): 2 clean accelerating bullish VSA candles clearing 3502.0 Resistance
+    b1 = [3501.2, 3501.4, 3501.6, 3501.8, 3502.0, 3502.15]  # body +0.95, clean
+    b2 = [3502.15, 3502.3, 3502.5, 3502.7, 3502.9, 3503.1, 3503.3, 3503.5]  # body +1.35, vol=8 (2x baseline!)
+    _emit_s10_bar(eng, t0 + 380.0, b1, m1_ctx=bull_ctx)
+    _emit_s10_bar(eng, t0 + 390.0, b2, m1_ctx=bull_ctx)
+
+    # Bar 40..42: open triggers on bar 39 close + 0.25s latency -> +$8.00 rally -> -$2.60 pullback triggers profit exit
+    _emit_s10_bar(eng, t0 + 400.0, [3503.5, 3503.7, 3504.5, 3505.5, 3506.5], m1_ctx=bull_ctx)
+    _emit_s10_bar(eng, t0 + 410.0, [3507.2, 3508.4, 3509.6, 3510.8, 3511.6], m1_ctx=bull_ctx)
+    _emit_s10_bar(eng, t0 + 420.0, [3510.8, 3509.8, 3509.0, 3508.4], m1_ctx=bull_ctx)
+
+    assert len(eng.waves_closed) == 1
+    w = eng.waves_closed[0]
+    assert w["side"] == "buy"
+    assert w["exit_reason"] in ("tick_trail_exit", "profit_floor_hit")
+    assert w["legs_count"] >= 2
+    assert w["net_pnl_usd"] > 3.0
+
+    # Verify >60s disconnect gap resets internal S10 history cleanly
+    eng.on_tick(ts=t0 + 600.0, bid=3520.0, ask=3520.36, m1_context=bull_ctx)
+    assert len(eng._s10_bars) == 0
+
+
+def test_s10_ema_reclaim_catches_medium_trend_pullback_and_does_not_chase() -> None:
+    """EMA_RECLAIM_S10 buys a pullback-to-EMA18 reclaim inside a medium +$5.50/5m bull trend, without chasing."""
+    from trade_mcp.s10_hybrid_engines import S10HybridEngine, build_s10_hybrid_profile_config
+
+    eng = S10HybridEngine(cfg=build_s10_hybrid_profile_config("EMA_RECLAIM_S10", leg_lot=0.01, max_legs=3))
+    bull_ctx = {"bias": 1, "label": "BULL_TREND", "support": 3480.0, "resistance": 3560.0}
+    t0 = float(datetime(2026, 11, 26, 14, 0, 0, tzinfo=timezone.utc).timestamp())
+
+    # 1) 56 steady upward 10s bars: +$0.20/bar -> +$6.00/5m (below Pullback-Dip's $8 gate, above EMA_RECLAIM's $4!)
+    # Because price rises steadily far above EMA18 without pulling back, engine MUST NOT chase during warmup!
+    px = 3490.0
+    for i in range(56):
+        mids = [round(px, 2), round(px + 0.07, 2), round(px + 0.14, 2), round(px + 0.20, 2)]
+        px = mids[-1]
+        _emit_s10_bar(eng, t0 + i * 10.0, mids, m1_ctx=bull_ctx)
+
+    assert eng.basket is None
+    assert len(eng.waves_closed) == 0  # anti-chase check passed!
+
+    # 2) Pullback 2 bars down to tap causal EMA18 (ef)
+    ef_now = float(eng._ema_fast or px)
+    _emit_s10_bar(eng, t0 + 560.0, [px, px - 0.45, px - 0.90, round(ef_now + 0.15, 2)], m1_ctx=bull_ctx)
+    _emit_s10_bar(
+        eng,
+        t0 + 570.0,
+        [round(ef_now + 0.15, 2), round(ef_now - 0.10, 2), round(ef_now - 0.20, 2), round(ef_now - 0.05, 2)],
+        m1_ctx=bull_ctx,
+    )
+
+    # 3) Clean bullish VSA reclaim bar closing firmly back above EMA18 with higher tick activity
+    ef_pb = float(eng._ema_fast or ef_now)
+    reclaim_mids = [
+        round(ef_pb - 0.10, 2),
+        round(ef_pb + 0.05, 2),
+        round(ef_pb + 0.25, 2),
+        round(ef_pb + 0.45, 2),
+        round(ef_pb + 0.70, 2),
+        round(ef_pb + 0.95, 2),
+        round(ef_pb + 1.15, 2),
+    ]
+    _emit_s10_bar(eng, t0 + 580.0, reclaim_mids, m1_ctx=bull_ctx)
+
+    # 4) Continuation +$7.00 then -$2.50 pullback -> pyramids and exits profitably on trail!
+    top = reclaim_mids[-1]
+    _emit_s10_bar(eng, t0 + 590.0, [top, top + 0.4, top + 1.4, top + 2.6, top + 3.8], m1_ctx=bull_ctx)
+    _emit_s10_bar(eng, t0 + 600.0, [top + 4.4, top + 5.4, top + 6.4, top + 7.2], m1_ctx=bull_ctx)
+    _emit_s10_bar(eng, t0 + 610.0, [top + 6.4, top + 5.4, top + 4.6, top + 4.2], m1_ctx=bull_ctx)
+
+    assert len(eng.waves_closed) == 1
+    w = eng.waves_closed[0]
+    assert w["side"] == "buy"
+    assert w["exit_reason"] in ("tick_trail_exit", "profit_floor_hit")
+    assert w["legs_count"] >= 2
+    assert w["net_pnl_usd"] > 2.5
+
+
+def test_dual_radar_cli_include_hybrids_runs_all_nine_engines_readonly(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """--include-hybrids wires all 4 S10 VSA/SR/EMA engines cleanly alongside the 5 core engines (ORDERS=0)."""
+    monkeypatch.setenv("TRADE_MCP_ALLOW_TRADING", "false")
+    monkeypatch.setenv("TRADE_MCP_PAPER_TRADING", "true")
+    monkeypatch.setattr(dual_cli, "ROOT", tmp_path)
+    (tmp_path / "reports" / "paper_live").mkdir(parents=True)
+    rep = tmp_path / "reports" / "paper_live" / "dual_hybrids_mock.json"
+
+    rc = dual_cli.main(["--mock", "--include-hybrids", "--no-bell", "--report-file", str(rep)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "SR_SWEEP_VSA_24H" in out
+    assert "SR_SWEEP_VSA_SESS" in out
+    assert "SR_BREAK_VSA_S10" in out
+    assert "EMA_RECLAIM_S10" in out
+    data = json.loads(rep.read_text(encoding="utf-8"))
+    assert data["orders_submitted"] == 0
+    assert len(data["engines"]) == 9
+

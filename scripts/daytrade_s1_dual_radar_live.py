@@ -164,12 +164,15 @@ def _print_engine_event(eng_name: str, ev: dict[str, Any]) -> None:
     et = ev.get("type")
     now_str = datetime.now(timezone.utc).strftime("%H:%M:%S")
     if et == "OPEN_L1":
-        extra = ""
-        if ev.get("regime") == "PULLBACK_DIP":
+        regime = str(ev.get("regime", ""))
+        if regime == "PULLBACK_DIP":
             extra = (
                 f"trend={ev.get('trend_move', 0):+.2f}(e={ev.get('trend_eff', 0):.2f}) "
                 f"dip=${ev.get('pullback_depth', 0):.2f} bounce=${ev.get('bounce_3s', 0):+.2f}"
             )
+        elif regime in ("SR_SWEEP", "SR_BREAK", "EMA_RECLAIM"):
+            tp_part = f" TP={ev['tp']:.2f}" if ev.get("tp") is not None else ""
+            extra = f"{regime} {ev.get('detail', '')}{tp_part}".strip()
         else:
             extra = f"vel={ev.get('vel_ratio', 0):.1f}x ({ev.get('move_3s', 0):+.2f}/3s)"
         print(
@@ -213,12 +216,16 @@ def _print_status(suite: DualRadarPaperSuite, m1_ctx: dict[str, Any], bid: float
         "v2.5_SHOCK_8": "SHK8",
         "PB_DIP_V2_SESS": "PB_SESS",
         "PB_DIP_V2_24H": "PB_24H",
+        "SR_SWEEP_VSA_24H": "SWP24",
+        "SR_SWEEP_VSA_SESS": "SWPS",
+        "SR_BREAK_VSA_S10": "BRK10",
+        "EMA_RECLAIM_S10": "EMAR",
     }
-    for name in suite.ENGINE_ORDER:
+    for name in suite.engine_order:
         eng = suite.engines[name]
         s = eng.summary(bid, ask)
         pos_tag = f"*{eng.basket['side'][0].upper()}{len(eng.basket['legs'])}" if eng.basket else ""
-        parts.append(f"{short_labels[name]}:{s['waves_count']}w(${s['realized_pnl_usd']:+.2f}{pos_tag})")
+        parts.append(f"{short_labels.get(name, name)}:{s['waves_count']}w(${s['realized_pnl_usd']:+.2f}{pos_tag})")
     print("  [PAPER | ORDERS=0] " + " | ".join(parts), flush=True)
 
 
@@ -276,7 +283,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--report-file", default="", help="Continuously write compact git-safe JSON report inside reports/ or logs/")
     parser.add_argument("--report-seconds", type=float, default=300.0, help="Periodic flush seconds for --report-file (default 300)")
     parser.add_argument("--minutes", type=float, default=0.0, help="Run duration minutes (0 = 24/7 until Ctrl+C)")
-    parser.add_argument("--replay", nargs="+", default=[], help="Offline replay 1+ recorded tick JSONL files through Dual Radar + all 5 engines")
+    parser.add_argument(
+        "--include-hybrids",
+        action="store_true",
+        help="Also run the 4 S10 VSA/SR/EMA hybrid engines side-by-side (9 Paper engines total, ORDERS=0)",
+    )
+    parser.add_argument("--replay", nargs="+", default=[], help="Offline replay 1+ recorded tick JSONL files through Dual Radar + engines")
     parser.add_argument("--rebuild-m1", action="store_true", help="Rebuild causal M1 context during --replay")
     parser.add_argument("--mock", action="store_true", help="Run deterministic offline verification of Radar + Shock + Pullback-Dip")
     args = parser.parse_args(argv)
@@ -307,6 +319,7 @@ def main(argv: list[str] | None = None) -> int:
             leg_lot=leg_lot,
             max_legs=max_legs,
             radar_cfg=radar_cfg,
+            include_hybrids=bool(args.include_hybrids),
         )
         started_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
         for ts, bid, ask, m1_ctx in ticks:
@@ -348,6 +361,7 @@ def main(argv: list[str] | None = None) -> int:
             leg_lot=leg_lot,
             max_legs=max_legs,
             radar_cfg=radar_cfg,
+            include_hybrids=bool(args.include_hybrids),
         )
         started_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
         total_ticks = 0
@@ -379,7 +393,7 @@ def main(argv: list[str] | None = None) -> int:
             consecutive_errors=0,
         )
         _print_suite_table(
-            f"\n=== DUAL RADAR + 5-ENGINE REPLAY ({len(args.replay)} FILES, {total_ticks} TICKS, ORDERS=0) ===",
+            f"\n=== DUAL RADAR + {len(suite.engine_order)}-ENGINE REPLAY ({len(args.replay)} FILES, {total_ticks} TICKS, ORDERS=0) ===",
             snap,
         )
         if report_path is not None:
@@ -418,6 +432,7 @@ def main(argv: list[str] | None = None) -> int:
                 leg_lot=leg_lot,
                 max_legs=max_legs,
                 radar_cfg=radar_cfg,
+                include_hybrids=bool(args.include_hybrids),
             )
             suite.set_multiplier(float(mult))
 
@@ -425,10 +440,10 @@ def main(argv: list[str] | None = None) -> int:
             clock_offset = srv_ts0 - time.time()
             started_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
             print(
-                f"[START | DUAL SHOCK RADAR + 5-ENGINE PAPER | ORDERS=0] {args.symbol} | "
+                f"[START | DUAL SHOCK RADAR + {len(suite.engine_order)}-ENGINE PAPER | ORDERS=0] {args.symbol} | "
                 f"SRV={srv_dt0.strftime('%H:%M:%S')} (Active LND/NY=09..19 SRV) | "
                 f"Radar(PRE>=${radar_cfg.pre_shock_60s:.0f}, S8>=${radar_cfg.shock8_60s:.0f}, S10>=${radar_cfg.shock10_60s:.0f}) | "
-                f"Engines={','.join(suite.ENGINE_ORDER)} | lot={leg_lot:.2f} | poll={args.poll_seconds}s"
+                f"Engines={','.join(suite.engine_order)} | lot={leg_lot:.2f} | poll={args.poll_seconds}s"
                 + (f" | REC=logs/{tick_path.name}" if tick_path is not None else " | REC=OFF")
                 + (f" | REPORT={report_path.relative_to(ROOT)} ({int(report_interval_sec)}s)" if report_path else ""),
                 flush=True,
@@ -594,7 +609,7 @@ def main(argv: list[str] | None = None) -> int:
                 reconnect_count=reconnect_count,
                 consecutive_errors=consecutive_errors,
             )
-            _print_suite_table("\n=== DUAL SHOCK RADAR + 5-ENGINE PAPER STOPPED (ORDERS=0) ===", final_snap)
+            _print_suite_table(f"\n=== DUAL SHOCK RADAR + {len(suite.engine_order)}-ENGINE PAPER STOPPED (ORDERS=0) ===", final_snap)
             return 0
     except Exception as exc:
         print(json.dumps({"ok": False, "orders_submitted": 0, "error": f"{type(exc).__name__}: {exc}"}, indent=2))

@@ -1024,7 +1024,9 @@ def run_structural_benchmark(
     leg_lot: float = 0.01,
     max_legs: int = 6,
 ) -> list[dict[str, Any]]:
-    """Evaluate 12 distinct causal architectures side-by-side on the exact same tick stream."""
+    """Evaluate 16 distinct causal architectures (S1 Shock, 15m Breakout, Pullback-Dip, and S10 VSA/SR/EMA hybrids)."""
+    from trade_mcp.s10_hybrid_engines import S10HybridEngine, s10_hybrid_profiles
+
     s1_specs: list[tuple[str, S1SurferConfig]] = [
         ("BASE_SAFE_RIP4", build_s1_profile_config("v2.4_SAFE_RIP4", leg_lot=leg_lot, max_legs=max_legs)),
         ("SHOCK_8_EFF45", build_s1_profile_config("v2.5_SHOCK_8", leg_lot=leg_lot, max_legs=max_legs)),
@@ -1041,6 +1043,7 @@ def run_structural_benchmark(
         ),
     ]
     dip_specs = pullback_dip_profiles(leg_lot=leg_lot, max_legs=min(4, max_legs))
+    hybrid_specs = s10_hybrid_profiles(leg_lot=leg_lot, max_legs=min(3, max_legs))
 
     results: list[dict[str, Any]] = []
     for name, cfg in s1_specs:
@@ -1062,5 +1065,15 @@ def run_structural_benchmark(
             ex = b_l if deng.basket["side"] == "buy" else a_l
             deng._close(ex, ts_l, "eof_replay")
         results.append(_summarize_waves(name, deng.waves_closed, deng.max_dd_usd))
+
+    for name, hcfg in hybrid_specs:
+        heng = S10HybridEngine(cfg=hcfg)
+        for ts, bid, ask, m1_ctx in ticks:
+            heng.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_ctx)
+        if heng.basket is not None and ticks:
+            ts_l, b_l, a_l, _ = ticks[-1]
+            ex = b_l if heng.basket["side"] == "buy" else a_l
+            heng._close(ex, ts_l, "eof_replay")
+        results.append(_summarize_waves(name, heng.waves_closed, heng.max_dd_usd))
 
     return results
