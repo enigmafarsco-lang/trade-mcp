@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import sys
 import time
 from collections import deque
@@ -287,6 +288,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--mock", action="store_true", help="Run fast offline mock stream")
     p.add_argument("--summary", action="store_true")
     p.add_argument("--out", default=None)
+    p.add_argument(
+        "--report-file",
+        default="",
+        help="Git-safe live JSON snapshot (live defaults to reports/paper_live/tick_accel_live.json)",
+    )
     args = p.parse_args(argv)
 
     if args.max_lot <= 0 or args.max_lot > HARD_MAX_LOT:
@@ -294,6 +300,58 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     out_path = Path(args.out) if args.out else (ROOT / "logs" / "tick_accel_paper.json")
+    if args.report_file:
+        report_path: Path | None = Path(args.report_file) if Path(args.report_file).is_absolute() else (ROOT / args.report_file)
+    elif not args.mock:
+        report_path = ROOT / "reports" / "paper_live" / "tick_accel_live.json"
+    else:
+        report_path = None
+
+    stop_requested = False
+
+    def _handle_sig(_signum: int, _frame: Any) -> None:
+        nonlocal stop_requested
+        stop_requested = True
+
+    signal.signal(signal.SIGINT, _handle_sig)
+    signal.signal(signal.SIGTERM, _handle_sig)
+
+    def _write_live_snapshot(
+        *,
+        status: str,
+        started_utc: str,
+        elapsed_min: float,
+        samples_n: int,
+        last_q: dict[str, Any],
+        trend_info: dict[str, Any],
+        engine_obj: TickAccelPaperEngine,
+    ) -> None:
+        if report_path is None:
+            return
+        payload = {
+            "schema": "tick_accel_live_v1",
+            "paper_only": True,
+            "orders_submitted": 0,
+            "symbol": args.symbol,
+            "status": status,
+            "started_utc": started_utc,
+            "updated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "elapsed_minutes": round(elapsed_min, 2),
+            "live_state": {
+                "bid": round(float(last_q.get("bid", 0.0)), 4),
+                "ask": round(float(last_q.get("ask", 0.0)), 4),
+                "ticks_processed": samples_n,
+            },
+            "trend_1h_5h": trend_info,
+            "summary": engine_obj.summary(),
+            "recent_trades": engine_obj.trades[-30:],
+        }
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = report_path.with_name(f".{report_path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        os.replace(tmp, report_path)
+
+    started_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
     try:
         if args.mock:
             mult = 100.0
@@ -349,8 +407,9 @@ def main(argv: list[str] | None = None) -> int:
                 t_start = time.monotonic()
                 t_end = t_start + args.minutes * 60.0
                 last_trend_refresh = t_start
+                last_rep_mono = 0.0
                 last_q = {"bid": 0.0, "ask": 0.0}
-                while time.monotonic() < t_end:
+                while (not stop_requested) and time.monotonic() < t_end:
                     now_m = time.monotonic()
                     if now_m - last_trend_refresh >= 60.0:
                         trend_info = _refresh_trend()
@@ -368,9 +427,39 @@ def main(argv: list[str] | None = None) -> int:
                             file=sys.stderr,
                             flush=True,
                         )
+                        _write_live_snapshot(
+                            status="running",
+                            started_utc=started_utc,
+                            elapsed_min=(now_m - t_start) / 60.0,
+                            samples_n=len(samples),
+                            last_q=last_q,
+                            trend_info=trend_info,
+                            engine_obj=engine,
+                        )
+                        last_rep_mono = now_m
+                    elif (now_m - last_rep_mono) >= 30.0:
+                        _write_live_snapshot(
+                            status="running",
+                            started_utc=started_utc,
+                            elapsed_min=(now_m - t_start) / 60.0,
+                            samples_n=len(samples),
+                            last_q=last_q,
+                            trend_info=trend_info,
+                            engine_obj=engine,
+                        )
+                        last_rep_mono = now_m
                     time.sleep(max(0.05, args.poll_ms / 1000.0))
                 if last_q["bid"] > 0:
                     engine.force_close_if_open(time.time(), last_q["bid"], last_q["ask"])
+                _write_live_snapshot(
+                    status="stopped",
+                    started_utc=started_utc,
+                    elapsed_min=(time.monotonic() - t_start) / 60.0,
+                    samples_n=len(samples),
+                    last_q=last_q,
+                    trend_info=trend_info,
+                    engine_obj=engine,
+                )
 
         report = {
             "ok": True,

@@ -257,28 +257,92 @@ def summarize_live_reports(reports_dir: Path) -> list[dict[str, Any]]:
                 }
         elif "summary" in data and isinstance(data["summary"], dict):
             s = data["summary"]
-            row["profit_usd"] = s.get("realized_pnl_usd")
-            row["trades"] = s.get("waves_count")
+            row["profit_usd"] = s.get("net_pnl_usd", s.get("realized_pnl_usd"))
+            row["trades"] = s.get("closed_trades_count", s.get("trades", s.get("waves_count")))
             row["wl"] = f"{s.get('wins', 0)}/{s.get('losses', 0)}"
-            row["max_dd"] = s.get("max_dd_usd")
+            row["max_dd"] = s.get("max_dd_usd", s.get("max_dd_pct"))
+            if "by_engine" in s and isinstance(s["by_engine"], dict):
+                row["engines"] = {
+                    k: {
+                        "waves": v.get("trades", 0),
+                        "wl": f"{v.get('wins', 0)}/{v.get('losses', 0)}",
+                        "pnl": v.get("net_usd", 0.0),
+                    }
+                    for k, v in s["by_engine"].items()
+                    if isinstance(v, dict)
+                }
         out.append(row)
     return out
 
 
+def summarize_log_snapshots(logs_dir: Path) -> list[dict[str, Any]]:
+    """Read local logs/*.json snapshots (e.g. champions_paper_state.json, tick_accel_paper.json) for git-safe summary."""
+    out: list[dict[str, Any]] = []
+    if not logs_dir.exists():
+        return out
+    champ_p = logs_dir / "champions_paper_state.json"
+    if champ_p.exists():
+        try:
+            d = json.loads(champ_p.read_text(encoding="utf-8"))
+            closed = d.get("closed_trades", []) if isinstance(d, dict) else []
+            pnls = [float(t.get("pnl_usd", t.get("net_pnl_usd", 0.0))) for t in closed if isinstance(t, dict)]
+            out.append({
+                "file": champ_p.name,
+                "schema": "champions_paper_state",
+                "realized_pnl_usd": round(float(d.get("realized_pnl_usd", sum(pnls))), 2),
+                "trades": len(closed),
+                "wins": sum(1 for x in pnls if x > 0),
+                "losses": sum(1 for x in pnls if x <= 0),
+                "open_positions": len(d.get("positions", {})) if isinstance(d.get("positions"), dict) else 0,
+                "last_trades": closed[-10:],
+            })
+        except Exception:
+            pass
+    tick_p = logs_dir / "tick_accel_paper.json"
+    if tick_p.exists():
+        try:
+            d = json.loads(tick_p.read_text(encoding="utf-8"))
+            s = d.get("summary", {}) if isinstance(d, dict) else {}
+            out.append({
+                "file": tick_p.name,
+                "schema": "tick_accel_paper",
+                "recorded_at_utc": d.get("recorded_at_utc"),
+                "samples_count": d.get("samples_count"),
+                "realized_pnl_usd": s.get("net_pnl_usd"),
+                "trades": s.get("trades"),
+                "wins": s.get("wins"),
+                "losses": s.get("losses"),
+                "max_dd_usd": s.get("max_dd_usd"),
+                "last_trades": (d.get("trades") or [])[-10:],
+            })
+        except Exception:
+            pass
+    return out
+
+
 def summarize_trade_logs(logs_dir: Path) -> list[dict[str, Any]]:
-    patterns = (
-        "all_weather_paper_trades.jsonl",
+    names: list[str] = []
+    if logs_dir.exists():
+        names.extend(sorted(p.name for p in logs_dir.glob("all_weather_paper_trades*.jsonl")))
+    for fixed in (
+        "champions_paper_trades.jsonl",
         "s1_dual_radar_waves.jsonl",
         "s1_velocity_paper_waves.jsonl",
         "shock_radar_alerts.jsonl",
-    )
+    ):
+        if fixed not in names:
+            names.append(fixed)
     out: list[dict[str, Any]] = []
-    for name in patterns:
+    for name in names:
         p = logs_dir / name
         if not p.exists():
             continue
         rows = _read_jsonl_rows(p)
-        pnls = [float(r["net_pnl_usd"]) for r in rows if "net_pnl_usd" in r]
+        pnls = [
+            float(r["net_pnl_usd"] if "net_pnl_usd" in r else r["pnl_usd"])
+            for r in rows
+            if ("net_pnl_usd" in r or "pnl_usd" in r)
+        ]
         out.append({
             "file": name,
             "count": len(rows),
@@ -508,6 +572,7 @@ def main(argv: list[str] | None = None) -> int:
     logs_dir = ROOT / "logs"
 
     rep_rows = summarize_live_reports(reports_dir)
+    log_snaps = summarize_log_snapshots(logs_dir)
     log_rows = summarize_trade_logs(logs_dir)
 
     if args.tick_files:
@@ -537,8 +602,13 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(f"      Engines: {brief}")
 
-    print("\n=== 2) RECORDED TRADE & ALERT LOGS (logs/*.jsonl) ===")
-    if not log_rows:
+    print("\n=== 2) RECORDED TRADE & ALERT LOGS (logs/*.jsonl + logs/*.json) ===")
+    for ls in log_snaps:
+        print(
+            f"  • {ls['file']} ({ls['schema']}): trades={ls.get('trades')} "
+            f"({ls.get('wins')}W/{ls.get('losses')}L) | NET=${float(ls.get('realized_pnl_usd') or 0):+.2f}"
+        )
+    if not log_rows and not log_snaps:
         print("  (No trade/alert JSONL files found in logs/)")
     for lr in log_rows:
         if lr["net_pnl_usd"] is not None:
@@ -546,14 +616,18 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"  • {lr['file']}: {lr['count']} alerts")
         for row in lr["last_rows"][-5:]:
-            t_s = str(row.get("closed_utc") or row.get("server_time") or "")[11:19]
-            if "net_pnl_usd" in row:
+            t_s = str(row.get("closed_utc") or row.get("exit_utc") or row.get("server_time") or "")[11:19]
+            if "net_pnl_usd" in row or "pnl_usd" in row:
+                pnl_val = float(row.get("net_pnl_usd", row.get("pnl_usd", 0.0)))
+                vol_val = float(row.get("total_volume", row.get("lot", 0.0)))
+                ent_val = float(row.get("avg_entry", row.get("entry", 0.0)))
+                ex_val = float(row.get("exit_price", row.get("exit", 0.0)))
                 eng = row.get("engine_label") or row.get("engine") or row.get("regime") or ""
                 print(
                     f"      {t_s} [{eng}] {str(row.get('side', '')).upper():4s} "
-                    f"{float(row.get('total_volume', 0.0)):.2f}lot "
-                    f"{float(row.get('avg_entry', 0.0)):.2f}->{float(row.get('exit_price', 0.0)):.2f} "
-                    f"PnL=${float(row['net_pnl_usd']):+.2f} ({row.get('exit_reason', '')})"
+                    f"{vol_val:.2f}lot "
+                    f"{ent_val:.2f}->{ex_val:.2f} "
+                    f"PnL=${pnl_val:+.2f} ({row.get('exit_reason', row.get('reason', ''))})"
                 )
             else:
                 print(
@@ -625,6 +699,7 @@ def main(argv: list[str] | None = None) -> int:
             "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "orders_submitted": 0,
             "live_reports": rep_rows,
+            "log_snapshots": log_snaps,
             "trade_logs": log_rows,
             "tick_charts": tick_charts,
             "recent_microscope": recent_micro,

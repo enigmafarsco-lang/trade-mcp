@@ -244,10 +244,20 @@ def main(argv: list[str] | None = None) -> int:
     os.environ["TRADE_MCP_ALLOW_TRADING"] = "false"
     os.environ["TRADE_MCP_PAPER_TRADING"] = "true"
 
+    variant_parts: list[str] = []
+    if args.fast_shock_varlot:
+        variant_parts.append("varlot")
+    if abs(float(args.risk_mult) - 1.0) > 1e-6:
+        rm_tag = f"{float(args.risk_mult):.2g}".replace(".", "p")
+        variant_parts.append(f"r{rm_tag}x")
+    variant_suffix = ("_" + "_".join(variant_parts)) if variant_parts else ""
+
     if args.report_file:
         report_path = _ensure_in_reports_or_logs(Path(args.report_file))
     elif not args.mock and not args.replay:
-        report_path = _ensure_in_reports_or_logs(ROOT / "reports" / "paper_live" / "all_weather_live.json")
+        report_path = _ensure_in_reports_or_logs(
+            ROOT / "reports" / "paper_live" / f"all_weather_live{variant_suffix}.json"
+        )
     else:
         report_path = None
     started_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -352,7 +362,7 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _handle_sig)
 
     ts_tag = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    trades_log_path = _ensure_in_logs(ROOT / "logs" / "all_weather_paper_trades.jsonl")
+    trades_log_path = _ensure_in_logs(ROOT / "logs" / f"all_weather_paper_trades{variant_suffix}.jsonl")
     tick_path = _ensure_in_logs(ROOT / "logs" / f"s1_ticks_{args.symbol}_{ts_tag}.jsonl") if args.record else None
     report_interval_sec = max(10.0, float(args.report_seconds))
 

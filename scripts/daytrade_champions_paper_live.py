@@ -53,6 +53,57 @@ def _ensure_in_logs(path: Path) -> Path:
     return resolved
 
 
+def _ensure_in_reports_or_logs(path: Path) -> Path:
+    resolved = path.resolve()
+    allowed = ((ROOT / "reports").resolve(), (ROOT / "logs").resolve())
+    if not any(resolved == root or root in resolved.parents for root in allowed):
+        raise ValueError(f"Report path must sit inside reports/ or logs/: {path}")
+    return resolved
+
+
+def _write_live_report(
+    report_path: Path | None,
+    engine: ChampionsPaperEngine,
+    *,
+    symbol: str,
+    bid: float,
+    ask: float,
+    status: str,
+    started_utc: str,
+    elapsed_min: float,
+) -> None:
+    if report_path is None:
+        return
+    s = engine.summary(bid, ask)
+    payload = {
+        "schema": "champions_paper_live_v1",
+        "paper_only": True,
+        "orders_submitted": 0,
+        "symbol": symbol,
+        "status": status,
+        "started_utc": started_utc,
+        "updated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "elapsed_minutes": round(elapsed_min, 2),
+        "live_state": {"bid": round(bid, 4), "ask": round(ask, 4), "spread": round(ask - bid, 4)},
+        "summary": s,
+        "open_positions": [
+            {
+                "engine": k,
+                "side": p.get("side"),
+                "lot": p.get("lot"),
+                "entry": p.get("entry"),
+                "stop": p.get("stop"),
+            }
+            for k, p in engine.positions.items()
+        ],
+        "recent_trades": engine.closed_trades[-30:],
+    }
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = report_path.with_name(f".{report_path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(tmp, report_path)
+
+
 def _server_now(feed: ReadOnlyNativeFeed) -> tuple[float, datetime]:
     clock = feed._call("get_time_information", {})
     raw = find(clock, "trade_server_time") or find(clock, "trade_server_last_known_time")
@@ -237,6 +288,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reset-state", action="store_true", help="Start fresh virtual equity instead of resuming state file")
     parser.add_argument("--state-file", default="logs/champions_paper_state.json", help="Persistent 0600 state JSON inside logs/")
     parser.add_argument("--journal-file", default="logs/champions_paper_trades.jsonl", help="Append-only 0600 trade JSONL inside logs/")
+    parser.add_argument("--report-file", default="", help="Git-safe live JSON snapshot (live defaults to reports/paper_live/champions_paper_live.json)")
     parser.add_argument("--mock", action="store_true", help="Offline deterministic simulation smoke test")
     args = parser.parse_args(argv)
     enable_accel = not args.champions_only
@@ -246,6 +298,14 @@ def main(argv: list[str] | None = None) -> int:
 
     state_path = _ensure_in_logs(Path(args.state_file) if Path(args.state_file).is_absolute() else (ROOT / args.state_file))
     journal_path = _ensure_in_logs(Path(args.journal_file) if Path(args.journal_file).is_absolute() else (ROOT / args.journal_file))
+    if args.report_file:
+        report_path: Path | None = _ensure_in_reports_or_logs(
+            Path(args.report_file) if Path(args.report_file).is_absolute() else (ROOT / args.report_file)
+        )
+    elif not args.mock:
+        report_path = _ensure_in_reports_or_logs(ROOT / "reports" / "paper_live" / "champions_paper_live.json")
+    else:
+        report_path = None
 
     stop_requested = False
 
@@ -308,6 +368,7 @@ def main(argv: list[str] | None = None) -> int:
                     flush=True,
                 )
 
+            started_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
             t_start = time.monotonic()
             deadline = (t_start + args.minutes * 60.0) if args.minutes > 0 else None
             last_m1_bucket = -1
@@ -319,6 +380,10 @@ def main(argv: list[str] | None = None) -> int:
             cached_m5: list[list[float]] = []
             cached_m15: list[list[float]] = []
             cached_h1: list[list[float]] = []
+            _write_live_report(
+                report_path, engine, symbol=args.symbol, bid=last_bid, ask=last_ask,
+                status="running", started_utc=started_utc, elapsed_min=0.0,
+            )
 
             while not stop_requested:
                 loop_t0 = time.monotonic()
@@ -367,9 +432,17 @@ def main(argv: list[str] | None = None) -> int:
 
                     if state_dirty:
                         save_state_atomic(state_path, engine.to_state_dict())
+                        _write_live_report(
+                            report_path, engine, symbol=args.symbol, bid=last_bid, ask=last_ask,
+                            status="running", started_utc=started_utc, elapsed_min=(time.monotonic() - t_start) / 60.0,
+                        )
 
                     if (loop_t0 - last_hb_mono) >= args.heartbeat_seconds or args.once:
                         _print_heartbeat(engine, bid=last_bid, ask=last_ask)
+                        _write_live_report(
+                            report_path, engine, symbol=args.symbol, bid=last_bid, ask=last_ask,
+                            status="running", started_utc=started_utc, elapsed_min=(time.monotonic() - t_start) / 60.0,
+                        )
                         last_hb_mono = loop_t0
                 except (Blocked, McpError, OSError) as exc:
                     print(f"[WARN] Transient MT5 read error ({exc}); retrying in {args.poll_seconds}s...", file=sys.stderr, flush=True)
@@ -384,6 +457,10 @@ def main(argv: list[str] | None = None) -> int:
                 time.sleep(sleep_left)
 
             save_state_atomic(state_path, engine.to_state_dict())
+            _write_live_report(
+                report_path, engine, symbol=args.symbol, bid=last_bid, ask=last_ask,
+                status="stopped", started_utc=started_utc, elapsed_min=(time.monotonic() - t_start) / 60.0,
+            )
             s = engine.summary(last_bid, last_ask)
             eng_breakdown = " | ".join(
                 f"{_short_eng(k)}:{v['trades']}t/{v['legs']}L(${v['net_usd']:+.2f})"
