@@ -258,6 +258,13 @@ def analyze_tape_physics(
     }
 
 
+ALPARI_LONDON_NY_HOURS: tuple[int, ...] = tuple(range(9, 20))
+"""Active Frankfurt/London/NY institutional liquidity window on Alpari broker server clock (09:00-19:59 EET/EEST ≈ 07:00-17:59 UTC winter)."""
+
+ALPARI_LONDON_NY_EXTENDED_HOURS: tuple[int, ...] = tuple(range(9, 21))
+"""Extended London/NY window on Alpari broker server clock (09:00-20:59 EET/EEST ≈ 07:00-18:59 UTC winter)."""
+
+
 @dataclass
 class PullbackDipConfig:
     """Causal trend-pullback dip-buyer config (enters on -$2..-$5 dip + S1 resumption, NOT 3s tops)."""
@@ -267,6 +274,7 @@ class PullbackDipConfig:
     multiplier: float = 100.0
     trend_window_sec: float = 300.0  # 5-min trend displacement window
     min_trend_move_price: float = 8.0  # require >= $8 net directional trend over trend_window_sec
+    min_trend_efficiency: float = 0.0  # optional causal 15s-step straight-line efficiency in [0,1] (0=off)
     extreme_window_sec: float = 180.0  # recent swing extreme window (3-min)
     min_pullback_price: float = 2.0  # wait for at least $2.00 dip off recent swing extreme
     max_pullback_price: float = 5.5  # don't catch falling knives beyond $5.50 pullback
@@ -274,8 +282,15 @@ class PullbackDipConfig:
     min_resume_price: float = 0.80  # first +$0.80/3s bounce back in trend direction triggers entry
     max_spread_price: float = 0.90
     latency_sec: float = 0.25
-    stop_price: float = 4.50  # M1-ATR-scale stop that survives $2.50 gold noise
+    stop_price: float = 4.50  # fixed fallback stop when use_pivot_stop=False
+    use_pivot_stop: bool = False  # causal structural stop right beyond the pullback pivot low/high
+    pivot_lookback_sec: float = 45.0  # seconds to locate recent pullback trough/peak
+    pivot_stop_buffer: float = 0.70  # $ clearance past pivot extreme
+    min_stop_price: float = 2.00  # floor for structural pivot stop
+    max_stop_price: float = 3.00  # hard cap for structural pivot stop (fixes -$4.42 AvgL asymmetry)
     be_arm_price: float = 2.50  # free-ride BE lock at +$2.50
+    profit_lock_arm_price: float = 0.0  # optional mid-wave profit floor arm (0=off)
+    profit_lock_floor_price: float = 0.0  # guaranteed locked profit floor once profit_lock_arm_price hit
     sl_min_breathing_room: float = 1.80
     add_step_price: float = 2.50  # risk-free pyramid leg spacing
     add_interval_sec: float = 5.0
@@ -286,6 +301,8 @@ class PullbackDipConfig:
     max_hold_sec: float = 600.0
     win_cooldown_sec: float = 15.0
     loss_cooldown_sec: float = 60.0
+    consec_loss_cooldown_sec: float = 0.0  # optional step-back cooldown after >=2 consecutive losses (0=off)
+    active_server_hours: tuple[int, ...] | None = None  # optional broker-server active session hours (None=24h)
 
 
 @dataclass
@@ -299,32 +316,41 @@ class PullbackDipEngine:
     _ticks_3s: deque[tuple[float, float]] = field(default_factory=deque)
     _sec_hist: deque[tuple[int, float, float, float]] = field(default_factory=deque)  # (sec, hi, lo, close)
     _cur_sec: list[float] | None = None
+    _last_tick_ts: float = 0.0
 
     pending: dict[str, Any] | None = None
     basket: dict[str, Any] | None = None
     cooldown_until: float = 0.0
+    consecutive_losses: int = 0
     next_wave_id: int = 1
 
     realized_pnl_usd: float = 0.0
     peak_equity_usd: float = 1000.0
     max_dd_usd: float = 0.0
     waves_closed: list[dict[str, Any]] = field(default_factory=list)
+    signals_blocked_session: int = 0
+    signals_blocked_efficiency: int = 0
+    signals_blocked_spread: int = 0
+    last_metrics: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.peak_equity_usd = float(self.initial_capital_usd)
 
-    def _unrealized(self, bid: float, ask: float) -> float:
+    def unrealized_pnl_usd(self, bid: float, ask: float) -> float:
         if self.basket is None or bid <= 0 or ask <= 0:
             return 0.0
         ex = bid if self.basket["side"] == "buy" else ask
         diff = (ex - self.basket["avg_entry"]) if self.basket["side"] == "buy" else (self.basket["avg_entry"] - ex)
-        return diff * self.basket["total_volume"] * self.cfg.multiplier
+        return round(diff * self.basket["total_volume"] * self.cfg.multiplier, 4)
+
+    def _unrealized(self, bid: float, ask: float) -> float:
+        return self.unrealized_pnl_usd(bid, ask)
 
     def _update_dd(self, bid: float, ask: float) -> None:
         eq = self.initial_capital_usd + self.realized_pnl_usd + self._unrealized(bid, ask)
         if eq > self.peak_equity_usd:
             self.peak_equity_usd = eq
-        dd = self.peak_equity_usd - eq
+        dd = max(0.0, self.peak_equity_usd - eq)
         if dd > self.max_dd_usd:
             self.max_dd_usd = round(dd, 4)
 
@@ -338,22 +364,38 @@ class PullbackDipEngine:
             "wave_id": b["wave_id"],
             "side": b["side"],
             "regime": "PULLBACK_DIP",
-            "opened_utc": datetime.fromtimestamp(b["opened_at"], tz=timezone.utc).isoformat(timespec="seconds"),
-            "closed_utc": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="seconds"),
-            "hold_seconds": round(ts - b["opened_at"], 2),
+            "opened_at": float(b["opened_at"]),
+            "opened_utc": datetime.fromtimestamp(b["opened_at"], tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "closed_at": float(ts),
+            "closed_utc": datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "hold_seconds": round(max(0.0, ts - b["opened_at"]), 2),
             "legs_count": len(b["legs"]),
             "total_volume": b["total_volume"],
             "avg_entry": b["avg_entry"],
+            "leg1_entry": b["legs"][0]["entry"],
             "exit_price": round(exit_px, 4),
+            "stop_final": b["stop"],
             "net_pnl_usd": pnl,
             "exit_reason": reason,
             "m1_label": b["m1_label"],
             "s1_candles_elapsed": int(max(1.0, ts - b["opened_at"])),
+            "equity_after_usd": round(self.initial_capital_usd + self.realized_pnl_usd, 4),
+            "paper_only": True,
+            "orders_submitted": 0,
         }
         self.waves_closed.append(rec)
         self.basket = None
         self.pending = None
-        self.cooldown_until = ts + (self.cfg.win_cooldown_sec if pnl > 0 else self.cfg.loss_cooldown_sec)
+        if pnl > 0:
+            self.consecutive_losses = 0
+            cd = self.cfg.win_cooldown_sec
+        else:
+            self.consecutive_losses += 1
+            if self.cfg.consec_loss_cooldown_sec > 0.0 and self.consecutive_losses >= 2:
+                cd = self.cfg.consec_loss_cooldown_sec
+            else:
+                cd = self.cfg.loss_cooldown_sec
+        self.cooldown_until = ts + cd
         return rec
 
     def _can_add_risk_free(self, side: str, bid: float, ask: float, fill_px: float) -> bool:
@@ -366,11 +408,65 @@ class PullbackDipEngine:
             return (bid - self.cfg.sl_min_breathing_room) >= (new_avg + 0.05)
         return (ask + self.cfg.sl_min_breathing_room) <= (new_avg - 0.05)
 
-    def on_tick(self, *, ts: float, bid: float, ask: float, m1_context: dict[str, Any]) -> None:
+    def _trend_efficiency_15s(self, t_cut: int, ref_trend: float, mid: float) -> float:
+        """Causal 15-second bar straight-line efficiency in [0, 1] over trend_window_sec."""
+        path = 0.0
+        prev_c = ref_trend
+        last_sample_sec = t_cut
+        for row in self._sec_hist:
+            if row[0] < t_cut:
+                continue
+            if (row[0] - last_sample_sec) >= 15:
+                path += abs(row[3] - prev_c)
+                prev_c = row[3]
+                last_sample_sec = row[0]
+        path += abs(mid - prev_c)
+        if path <= 1e-9:
+            return 0.0
+        return min(1.0, abs(mid - ref_trend) / path)
+
+    def _compute_initial_stop(self, *, side: str, fill_px: float, sec: int) -> float:
+        if not self.cfg.use_pivot_stop:
+            return round(fill_px - self.cfg.stop_price, 4) if side == "buy" else round(fill_px + self.cfg.stop_price, 4)
+
+        piv_cut = sec - int(self.cfg.pivot_lookback_sec)
+        piv_lo = self._cur_sec[2] if self._cur_sec is not None else fill_px
+        piv_hi = self._cur_sec[1] if self._cur_sec is not None else fill_px
+        for row in self._sec_hist:
+            if row[0] >= piv_cut:
+                if row[2] < piv_lo:
+                    piv_lo = row[2]
+                if row[1] > piv_hi:
+                    piv_hi = row[1]
+
+        if side == "buy":
+            raw_stop = piv_lo - self.cfg.pivot_stop_buffer
+            raw_dist = fill_px - raw_stop
+            sdist = min(max(raw_dist, self.cfg.min_stop_price), self.cfg.max_stop_price)
+            return round(fill_px - sdist, 4)
+
+        raw_stop = piv_hi + self.cfg.pivot_stop_buffer
+        raw_dist = raw_stop - fill_px
+        sdist = min(max(raw_dist, self.cfg.min_stop_price), self.cfg.max_stop_price)
+        return round(fill_px + sdist, 4)
+
+    def on_tick(self, *, ts: float, bid: float, ask: float, m1_context: dict[str, Any]) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
         if bid <= 0 or ask <= 0 or ask < bid:
-            return
+            return events
         mid = 0.5 * (bid + ask)
-        spread = ask - bid
+        spread = round(ask - bid, 5)
+        sec = int(ts)
+        srv_hour = (sec // 3600) % 24
+        in_session = (self.cfg.active_server_hours is None) or (srv_hour in self.cfg.active_server_hours)
+
+        # Reset trend/pullback history cleanly after rollover/disconnect gaps (> 90s)
+        if self._last_tick_ts > 0.0 and (ts - self._last_tick_ts) > 90.0:
+            self._ticks_3s.clear()
+            self._sec_hist.clear()
+            self._cur_sec = None
+            self.pending = None
+        self._last_tick_ts = ts
 
         # Update 3s tick history
         self._ticks_3s.append((ts, mid))
@@ -378,7 +474,6 @@ class PullbackDipEngine:
             self._ticks_3s.popleft()
 
         # Update 1s OHLC history up to max(trend_window_sec, extreme_window_sec) + 15s
-        sec = int(ts)
         max_sec_keep = int(max(self.cfg.trend_window_sec, self.cfg.extreme_window_sec)) + 15
         if self._cur_sec is None:
             self._cur_sec = [float(sec), mid, mid, mid]
@@ -394,6 +489,17 @@ class PullbackDipEngine:
                 self._cur_sec[2] = mid
             self._cur_sec[3] = mid
 
+        self.last_metrics = {
+            "ts": ts,
+            "bid": bid,
+            "ask": ask,
+            "spread": spread,
+            "server_hour": srv_hour,
+            "in_session": in_session,
+            "m1_bias": int(m1_context.get("bias", 0)),
+            "m1_label": str(m1_context.get("label", "UNKNOWN")),
+        }
+
         # 1) Execute pending fill after latency
         if self.pending is not None and ts >= self.pending["fill_ts"]:
             po = self.pending
@@ -402,10 +508,11 @@ class PullbackDipEngine:
             fill_px = ask if side == "buy" else bid
             if spread <= self.cfg.max_spread_price:
                 if po["kind"] == "open" and self.basket is None:
-                    stop_px = round(fill_px - self.cfg.stop_price, 4) if side == "buy" else round(fill_px + self.cfg.stop_price, 4)
+                    stop_px = self._compute_initial_stop(side=side, fill_px=fill_px, sec=sec)
                     self.basket = {
                         "wave_id": self.next_wave_id,
                         "side": side,
+                        "regime": "PULLBACK_DIP",
                         "legs": [{"entry": round(fill_px, 4), "volume": self.cfg.leg_lot, "ts": ts}],
                         "total_volume": self.cfg.leg_lot,
                         "avg_entry": round(fill_px, 4),
@@ -417,9 +524,25 @@ class PullbackDipEngine:
                         "m1_label": po["m1_label"],
                     }
                     self.next_wave_id += 1
+                    events.append({
+                        "type": "OPEN_L1",
+                        "wave_id": self.basket["wave_id"],
+                        "side": side,
+                        "regime": "PULLBACK_DIP",
+                        "entry": round(fill_px, 4),
+                        "stop": stop_px,
+                        "trend_move": round(float(po.get("trend_move", 0.0)), 2),
+                        "trend_eff": round(float(po.get("trend_eff", 0.0)), 2),
+                        "pullback_depth": round(float(po.get("pullback_depth", 0.0)), 2),
+                        "bounce_3s": round(float(po.get("bounce_3s", 0.0)), 2),
+                        "m1_label": po["m1_label"],
+                        "spread": spread,
+                    })
                 elif po["kind"] == "add" and self.basket is not None:
                     b = self.basket
                     if len(b["legs"]) < self.cfg.max_legs and self._can_add_risk_free(side, bid, ask, fill_px):
+                        last_ent = float(b["legs"][-1]["entry"])
+                        last_net = (bid - last_ent) if side == "buy" else (last_ent - ask)
                         old_v = b["total_volume"]
                         new_v = round(old_v + self.cfg.leg_lot, 2)
                         new_avg = round((b["avg_entry"] * old_v + fill_px * self.cfg.leg_lot) / new_v, 4)
@@ -434,8 +557,20 @@ class PullbackDipEngine:
                             lock_sl = max(new_avg - 0.08, ask + self.cfg.sl_min_breathing_room)
                             b["stop"] = round(min(b["stop"], lock_sl), 4)
                         b["stop_locked"] = True
+                        events.append({
+                            "type": "FIRE_ADD",
+                            "wave_id": b["wave_id"],
+                            "side": side,
+                            "regime": "PULLBACK_DIP",
+                            "leg_num": len(b["legs"]),
+                            "add_price": round(fill_px, 4),
+                            "total_volume": new_v,
+                            "avg_entry": new_avg,
+                            "stop": b["stop"],
+                            "last_leg_net": round(last_net, 3),
+                        })
 
-        # 2) Manage open basket
+        # 2) Manage open basket (always managed regardless of session hour!)
         if self.basket is not None:
             b = self.basket
             side = b["side"]
@@ -465,12 +600,30 @@ class PullbackDipEngine:
                         b["stop"] = round(t_sl, 4)
                         b["stop_locked"] = True
 
+            # Optional Profit-Lock Floor Ratchet (prevents +$3.80 winners collapsing to +$0.08 BE!)
+            if (
+                self.cfg.profit_lock_arm_price > 0.0
+                and self.cfg.profit_lock_floor_price > 0.0
+                and avg_gain >= self.cfg.profit_lock_arm_price
+            ):
+                if side == "buy":
+                    p_sl = min(b["avg_entry"] + self.cfg.profit_lock_floor_price, bid - self.cfg.sl_min_breathing_room)
+                    if p_sl > b["stop"]:
+                        b["stop"] = round(p_sl, 4)
+                        b["stop_locked"] = True
+                else:
+                    p_sl = max(b["avg_entry"] - self.cfg.profit_lock_floor_price, ask + self.cfg.sl_min_breathing_room)
+                    if p_sl < b["stop"]:
+                        b["stop"] = round(p_sl, 4)
+                        b["stop_locked"] = True
+
             # Hard / Locked SL
             if (side == "buy" and bid <= b["stop"]) or (side == "sell" and ask >= b["stop"]):
                 reason = ("profit_floor_hit" if avg_gain >= 0 else "locked_sl_gap_slip") if b["stop_locked"] else "hard_stop_loss"
-                self._close(ex_px, ts, reason)
+                closed = self._close(ex_px, ts, reason)
+                events.append({"type": "CLOSE_ALL", "wave": closed})
                 self._update_dd(bid, ask)
-                return
+                return events
 
             # Tick-Trail with capped pullback
             if avg_gain >= self.cfg.trail_arm_price or (b["stop_locked"] and max_exc >= self.cfg.trail_arm_price):
@@ -479,15 +632,17 @@ class PullbackDipEngine:
                     self.cfg.trail_max_pullback,
                 )
                 if pb >= allow_pb and avg_gain > 0:
-                    self._close(ex_px, ts, "tick_trail_exit")
+                    closed = self._close(ex_px, ts, "tick_trail_exit")
+                    events.append({"type": "CLOSE_ALL", "wave": closed})
                     self._update_dd(bid, ask)
-                    return
+                    return events
 
             # Max Hold
             if hold_sec >= self.cfg.max_hold_sec:
-                self._close(ex_px, ts, "max_hold_exit")
+                closed = self._close(ex_px, ts, "max_hold_exit")
+                events.append({"type": "CLOSE_ALL", "wave": closed})
                 self._update_dd(bid, ask)
-                return
+                return events
 
             # Risk-Free Pyramid Add
             if (
@@ -503,15 +658,15 @@ class PullbackDipEngine:
                     self.pending = {"kind": "add", "side": side, "fill_ts": ts + self.cfg.latency_sec}
 
             self._update_dd(bid, ask)
-            return
+            return events
 
         # 3) Flat: evaluate causal trend + pullback dip + S1 resumption bounce
-        if self.pending is not None or ts < self.cooldown_until or spread > self.cfg.max_spread_price:
+        if self.pending is not None or ts < self.cooldown_until:
             self._update_dd(bid, ask)
-            return
+            return events
         if len(self._sec_hist) < int(self.cfg.trend_window_sec * 0.5) or len(self._ticks_3s) < 2:
             self._update_dd(bid, ask)
-            return
+            return events
 
         # Find trend move over trend_window_sec
         t_cut = sec - int(self.cfg.trend_window_sec)
@@ -522,18 +677,19 @@ class PullbackDipEngine:
                 break
         if ref_trend is None:
             self._update_dd(bid, ask)
-            return
+            return events
         trend_move = mid - ref_trend
+        self.last_metrics["trend_move"] = round(trend_move, 2)
         if abs(trend_move) < self.cfg.min_trend_move_price:
             self._update_dd(bid, ask)
-            return
+            return events
         tdir = 1 if trend_move > 0 else -1
 
         # Require matching M1 bias (strictly aligned with macro M1 trend)
         m1_bias = int(m1_context.get("bias", 0))
         if m1_bias != tdir:
             self._update_dd(bid, ask)
-            return
+            return events
 
         # Compute recent extreme over extreme_window_sec (excluding last 3s so dip is real)
         ext_cut = sec - int(self.cfg.extreme_window_sec)
@@ -549,12 +705,13 @@ class PullbackDipEngine:
                 ext_n += 1
         if ext_n < 15:
             self._update_dd(bid, ask)
-            return
+            return events
 
         pullback_depth = (ext_hi - mid) if tdir == 1 else (mid - ext_lo)
+        self.last_metrics["pullback_depth"] = round(pullback_depth, 2)
         if not (self.cfg.min_pullback_price <= pullback_depth <= self.cfg.max_pullback_price):
             self._update_dd(bid, ask)
-            return
+            return events
 
         # S1 resumption bounce over resume_window_sec
         cut_3s = ts - self.cfg.resume_window_sec
@@ -564,15 +721,220 @@ class PullbackDipEngine:
                 ref_3s = t_mid
                 break
         bounce_3s = (mid - ref_3s) * tdir
+        self.last_metrics["bounce_3s"] = round(bounce_3s, 2)
         if bounce_3s >= self.cfg.min_resume_price:
-            self.pending = {
-                "kind": "open",
-                "side": "buy" if tdir == 1 else "sell",
-                "fill_ts": ts + self.cfg.latency_sec,
-                "m1_label": str(m1_context.get("label", "UNKNOWN")),
-            }
+            if spread > self.cfg.max_spread_price:
+                self.signals_blocked_spread += 1
+            elif not in_session:
+                self.signals_blocked_session += 1
+            else:
+                trend_eff = self._trend_efficiency_15s(t_cut, ref_trend, mid)
+                self.last_metrics["trend_eff"] = round(trend_eff, 2)
+                if self.cfg.min_trend_efficiency > 0.0 and trend_eff < self.cfg.min_trend_efficiency:
+                    self.signals_blocked_efficiency += 1
+                else:
+                    self.pending = {
+                        "kind": "open",
+                        "side": "buy" if tdir == 1 else "sell",
+                        "fill_ts": ts + self.cfg.latency_sec,
+                        "m1_label": str(m1_context.get("label", "UNKNOWN")),
+                        "trend_move": trend_move,
+                        "trend_eff": trend_eff,
+                        "pullback_depth": pullback_depth,
+                        "bounce_3s": bounce_3s,
+                    }
 
         self._update_dd(bid, ask)
+        return events
+
+    def summary(self, bid: float = 0.0, ask: float = 0.0) -> dict[str, Any]:
+        wins = [w for w in self.waves_closed if w["net_pnl_usd"] > 0]
+        losses = [w for w in self.waves_closed if w["net_pnl_usd"] <= 0]
+        gw = sum(w["net_pnl_usd"] for w in wins)
+        gl = abs(sum(w["net_pnl_usd"] for w in losses))
+        pf = round(gw / gl, 3) if gl > 0 else (99.0 if gw > 0 else None)
+        total_legs = sum(int(w["legs_count"]) for w in self.waves_closed)
+        return {
+            "paper_only": True,
+            "orders_submitted": 0,
+            "initial_capital_usd": self.initial_capital_usd,
+            "realized_pnl_usd": self.realized_pnl_usd,
+            "unrealized_pnl_usd": self.unrealized_pnl_usd(bid, ask),
+            "equity_usd": round(self.initial_capital_usd + self.realized_pnl_usd + self.unrealized_pnl_usd(bid, ask), 4),
+            "max_dd_usd": self.max_dd_usd,
+            "waves_count": len(self.waves_closed),
+            "total_legs_executed": total_legs,
+            "wins": len(wins),
+            "losses": len(losses),
+            "win_rate_pct": round(100.0 * len(wins) / len(self.waves_closed), 1) if self.waves_closed else 0.0,
+            "pf": pf,
+            "avg_win_usd": round(gw / len(wins), 2) if wins else 0.0,
+            "avg_loss_usd": round(-gl / len(losses), 2) if losses else 0.0,
+            "signals_blocked_spread": self.signals_blocked_spread,
+            "signals_blocked_session": self.signals_blocked_session,
+            "signals_blocked_efficiency": self.signals_blocked_efficiency,
+            "open_basket": self.basket,
+            "last_metrics": self.last_metrics,
+        }
+
+
+def pullback_dip_profiles(
+    *,
+    leg_lot: float = 0.01,
+    max_legs: int = 4,
+) -> list[tuple[str, PullbackDipConfig]]:
+    """Canonical Pullback-Dip configs: V1 baseline + non-overfit V2 (pivot SL + R:R + trend eff + London/NY session)."""
+    return [
+        (
+            "PULLBACK_DIP_5M",
+            PullbackDipConfig(
+                leg_lot=leg_lot,
+                max_legs=max_legs,
+                trend_window_sec=300.0,
+                min_trend_move_price=8.0,
+                extreme_window_sec=180.0,
+                min_pullback_price=2.0,
+                max_pullback_price=5.5,
+                min_resume_price=0.80,
+                stop_price=4.50,
+                be_arm_price=2.50,
+            ),
+        ),
+        (
+            "PULLBACK_DIP_10M",
+            PullbackDipConfig(
+                leg_lot=leg_lot,
+                max_legs=max_legs,
+                trend_window_sec=600.0,
+                min_trend_move_price=12.0,
+                extreme_window_sec=300.0,
+                min_pullback_price=2.5,
+                max_pullback_price=7.0,
+                min_resume_price=1.00,
+                stop_price=5.50,
+                be_arm_price=3.00,
+                trail_arm_price=4.00,
+                trail_min_pullback=3.00,
+                trail_max_pullback=6.00,
+            ),
+        ),
+        (
+            "PB_DIP_V2_24H",
+            PullbackDipConfig(
+                leg_lot=leg_lot,
+                max_legs=max_legs,
+                trend_window_sec=300.0,
+                min_trend_move_price=8.0,
+                min_trend_efficiency=0.30,
+                extreme_window_sec=180.0,
+                min_pullback_price=2.0,
+                max_pullback_price=4.8,
+                min_resume_price=0.85,
+                use_pivot_stop=True,
+                pivot_lookback_sec=45.0,
+                pivot_stop_buffer=0.70,
+                min_stop_price=2.00,
+                max_stop_price=3.00,
+                be_arm_price=2.40,
+                profit_lock_arm_price=3.80,
+                profit_lock_floor_price=1.40,
+                sl_min_breathing_room=1.60,
+                add_step_price=2.20,
+                add_interval_sec=5.0,
+                trail_arm_price=4.20,
+                trail_min_pullback=2.20,
+                trail_max_pullback=4.50,
+                trail_giveback_frac=0.28,
+                max_hold_sec=600.0,
+                win_cooldown_sec=15.0,
+                loss_cooldown_sec=60.0,
+                consec_loss_cooldown_sec=180.0,
+                active_server_hours=None,
+            ),
+        ),
+        (
+            "PB_DIP_V2_SESS",
+            PullbackDipConfig(
+                leg_lot=leg_lot,
+                max_legs=max_legs,
+                trend_window_sec=300.0,
+                min_trend_move_price=8.0,
+                min_trend_efficiency=0.30,
+                extreme_window_sec=180.0,
+                min_pullback_price=2.0,
+                max_pullback_price=4.8,
+                min_resume_price=0.85,
+                use_pivot_stop=True,
+                pivot_lookback_sec=45.0,
+                pivot_stop_buffer=0.70,
+                min_stop_price=2.00,
+                max_stop_price=3.00,
+                be_arm_price=2.40,
+                profit_lock_arm_price=3.80,
+                profit_lock_floor_price=1.40,
+                sl_min_breathing_room=1.60,
+                add_step_price=2.20,
+                add_interval_sec=5.0,
+                trail_arm_price=4.20,
+                trail_min_pullback=2.20,
+                trail_max_pullback=4.50,
+                trail_giveback_frac=0.28,
+                max_hold_sec=600.0,
+                win_cooldown_sec=15.0,
+                loss_cooldown_sec=60.0,
+                consec_loss_cooldown_sec=180.0,
+                active_server_hours=ALPARI_LONDON_NY_HOURS,
+            ),
+        ),
+        (
+            "PB_DIP_V2_SAFE",
+            PullbackDipConfig(
+                leg_lot=leg_lot,
+                max_legs=max_legs,
+                trend_window_sec=300.0,
+                min_trend_move_price=9.0,
+                min_trend_efficiency=0.35,
+                extreme_window_sec=180.0,
+                min_pullback_price=2.0,
+                max_pullback_price=4.5,
+                min_resume_price=0.90,
+                use_pivot_stop=True,
+                pivot_lookback_sec=45.0,
+                pivot_stop_buffer=0.65,
+                min_stop_price=1.90,
+                max_stop_price=2.60,
+                be_arm_price=2.20,
+                profit_lock_arm_price=3.50,
+                profit_lock_floor_price=1.30,
+                sl_min_breathing_room=1.50,
+                add_step_price=2.20,
+                add_interval_sec=5.0,
+                trail_arm_price=4.00,
+                trail_min_pullback=2.00,
+                trail_max_pullback=4.20,
+                trail_giveback_frac=0.28,
+                max_hold_sec=600.0,
+                win_cooldown_sec=20.0,
+                loss_cooldown_sec=75.0,
+                consec_loss_cooldown_sec=240.0,
+                active_server_hours=ALPARI_LONDON_NY_HOURS,
+            ),
+        ),
+    ]
+
+
+def build_pullback_dip_profile_config(
+    profile_name: str,
+    *,
+    leg_lot: float = 0.01,
+    max_legs: int = 4,
+) -> PullbackDipConfig:
+    """Resolve a canonical Pullback-Dip profile name to its exact PullbackDipConfig."""
+    by_name = dict(pullback_dip_profiles(leg_lot=leg_lot, max_legs=max_legs))
+    if profile_name not in by_name:
+        valid = ", ".join(by_name.keys())
+        raise ValueError(f"Unknown Pullback-Dip profile '{profile_name}'. Valid profiles: {valid}")
+    return by_name[profile_name]
 
 
 def _summarize_waves(name: str, waves: list[dict[str, Any]], max_dd_usd: float) -> dict[str, Any]:
@@ -595,6 +957,21 @@ def _summarize_waves(name: str, waves: list[dict[str, Any]], max_dd_usd: float) 
         "avg_loss": round(sum(losses) / len(losses), 2) if losses else 0.0,
         "waves": waves,
     }
+
+
+def combine_portfolio_waves(name: str, wave_lists: list[list[dict[str, Any]]]) -> dict[str, Any]:
+    """Chronologically merge closed waves from independent side-by-side engines to compute exact combined stats."""
+    merged = [w for wl in wave_lists for w in wl]
+    merged.sort(key=lambda w: (float(w.get("closed_at", 0.0)), str(w.get("closed_utc", ""))))
+    eq = 0.0
+    pk = 0.0
+    mdd = 0.0
+    for w in merged:
+        eq += float(w["net_pnl_usd"])
+        if eq > pk:
+            pk = eq
+        mdd = max(mdd, pk - eq)
+    return _summarize_waves(name, merged, mdd)
 
 
 def _s1_shock_cfg(
@@ -647,11 +1024,12 @@ def run_structural_benchmark(
     leg_lot: float = 0.01,
     max_legs: int = 6,
 ) -> list[dict[str, Any]]:
-    """Evaluate 8 distinct causal architectures side-by-side on the exact same tick stream."""
+    """Evaluate 12 distinct causal architectures side-by-side on the exact same tick stream."""
     s1_specs: list[tuple[str, S1SurferConfig]] = [
         ("BASE_SAFE_RIP4", build_s1_profile_config("v2.4_SAFE_RIP4", leg_lot=leg_lot, max_legs=max_legs)),
-        ("SHOCK_8_EFF45", _s1_shock_cfg(leg_lot=leg_lot, max_legs=max_legs, min_60s=8.0, min_eff_60s=0.45)),
-        ("SHOCK_10_EFF50", _s1_shock_cfg(leg_lot=leg_lot, max_legs=max_legs, min_60s=10.0, min_eff_60s=0.50)),
+        ("SHOCK_8_EFF45", build_s1_profile_config("v2.5_SHOCK_8", leg_lot=leg_lot, max_legs=max_legs)),
+        ("SHOCK_10_EFF50", build_s1_profile_config("v2.5_SHOCK_10", leg_lot=leg_lot, max_legs=max_legs)),
+        ("SHOCK_10_RUNNER", build_s1_profile_config("v2.5_SHOCK_10_RUNNER", leg_lot=leg_lot, max_legs=max_legs)),
         ("SHOCK_12_EFF50", _s1_shock_cfg(leg_lot=leg_lot, max_legs=max_legs, min_60s=12.0, min_eff_60s=0.50)),
         (
             "BRK15M_RIP6_E40",
@@ -662,41 +1040,7 @@ def run_structural_benchmark(
             _s1_shock_cfg(leg_lot=leg_lot, max_legs=max_legs, min_60s=8.0, min_eff_60s=0.45, req_brk15=True),
         ),
     ]
-    dip_specs: list[tuple[str, PullbackDipConfig]] = [
-        (
-            "PULLBACK_DIP_5M",
-            PullbackDipConfig(
-                leg_lot=leg_lot,
-                max_legs=min(4, max_legs),
-                trend_window_sec=300.0,
-                min_trend_move_price=8.0,
-                extreme_window_sec=180.0,
-                min_pullback_price=2.0,
-                max_pullback_price=5.5,
-                min_resume_price=0.80,
-                stop_price=4.50,
-                be_arm_price=2.50,
-            ),
-        ),
-        (
-            "PULLBACK_DIP_10M",
-            PullbackDipConfig(
-                leg_lot=leg_lot,
-                max_legs=min(4, max_legs),
-                trend_window_sec=600.0,
-                min_trend_move_price=12.0,
-                extreme_window_sec=300.0,
-                min_pullback_price=2.5,
-                max_pullback_price=7.0,
-                min_resume_price=1.00,
-                stop_price=5.50,
-                be_arm_price=3.00,
-                trail_arm_price=4.00,
-                trail_min_pullback=3.00,
-                trail_max_pullback=6.00,
-            ),
-        ),
-    ]
+    dip_specs = pullback_dip_profiles(leg_lot=leg_lot, max_legs=min(4, max_legs))
 
     results: list[dict[str, Any]] = []
     for name, cfg in s1_specs:

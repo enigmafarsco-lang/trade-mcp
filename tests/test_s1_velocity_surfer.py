@@ -730,12 +730,16 @@ def test_shock_gates_and_pullback_dip_audit_end_to_end(
     assert phys["ticks"] == len(dip_ticks)
     assert len(phys["clean_waves"]) >= 1
     rows = run_structural_benchmark(loaded)
-    assert len(rows) == 8
+    assert len(rows) == 12
+    names = {r["strategy"] for r in rows}
+    assert {"SHOCK_10_RUNNER", "PB_DIP_V2_24H", "PB_DIP_V2_SESS", "PB_DIP_V2_SAFE"}.issubset(names)
     rc = audit_cli.main([str(jsonl)])
     assert rc == 0
     out = capsys.readouterr().out
     assert "PART 1: TAPE PHYSICS" in out
     assert "PULLBACK_DIP_5M" in out
+    assert "PB_DIP_V2_SESS" in out
+    assert "COMBO_SHK10_PBV2" in out
 
 
 

@@ -132,9 +132,13 @@ def _build_live_report_payload(
         "config": {
             "leg_lot": cfg.leg_lot,
             "max_legs": cfg.max_legs,
+            "enable_news_c1": cfg.enable_news_c1,
             "vel_mult": cfg.vel_mult,
             "min_burst_price": cfg.min_burst_price,
             "min_60s_move_price": cfg.min_60s_move_price,
+            "min_60s_efficiency": cfg.min_60s_efficiency,
+            "require_15m_breakout": cfg.require_15m_breakout,
+            "min_updates_10s": cfg.min_updates_10s,
             "min_stop_price": cfg.min_stop_price,
             "max_stop_price": cfg.max_stop_price,
             "require_be_on_add": cfg.require_be_on_add,
@@ -156,6 +160,8 @@ def _build_live_report_payload(
             "last_m1_label": m1_ctx.get("label", ""),
             "last_m1_bias": m1_ctx.get("bias", 0),
             "last_move_60s": round(float(eng.last_metrics.get("move_60s", 0.0)), 3),
+            "last_eff_60s": round(float(eng.last_metrics.get("eff_60s", 0.0)), 3),
+            "last_updates_10s": int(eng.last_metrics.get("updates_10s", 0)),
             "reconnect_count": reconnect_count,
             "consecutive_errors": consecutive_errors,
         },
@@ -246,7 +252,8 @@ def _print_status(eng: S1VelocitySurferEngine, m1_ctx: dict[str, Any], bid: floa
         pos_s = "FLAT"
     print(
         f"[{now_str}] [S1 SURFER | ORDERS=0] {bid:.2f}/{ask:.2f} (sp={m.get('spread', 0):.2f}) | "
-        f"S1(streak={m.get('s1_streak', 0):+d} slope={m.get('s1_slope', 0):.1f}x vel={m.get('vel_ratio', 0):.1f}x 60s={m.get('move_60s', 0):+.2f}) | "
+        f"S1(streak={m.get('s1_streak', 0):+d} slope={m.get('s1_slope', 0):.1f}x vel={m.get('vel_ratio', 0):.1f}x "
+        f"60s={m.get('move_60s', 0):+.2f} e60={m.get('eff_60s', 0):.2f}) | "
         f"M1={m1_ctx.get('label')} (S={m1_ctx.get('support')} R={m1_ctx.get('resistance')}) | "
         f"Pos=[{pos_s}] | Waves={s['waves_count']} ({s['total_legs_executed']}L, {s['wins']}W/{s['losses']}L) "
         f"Real=${s['realized_pnl_usd']:+.2f} Unr=${s['unrealized_pnl_usd']:+.2f}",

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline forensic tape audit & 8-architecture structural benchmark on real recorded tick JSONL files (ORDERS=0)."""
+"""Offline forensic tape audit & 12-architecture structural benchmark on real recorded tick JSONL files (ORDERS=0)."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from trade_mcp.s1_impulse_audit import (  # noqa: E402
     analyze_tape_physics,
+    combine_portfolio_waves,
     load_tick_stream,
     run_structural_benchmark,
 )
@@ -118,12 +119,29 @@ def main(argv: list[str] | None = None) -> int:
         rows = run_structural_benchmark(ticks, leg_lot=args.leg_lot, max_legs=args.max_legs)
         per_file.append((p, rows))
 
-    print("\n=== PART 2: CAUSAL 8-ARCHITECTURE BENCHMARK PER FILE (ORDERS=0) ===")
+    print("\n=== PART 2: CAUSAL 12-ARCHITECTURE BENCHMARK PER FILE (ORDERS=0) ===")
     for p, rows in per_file:
-        _print_table(f"\n--- FILE: {p.name} ---", rows)
+        by_name = {r["strategy"]: r for r in rows}
+        file_rows = list(rows)
+        if "SHOCK_10_RUNNER" in by_name and "PB_DIP_V2_SESS" in by_name:
+            file_rows.append(
+                combine_portfolio_waves(
+                    "COMBO_SHK10_PBV2",
+                    [by_name["SHOCK_10_RUNNER"]["waves"], by_name["PB_DIP_V2_SESS"]["waves"]],
+                )
+            )
+        _print_table(f"\n--- FILE: {p.name} ---", file_rows)
 
     if len(per_file) >= 2:
         combined = _combine_rows(per_file)
+        c_by_name = {r["strategy"]: r for r in combined}
+        if "SHOCK_10_RUNNER" in c_by_name and "PB_DIP_V2_SESS" in c_by_name:
+            combined.append(
+                combine_portfolio_waves(
+                    "COMBO_SHK10_PBV2",
+                    [c_by_name["SHOCK_10_RUNNER"]["waves"], c_by_name["PB_DIP_V2_SESS"]["waves"]],
+                )
+            )
         _print_table(f"\n=== COMBINED ALL {len(per_file)} FILES ({total_ticks} TICKS, ORDERS=0) ===", combined)
 
     if args.show_waves:
