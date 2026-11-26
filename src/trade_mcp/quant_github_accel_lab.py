@@ -1248,7 +1248,8 @@ class QuietRangeBounceEngine:
             "avg_entry": b["avg_entry"],
             "exit_price": exit_px,
             "exit_reason": reason,
-            "pnl_usd": pnl,
+            "net_pnl_usd": pnl,
+            "orders_submitted": 0,
         }
         self.waves_closed.append(wave)
         return wave

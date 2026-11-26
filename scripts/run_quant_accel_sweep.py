@@ -191,38 +191,45 @@ def main(argv: list[str] | None = None) -> int:
     best_z = max([c.name for c in zscore_cfgs], key=lambda k: _score(all_stats[k]))
     best_box = max([c.name for c in box_cfgs], key=lambda k: _score(all_stats[k]))
 
-    # Also build de-noised AW_V2 core (only engines profitable over all files) + best V3 additions
+    # Also build de-noised AW_V2 core (dropping CALM_M1_PRO_SESS which had 0.68x R/DD) + best V3 additions
     aw_base_all = merged["AW_V2_CURRENT"]
     aw_base_today = today_res["waves"].get("AW_V2_CURRENT", [])
+    aw_nocalm_all = [w for w in aw_base_all if w.get("engine") != "CALM_M1_PRO_SESS"]
+    aw_nocalm_today = [w for w in aw_base_today if w.get("engine") != "CALM_M1_PRO_SESS"]
 
-    def _combo(keys_extra: list[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        w_all = list(aw_base_all)
-        w_tod = list(aw_base_today)
+    def _combo(keys_extra: list[str], *, drop_calm: bool = False) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        w_all = list(aw_nocalm_all if drop_calm else aw_base_all)
+        w_tod = list(aw_nocalm_today if drop_calm else aw_base_today)
         for k in keys_extra:
             if all_stats[k]["profit"] > 0:
                 w_all.extend(merged[k])
                 w_tod.extend(today_res["waves"].get(k, []))
         return w_all, w_tod
 
-    combo_defs: list[tuple[str, list[str]]] = [
-        ("AW_V2_CURRENT", []),
-        (f"AW_V2+{best_accel}", [best_accel]),
-        (f"AW_V2+{best_z}", [best_z]),
-        (f"AW_V2+{best_accel}+{best_z}", [best_accel, best_z]),
-        (
-            "AW_V3_ALL_WINNERS",
-            list(dict.fromkeys([best_accel, best_accel_night, best_z, best_box])),
-        ),
+    best_all_list = list(dict.fromkeys([best_accel, best_accel_night, best_z, best_box]))
+    combo_defs: list[tuple[str, list[str], bool]] = [
+        ("AW_V2_CURRENT", [], False),
+        (f"AW_V2+{best_accel}", [best_accel], False),
+        (f"AW_V2+{best_z}", [best_z], False),
+        (f"AW_V2+{best_accel}+{best_z}", [best_accel, best_z], False),
+        ("AW_V3_ALL_WINNERS", best_all_list, False),
+        ("AW_V3_REPLACE_CALM", best_all_list, True),
     ]
 
     print("\n=== PART 4: 24-HOUR AW_V3 COMBINED PORTFOLIOS (ALL / NIGHT / TODAY) ===")
     combo_stats: dict[str, Any] = {}
-    for label, extras in combo_defs:
-        w_all, w_tod = _combo(extras)
+    for label, extras, drop_calm in combo_defs:
+        w_all, w_tod = _combo(extras, drop_calm=drop_calm)
         st_all = _stats(w_all, label)
         st_n = _stats(_night_only(w_all), label)
         st_t = _stats(w_tod, label)
-        combo_stats[label] = {"all": st_all, "night": st_n, "today": st_t, "added": [k for k in extras if all_stats[k]["profit"] > 0]}
+        combo_stats[label] = {
+            "all": st_all,
+            "night": st_n,
+            "today": st_t,
+            "drop_calm": drop_calm,
+            "added": [k for k in extras if all_stats[k]["profit"] > 0],
+        }
         print(_fmt(label, st_all, f" | Night:${st_n['profit']:+6.2f} Today:${st_t['profit']:+6.2f}"))
 
     if args.save:

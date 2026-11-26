@@ -185,6 +185,11 @@ def test_quiet_range_bounce_reverts_night_box() -> None:
     eng.force_close_open(ts=ticks[-1][0], bid=ticks[-1][1], ask=ticks[-1][2])
     assert len(eng.waves_closed) >= 1
     assert eng.realized_pnl_usd > 0.0
+    from trade_mcp.s1_impulse_audit import combine_portfolio_waves
+
+    st = combine_portfolio_waves("QR_TEST", [eng.waves_closed])
+    assert st["net_usd"] > 0.0
+    assert eng.waves_closed[0]["orders_submitted"] == 0
 
 
 def test_reverse_engineer_manual_edge_enriches_ticks() -> None:
