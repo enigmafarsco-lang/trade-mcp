@@ -197,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = Config.from_env()
     if cfg.backend != "native":
         raise Blocked(f"requires native backend, got {cfg.backend}")
-    url = loopback_native(cfg.native_url)
+    url = loopback_native(cfg.mcp_url)
 
     with McpHttpClient(url, timeout=max(cfg.timeout, 15.0)) as client:
         client.initialize()

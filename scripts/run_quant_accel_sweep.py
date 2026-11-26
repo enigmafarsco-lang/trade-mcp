@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Parameter & Constraint Sweep for 2nd-Derivative Tick-Acceleration Stacker & GitHub TickRobust Z-Score MR (ORDERS=0).
+"""V3 Parameter & Constraint Sweep: Risk-Free Slope Stacking + TickRobust Z-Score + Night Quiet Box (ORDERS=0).
 
 Evaluates every strategy across:
-  1. NIGHT / ASIAN QUIET HOURS (21:00-08:59 SRV)
-  2. TODAY'S CONTINUOUS FILE (including NY-open spikes & sideways swings)
-  3. ALL RECORDED TICK FILES COMBINED (with Ablation Table: Fixed vs VarLot vs Slope-Stack vs 2nd-Deriv Accel)
-  4. TOP 24-HOUR COMBINED PORTFOLIOS (Core AW_V2 + Best Accel Stacker + Best Night Z-Score MR)
+  0. AW_V2 INTERNAL PER-ENGINE BREAKDOWN (ALL / NIGHT / TODAY)
+  1. ALL RECORDED TICK FILES COMBINED
+  2. NIGHT / ASIAN QUIET HOURS (21:00-08:59 SRV)
+  3. TODAY'S CONTINUOUS SESSION
+  4. TOP 24-HOUR AW_V3 PORTFOLIOS (showing Total Profit, MaxDD, Return/DD, Night Profit, Today Profit)
 
 Strictly read-only / paper-only (ORDERS=0).
 """
@@ -27,6 +28,7 @@ if str(SRC) not in sys.path:
 
 from trade_mcp.all_weather_paper import AllWeatherPaperSuite  # noqa: E402
 from trade_mcp.quant_github_accel_lab import (  # noqa: E402
+    QuietRangeBounceEngine,
     RapidBurstAccelEngine,
     TickRobustZScoreEngine,
     build_quant_sweep_candidates,
@@ -39,6 +41,7 @@ NIGHT_HOURS = {21, 22, 23, 0, 1, 2, 3, 4, 5, 6, 7, 8}
 def _stats(waves: list[dict[str, Any]], name: str = "s") -> dict[str, Any]:
     s = combine_portfolio_waves(name, [waves])
     avg_legs = round(sum(int(w.get("legs_count", 1)) for w in waves) / len(waves), 2) if waves else 0.0
+    ret_dd = round(s["net_usd"] / s["max_dd_usd"], 2) if s["max_dd_usd"] > 0.01 else (99.0 if s["net_usd"] > 0 else 0.0)
     return {
         "trades": s["waves_count"],
         "wins": s["wins"],
@@ -46,6 +49,7 @@ def _stats(waves: list[dict[str, Any]], name: str = "s") -> dict[str, Any]:
         "wr": s["wr_pct"],
         "profit": s["net_usd"],
         "max_dd": s["max_dd_usd"],
+        "ret_dd": ret_dd,
         "pf": float(s["pf"]) if s["pf"] is not None else 0.0,
         "max_lot": s["max_lot"],
         "avg_legs": avg_legs,
@@ -61,12 +65,14 @@ def _night_only(waves: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def _fmt(label: str, st: dict[str, Any]) -> str:
-    return (
-        f"  {label:28s} | Profit: ${st['profit']:+8.2f} | MaxDD: -${st['max_dd']:6.2f} | "
-        f"Trades: {st['trades']:3d} ({st['wins']:2d}W/{st['losses']:2d}L = {st['wr']:5.1f}%) | "
-        f"PF: {st['pf']:5.2f} | Legs:{st['avg_legs']:4.2f} MaxLot:{st['max_lot']:4.2f}"
+def _fmt(label: str, st: dict[str, Any], extra: str = "") -> str:
+    base = (
+        f"  {label:28s} | Profit: ${st['profit']:+8.2f} | MaxDD: -${st['max_dd']:6.2f} "
+        f"(R/DD:{st['ret_dd']:5.2f}x) | Trades: {st['trades']:3d} "
+        f"({st['wins']:2d}W/{st['losses']:2d}L = {st['wr']:5.1f}%) | "
+        f"PF:{st['pf']:5.2f} | Legs:{st['avg_legs']:4.2f} MaxLot:{st['max_lot']:4.2f}"
     )
+    return f"{base}{extra}"
 
 
 def _run_file(path: Path) -> dict[str, Any]:
@@ -74,16 +80,19 @@ def _run_file(path: Path) -> dict[str, Any]:
     if not ticks:
         return {"file": path.name, "ticks": 0, "end_ts": 0.0, "waves": {}}
 
-    accel_cfgs, zscore_cfgs = build_quant_sweep_candidates()
+    accel_cfgs, zscore_cfgs, box_cfgs = build_quant_sweep_candidates()
     aw_v2 = AllWeatherPaperSuite(initial_capital_usd=1000.0, enable_fast_shock6=True)
     accel_engs = {c.name: RapidBurstAccelEngine(cfg=c) for c in accel_cfgs}
     z_engs = {c.name: TickRobustZScoreEngine(cfg=c) for c in zscore_cfgs}
+    box_engs = {c.name: QuietRangeBounceEngine(cfg=c) for c in box_cfgs}
 
     for ts, bid, ask, m1_ctx in ticks:
         aw_v2.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_ctx)
         for eng in accel_engs.values():
             eng.on_tick(ts=ts, bid=bid, ask=ask)
         for eng in z_engs.values():
+            eng.on_tick(ts=ts, bid=bid, ask=ask)
+        for eng in box_engs.values():
             eng.on_tick(ts=ts, bid=bid, ask=ask)
 
     lts, lbid, lask, _ = ticks[-1]
@@ -92,18 +101,22 @@ def _run_file(path: Path) -> dict[str, Any]:
         eng.force_close_open(ts=lts, bid=lbid, ask=lask, reason="eof_replay")
     for eng in z_engs.values():
         eng.force_close_open(ts=lts, bid=lbid, ask=lask, reason="eof_replay")
+    for eng in box_engs.values():
+        eng.force_close_open(ts=lts, bid=lbid, ask=lask, reason="eof_replay")
 
     waves: dict[str, list[dict[str, Any]]] = {"AW_V2_CURRENT": list(aw_v2.trades_closed)}
     for k, eng in accel_engs.items():
         waves[k] = list(eng.waves_closed)
     for k, eng in z_engs.items():
         waves[k] = list(eng.waves_closed)
+    for k, eng in box_engs.items():
+        waves[k] = list(eng.waves_closed)
 
     return {"file": path.name, "ticks": len(ticks), "end_ts": lts, "waves": waves}
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Causal parameter & constraint sweep (ORDERS=0)")
+    parser = argparse.ArgumentParser(description="Causal V3 parameter & constraint sweep (ORDERS=0)")
     parser.add_argument("files", nargs="*", help="Tick JSONL files (default: all logs/s1_ticks_*.jsonl)")
     parser.add_argument("--save", action="store_true", help="Save compact report to reports/paper_live/quant_accel_sweep.json")
     args = parser.parse_args(argv)
@@ -126,14 +139,31 @@ def main(argv: list[str] | None = None) -> int:
     by_end = sorted(per_file, key=lambda r: r["end_ts"], reverse=True)
     today_res = max(by_end[:5], key=lambda r: r["ticks"])
 
-    accel_cfgs, zscore_cfgs = build_quant_sweep_candidates()
-    all_keys = ["AW_V2_CURRENT"] + [c.name for c in accel_cfgs] + [c.name for c in zscore_cfgs]
+    accel_cfgs, zscore_cfgs, box_cfgs = build_quant_sweep_candidates()
+    all_keys = (
+        ["AW_V2_CURRENT"]
+        + [c.name for c in accel_cfgs]
+        + [c.name for c in zscore_cfgs]
+        + [c.name for c in box_cfgs]
+    )
 
     merged: dict[str, list[dict[str, Any]]] = {
         k: [w for r in per_file for w in r["waves"].get(k, [])] for k in all_keys
     }
 
-    print(f"=== PART 1: ALL {len(per_file)} FILES ({total_ticks} TICKS, ORDERS=0) — PARAMETER & CONSTRAINT SWEEP ===")
+    # Part 0: AW_V2 internal per-engine X-ray
+    aw_sub_names = sorted({str(w.get("engine", "UNKNOWN")) for w in merged["AW_V2_CURRENT"]})
+    print("=== PART 0: AW_V2 INTERNAL PER-ENGINE BREAKDOWN (ALL / NIGHT / TODAY) ===")
+    aw_breakdown: dict[str, Any] = {}
+    for sub in aw_sub_names:
+        w_all = [w for w in merged["AW_V2_CURRENT"] if w.get("engine") == sub]
+        w_night = _night_only(w_all)
+        w_today = [w for w in today_res["waves"].get("AW_V2_CURRENT", []) if w.get("engine") == sub]
+        st_all, st_n, st_t = _stats(w_all, sub), _stats(w_night, sub), _stats(w_today, sub)
+        aw_breakdown[sub] = {"all": st_all, "night": st_n, "today": st_t}
+        print(_fmt(sub, st_all, f" | Night:${st_n['profit']:+6.2f} Today:${st_t['profit']:+6.2f}"))
+
+    print(f"\n=== PART 1: ALL {len(per_file)} FILES ({total_ticks} TICKS, ORDERS=0) — V3 PARAMETER & CONSTRAINT SWEEP ===")
     all_stats = {k: _stats(merged[k], k) for k in all_keys}
     for k in all_keys:
         print(_fmt(k, all_stats[k]))
@@ -147,43 +177,69 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\n=== PART 3: TODAY CONTINUOUS SESSION ({today_res['file']}, {today_res['ticks']} ticks) ===")
     today_stats = {k: _stats(today_res["waves"].get(k, []), k) for k in all_keys}
     for k in all_keys:
-        print(_fmt(k, today_stats[k]))
+        if today_stats[k]["trades"] > 0 or k == "AW_V2_CURRENT":
+            print(_fmt(k, today_stats[k]))
 
-    # Pick top standalone Accel Stacker & top standalone Z-Score MR by Net Profit (must be > 0)
-    best_accel = max([c.name for c in accel_cfgs], key=lambda k: all_stats[k]["profit"])
-    best_z_all = max([c.name for c in zscore_cfgs], key=lambda k: all_stats[k]["profit"])
-    best_z_night = max([c.name for c in zscore_cfgs], key=lambda k: night_stats[k]["profit"])
+    # Rank best Risk-Free Accel Stacker (by Return/DD weighted Profit), best Night Burst, best Z-Score, best Box
+    def _score(st: dict[str, Any]) -> tuple[float, float]:
+        if st["profit"] <= 0:
+            return (-1.0, st["profit"])
+        return (st["profit"] * min(st["ret_dd"], 5.0), st["profit"])
 
-    combos: list[tuple[str, list[dict[str, Any]]]] = [
-        ("AW_V2_CURRENT", merged["AW_V2_CURRENT"]),
-        (f"AW_V2 + {best_accel}", merged["AW_V2_CURRENT"] + merged[best_accel]),
-        (f"AW_V2 + {best_z_all}", merged["AW_V2_CURRENT"] + merged[best_z_all]),
-        (f"AW_V2 + {best_z_night}", merged["AW_V2_CURRENT"] + merged[best_z_night]),
+    best_accel = max([c.name for c in accel_cfgs], key=lambda k: _score(all_stats[k]))
+    best_accel_night = max([c.name for c in accel_cfgs], key=lambda k: _score(night_stats[k]))
+    best_z = max([c.name for c in zscore_cfgs], key=lambda k: _score(all_stats[k]))
+    best_box = max([c.name for c in box_cfgs], key=lambda k: _score(all_stats[k]))
+
+    # Also build de-noised AW_V2 core (only engines profitable over all files) + best V3 additions
+    aw_base_all = merged["AW_V2_CURRENT"]
+    aw_base_today = today_res["waves"].get("AW_V2_CURRENT", [])
+
+    def _combo(keys_extra: list[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        w_all = list(aw_base_all)
+        w_tod = list(aw_base_today)
+        for k in keys_extra:
+            if all_stats[k]["profit"] > 0:
+                w_all.extend(merged[k])
+                w_tod.extend(today_res["waves"].get(k, []))
+        return w_all, w_tod
+
+    combo_defs: list[tuple[str, list[str]]] = [
+        ("AW_V2_CURRENT", []),
+        (f"AW_V2+{best_accel}", [best_accel]),
+        (f"AW_V2+{best_z}", [best_z]),
+        (f"AW_V2+{best_accel}+{best_z}", [best_accel, best_z]),
         (
-            "AW_V2 + BEST_ACCEL + BEST_Z",
-            merged["AW_V2_CURRENT"] + merged[best_accel] + merged[best_z_all],
+            "AW_V3_ALL_WINNERS",
+            list(dict.fromkeys([best_accel, best_accel_night, best_z, best_box])),
         ),
     ]
-    print("\n=== PART 4: 24-HOUR COMBINED PORTFOLIOS (ALL TICKS) ===")
+
+    print("\n=== PART 4: 24-HOUR AW_V3 COMBINED PORTFOLIOS (ALL / NIGHT / TODAY) ===")
     combo_stats: dict[str, Any] = {}
-    for label, wlist in combos:
-        st = _stats(wlist, label)
-        combo_stats[label] = st
-        print(_fmt(label, st))
+    for label, extras in combo_defs:
+        w_all, w_tod = _combo(extras)
+        st_all = _stats(w_all, label)
+        st_n = _stats(_night_only(w_all), label)
+        st_t = _stats(w_tod, label)
+        combo_stats[label] = {"all": st_all, "night": st_n, "today": st_t, "added": [k for k in extras if all_stats[k]["profit"] > 0]}
+        print(_fmt(label, st_all, f" | Night:${st_n['profit']:+6.2f} Today:${st_t['profit']:+6.2f}"))
 
     if args.save:
         out_path = ROOT / "reports" / "paper_live" / "quant_accel_sweep.json"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "schema": "quant_accel_sweep_v1",
+            "schema": "quant_accel_sweep_v2",
             "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "orders_submitted": 0,
             "files_count": len(per_file),
             "total_ticks": total_ticks,
             "today_file": today_res["file"],
+            "aw_v2_breakdown": aw_breakdown,
             "best_accel": best_accel,
-            "best_z_all": best_z_all,
-            "best_z_night": best_z_night,
+            "best_accel_night": best_accel_night,
+            "best_z": best_z,
+            "best_box": best_box,
             "all_stats": all_stats,
             "night_stats": night_stats,
             "today_stats": today_stats,

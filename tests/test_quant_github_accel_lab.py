@@ -153,14 +153,38 @@ def test_run_quant_accel_sweep_cli_end_to_end(
     rc = sweep_cli.main(["--save"])
     assert rc == 0
     out = capsys.readouterr().out
+    assert "PART 0:" in out
     assert "PART 1:" in out
     assert "PART 2: NIGHT / QUIET HOURS ONLY" in out
-    assert "PART 4: 24-HOUR COMBINED PORTFOLIOS" in out
+    assert "PART 4: 24-HOUR AW_V3 COMBINED PORTFOLIOS" in out
     saved = json.loads((tmp_path / "reports" / "paper_live" / "quant_accel_sweep.json").read_text(encoding="utf-8"))
-    assert saved["schema"] == "quant_accel_sweep_v1"
+    assert saved["schema"] == "quant_accel_sweep_v2"
     assert saved["orders_submitted"] == 0
-    assert "RB_04_FULL_SLOPE_STACK" in saved["all_stats"]
+    assert "RB_V3_RFSTACK_SESS" in saved["all_stats"]
     assert "GH_Z_M1_Z22_24H" in saved["all_stats"]
+    assert "QR_BOX30_NIGHT" in saved["all_stats"]
+
+
+def test_quiet_range_bounce_reverts_night_box() -> None:
+    from trade_mcp.quant_github_accel_lab import QuietRangeBounceConfig, QuietRangeBounceEngine
+
+    ticks = _make_night_reversion_ticks()
+    eng = QuietRangeBounceEngine(
+        cfg=QuietRangeBounceConfig(
+            name="QR_TEST",
+            adx_max=35.0,
+            min_box_range=3.00,
+            max_box_range=15.00,
+            edge_frac=0.20,
+            min_tp_cost_mult=2.5,
+            active_server_hours=(0, 1, 2, 3, 4, 5),
+        )
+    )
+    for ts, bid, ask in ticks:
+        eng.on_tick(ts=ts, bid=bid, ask=ask)
+    eng.force_close_open(ts=ticks[-1][0], bid=ticks[-1][1], ask=ticks[-1][2])
+    assert len(eng.waves_closed) >= 1
+    assert eng.realized_pnl_usd > 0.0
 
 
 def test_reverse_engineer_manual_edge_enriches_ticks() -> None:

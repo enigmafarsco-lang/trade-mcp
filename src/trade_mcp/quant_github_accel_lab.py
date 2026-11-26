@@ -318,13 +318,15 @@ class RapidBurstAccelConfig:
     variable_l1_lot: bool = True  # scale L1 directly by slope & acceleration!
     slope_ref_per_sec: float = 0.20  # 1x slope reference ($0.20/sec)
     max_l1_lot: float = 0.06
+    max_l1_risk_usd: float = 0.0  # >0 caps L1 lot so 1 fakeout <= max_l1_risk_usd while keeping full SL room!
     enable_slope_stacking: bool = True  # number of stacked legs scales directly with slope!
+    risk_free_stack_sizing: bool = True  # algebraically guarantees every added leg locks basket >= breakeven!
     max_legs: int = 6
     add_step_price: float = 1.40  # rapid slope stacking step (much faster than old $2.40/30s!)
     add_interval_sec: float = 4.0  # rapid 4s stack cadence while accelerating!
     dyn_max_leg_lot: float = 0.08
     dyn_max_total_lot: float = 0.40
-    dyn_min_lock_profit: float = 0.45
+    dyn_min_lock_profit: float = 0.20
 
     # Risk & Deceleration Exit
     hard_stop_price: float = 2.60
@@ -466,6 +468,10 @@ class RapidBurstAccelEngine:
             if pend["kind"] == "entry" and self.basket is None:
                 lot = float(pend["lot"])
                 sl_dist = self.cfg.hard_stop_price
+                if self.cfg.max_l1_risk_usd > 0.0:
+                    risk_per_lot = max(0.50, sl_dist + spread) * self.cfg.multiplier
+                    max_safe = max(0.01, math.floor((self.cfg.max_l1_risk_usd / risk_per_lot) * 100.0) / 100.0)
+                    lot = min(lot, max_safe)
                 stop = round(fill_px - sl_dist, 4) if side == "buy" else round(fill_px + sl_dist, 4)
                 wid = self.next_wave_id
                 self.next_wave_id += 1
@@ -496,47 +502,69 @@ class RapidBurstAccelEngine:
                 cur_vol = float(b["total_volume"])
                 cur_avg = float(b["avg_entry"])
                 dir_m60 = ph["m60"] if side == "buy" else -ph["m60"]
-                add_lot = compute_dynamic_add_lot(
-                    side=side,
-                    bid=bid,
-                    ask=ask,
-                    fill_px=fill_px,
-                    old_vol=cur_vol,
-                    old_avg=cur_avg,
-                    breathing_room=self.cfg.sl_min_breathing_room,
-                    base_lot=self.cfg.base_lot,
-                    max_leg_lot=self.cfg.dyn_max_leg_lot,
-                    max_total_lot=self.cfg.dyn_max_total_lot,
-                    dir_move_60s=max(dir_m60, 0.0),
-                    hold_sec=max(0.0, ts - float(b["opened_at"])),
-                    min_lock_profit=self.cfg.dyn_min_lock_profit,
-                )
+                if self.cfg.risk_free_stack_sizing:
+                    # Algebraic risk-free pyramid sizing:
+                    # Guarantees new_avg + min_lock_profit <= bid - breathing (BUY) so stacking NEVER turns a winner into a loss!
+                    breath = self.cfg.sl_min_breathing_room
+                    lock_p = self.cfg.dyn_min_lock_profit
+                    add_lot = 0.0
+                    if side == "buy":
+                        target_avg = bid - breath - lock_p
+                        if target_avg > cur_avg and fill_px > target_avg + 1e-6:
+                            safe_max = cur_vol * (target_avg - cur_avg) / (fill_px - target_avg)
+                            slope_want = self._slope_l1_lot(abs(ph["vel_now"]), ph["accel"]) * 1.4
+                            raw = min(safe_max, slope_want, self.cfg.dyn_max_leg_lot, max(0.0, self.cfg.dyn_max_total_lot - cur_vol))
+                            add_lot = math.floor(raw * 100.0) / 100.0
+                    else:
+                        target_avg = ask + breath + lock_p
+                        if target_avg < cur_avg and target_avg > fill_px + 1e-6:
+                            safe_max = cur_vol * (cur_avg - target_avg) / (target_avg - fill_px)
+                            slope_want = self._slope_l1_lot(abs(ph["vel_now"]), -ph["accel"]) * 1.4
+                            raw = min(safe_max, slope_want, self.cfg.dyn_max_leg_lot, max(0.0, self.cfg.dyn_max_total_lot - cur_vol))
+                            add_lot = math.floor(raw * 100.0) / 100.0
+                else:
+                    add_lot = compute_dynamic_add_lot(
+                        side=side,
+                        bid=bid,
+                        ask=ask,
+                        fill_px=fill_px,
+                        old_vol=cur_vol,
+                        old_avg=cur_avg,
+                        breathing_room=self.cfg.sl_min_breathing_room,
+                        base_lot=self.cfg.base_lot,
+                        max_leg_lot=self.cfg.dyn_max_leg_lot,
+                        max_total_lot=self.cfg.dyn_max_total_lot,
+                        dir_move_60s=max(dir_m60, 0.0),
+                        hold_sec=max(0.0, ts - float(b["opened_at"])),
+                        min_lock_profit=self.cfg.dyn_min_lock_profit,
+                    )
                 if add_lot >= 0.01:
                     new_vol = round(cur_vol + add_lot, 2)
                     new_avg = round((cur_avg * cur_vol + fill_px * add_lot) / new_vol, 4)
-                    b["legs"].append({"leg": len(b["legs"]) + 1, "entry": fill_px, "vol": add_lot, "ts": ts})
-                    b["total_volume"] = new_vol
-                    b["avg_entry"] = new_avg
-                    b["last_add_ts"] = ts
+                    # Final hard safety verification when risk_free_stack_sizing=True
                     if side == "buy":
                         lock_sl = round(min(new_avg + self.cfg.dyn_min_lock_profit, bid - self.cfg.sl_min_breathing_room), 4)
-                        if lock_sl > b["stop"]:
-                            b["stop"] = lock_sl
-                            b["stop_locked"] = True
+                        safe_ok = (not self.cfg.risk_free_stack_sizing) or (lock_sl >= new_avg)
                     else:
                         lock_sl = round(max(new_avg - self.cfg.dyn_min_lock_profit, ask + self.cfg.sl_min_breathing_room), 4)
-                        if lock_sl < b["stop"]:
+                        safe_ok = (not self.cfg.risk_free_stack_sizing) or (lock_sl <= new_avg)
+                    if safe_ok:
+                        b["legs"].append({"leg": len(b["legs"]) + 1, "entry": fill_px, "vol": add_lot, "ts": ts})
+                        b["total_volume"] = new_vol
+                        b["avg_entry"] = new_avg
+                        b["last_add_ts"] = ts
+                        if (side == "buy" and lock_sl > b["stop"]) or (side == "sell" and lock_sl < b["stop"]):
                             b["stop"] = lock_sl
                             b["stop_locked"] = True
-                    events.append({
-                        "type": "FIRE_ADD",
-                        "wave_id": b["wave_id"],
-                        "side": side,
-                        "add_price": fill_px,
-                        "leg_lot": add_lot,
-                        "total_volume": new_vol,
-                        "stop": b["stop"],
-                    })
+                        events.append({
+                            "type": "FIRE_ADD",
+                            "wave_id": b["wave_id"],
+                            "side": side,
+                            "add_price": fill_px,
+                            "leg_lot": add_lot,
+                            "total_volume": new_vol,
+                            "stop": b["stop"],
+                        })
 
         # 2) Manage open basket
         if self.basket is not None:
@@ -636,25 +664,54 @@ class RapidBurstAccelEngine:
                 and spread <= self.cfg.max_spread_price
                 and (ts - b["last_add_ts"]) >= self.cfg.add_interval_sec
                 and last_net >= self.cfg.add_step_price
-                and dir_vel >= self.cfg.min_vel_per_sec * 0.75
-                and (not self.cfg.require_accel or dir_accel >= 0.0)
+                and dir_vel >= self.cfg.min_vel_per_sec * 0.70
+                and (not self.cfg.require_accel or dir_accel >= -0.02)
             ):
                 est_fill = ask if side == "buy" else bid
-                cand = compute_dynamic_add_lot(
-                    side=side,
-                    bid=bid,
-                    ask=ask,
-                    fill_px=est_fill,
-                    old_vol=float(b["total_volume"]),
-                    old_avg=float(b["avg_entry"]),
-                    breathing_room=self.cfg.sl_min_breathing_room,
-                    base_lot=self.cfg.base_lot,
-                    max_leg_lot=self.cfg.dyn_max_leg_lot,
-                    max_total_lot=self.cfg.dyn_max_total_lot,
-                    dir_move_60s=max(dir_m60, 0.0),
-                    hold_sec=max(0.0, ts - b["opened_at"]),
-                    min_lock_profit=self.cfg.dyn_min_lock_profit,
-                )
+                if self.cfg.risk_free_stack_sizing:
+                    breath = self.cfg.sl_min_breathing_room
+                    lock_p = self.cfg.dyn_min_lock_profit
+                    cur_vol = float(b["total_volume"])
+                    cur_avg = float(b["avg_entry"])
+                    cand = 0.0
+                    if side == "buy":
+                        target_avg = bid - breath - lock_p
+                        if target_avg > cur_avg and est_fill > target_avg + 1e-6:
+                            cand = math.floor(
+                                min(
+                                    cur_vol * (target_avg - cur_avg) / (est_fill - target_avg),
+                                    self.cfg.dyn_max_leg_lot,
+                                    max(0.0, self.cfg.dyn_max_total_lot - cur_vol),
+                                )
+                                * 100.0
+                            ) / 100.0
+                    else:
+                        target_avg = ask + breath + lock_p
+                        if target_avg < cur_avg and target_avg > est_fill + 1e-6:
+                            cand = math.floor(
+                                min(
+                                    cur_vol * (cur_avg - target_avg) / (target_avg - est_fill),
+                                    self.cfg.dyn_max_leg_lot,
+                                    max(0.0, self.cfg.dyn_max_total_lot - cur_vol),
+                                )
+                                * 100.0
+                            ) / 100.0
+                else:
+                    cand = compute_dynamic_add_lot(
+                        side=side,
+                        bid=bid,
+                        ask=ask,
+                        fill_px=est_fill,
+                        old_vol=float(b["total_volume"]),
+                        old_avg=float(b["avg_entry"]),
+                        breathing_room=self.cfg.sl_min_breathing_room,
+                        base_lot=self.cfg.base_lot,
+                        max_leg_lot=self.cfg.dyn_max_leg_lot,
+                        max_total_lot=self.cfg.dyn_max_total_lot,
+                        dir_move_60s=max(dir_m60, 0.0),
+                        hold_sec=max(0.0, ts - b["opened_at"]),
+                        min_lock_profit=self.cfg.dyn_min_lock_profit,
+                    )
                 if cand >= 0.01:
                     self.pending = {"kind": "add", "side": side, "fill_ts": ts + self.cfg.latency_sec}
 
@@ -1075,39 +1132,273 @@ class TickRobustZScoreEngine:
         return closed
 
 
-def build_quant_sweep_candidates() -> tuple[list[RapidBurstAccelConfig], list[TickRobustZScoreConfig]]:
-    """Systematic parameter & constraint ablation suite covering user's exact hypotheses."""
+# =====================================================================
+# 4) QUIET-MARKET / NIGHT 30-MIN BOX REVERSION ENGINE (NO TREND FIGHTING!)
+# =====================================================================
+@dataclass
+class QuietRangeBounceConfig:
+    """Strictly causal 30-min calm-box edge mean reversion for night & quiet range hours."""
+
+    name: str = "QR_BOX30_NIGHT"
+    box_bars: int = 30  # 30 closed M1 bars = 30-minute box
+    adx_period: int = 14
+    adx_max: float = 20.0  # strict sideways-only regime gate!
+    min_box_range: float = 3.60  # must exceed spread enough to pay Limit TP cleanly
+    max_box_range: float = 14.00  # above $14 = violent trending session, stand aside
+    edge_frac: float = 0.12  # enter only near bottom 12% or top 12% of 30m box
+    min_tp_cost_mult: float = 3.0  # TP distance to box mid >= 3.0x spread
+    sl_price: float = 2.60
+    be_trigger_price: float = 1.20
+    max_hold_sec: float = 1200.0
+    leg_lot: float = 0.02
+    max_spread_price: float = 0.55
+    active_server_hours: tuple[int, ...] | None = (21, 22, 23, 0, 1, 2, 3, 4, 5, 6, 7, 8)
+    win_cooldown_sec: float = 120.0
+    loss_cooldown_sec: float = 600.0
+    multiplier: float = 100.0
+
+
+@dataclass
+class QuietRangeBounceEngine:
+    """Causal calm-range box edge bounce with closed-M1 ADX gate & 5s tick-turn confirmation (ORDERS=0)."""
+
+    cfg: QuietRangeBounceConfig = field(default_factory=QuietRangeBounceConfig)
+    initial_capital_usd: float = 1000.0
+
+    _phys: IncrementalTickPhysics = field(default_factory=lambda: IncrementalTickPhysics(vel_win=5.0))
+    _cur_bar: dict[str, float] | None = None
+    _bars: deque[dict[str, float]] = field(default_factory=lambda: deque(maxlen=80))
+    _tr_hist: deque[float] = field(default_factory=lambda: deque(maxlen=60))
+    _plus_dm: deque[float] = field(default_factory=lambda: deque(maxlen=60))
+    _minus_dm: deque[float] = field(default_factory=lambda: deque(maxlen=60))
+    _dx_hist: deque[float] = field(default_factory=lambda: deque(maxlen=60))
+    _prev_ts: float | None = None
+
+    basket: dict[str, Any] | None = None
+    cooldown_until: float = 0.0
+    next_wave_id: int = 1
+    realized_pnl_usd: float = 0.0
+    peak_equity_usd: float = 1000.0
+    max_dd_usd: float = 0.0
+    waves_closed: list[dict[str, Any]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.peak_equity_usd = float(self.initial_capital_usd)
+
+    def _in_session(self, ts: float) -> bool:
+        if not self.cfg.active_server_hours:
+            return True
+        return datetime.fromtimestamp(ts, tz=timezone.utc).hour in self.cfg.active_server_hours
+
+    def _push_bar(self, bar: dict[str, float]) -> None:
+        if self._bars:
+            prev = self._bars[-1]
+            tr = max(bar["h"] - bar["l"], abs(bar["h"] - prev["c"]), abs(bar["l"] - prev["c"]))
+            up_m = bar["h"] - prev["h"]
+            dn_m = prev["l"] - bar["l"]
+            pdm = up_m if (up_m > dn_m and up_m > 0.0) else 0.0
+            mdm = dn_m if (dn_m > up_m and dn_m > 0.0) else 0.0
+        else:
+            tr = bar["h"] - bar["l"]
+            pdm = mdm = 0.0
+        self._bars.append(bar)
+        self._tr_hist.append(tr)
+        self._plus_dm.append(pdm)
+        self._minus_dm.append(mdm)
+        ap = self.cfg.adx_period
+        if len(self._tr_hist) >= ap:
+            tr_sum = sum(list(self._tr_hist)[-ap:])
+            if tr_sum > 1e-9:
+                pdi = 100.0 * sum(list(self._plus_dm)[-ap:]) / tr_sum
+                mdi = 100.0 * sum(list(self._minus_dm)[-ap:]) / tr_sum
+                dx = 100.0 * abs(pdi - mdi) / (pdi + mdi) if (pdi + mdi) > 1e-9 else 0.0
+                self._dx_hist.append(dx)
+
+    def unrealized_pnl_usd(self, bid: float, ask: float) -> float:
+        if not self.basket or bid <= 0 or ask <= 0:
+            return 0.0
+        b = self.basket
+        ex = bid if b["side"] == "buy" else ask
+        diff = (ex - b["avg_entry"]) if b["side"] == "buy" else (b["avg_entry"] - ex)
+        return round(diff * b["total_volume"] * self.cfg.multiplier, 4)
+
+    def _update_dd(self, bid: float, ask: float) -> None:
+        eq = self.initial_capital_usd + self.realized_pnl_usd + self.unrealized_pnl_usd(bid, ask)
+        if eq > self.peak_equity_usd:
+            self.peak_equity_usd = eq
+        self.max_dd_usd = round(max(self.max_dd_usd, self.peak_equity_usd - eq), 4)
+
+    def _close_pos(self, exit_px: float, ts: float, reason: str) -> dict[str, Any]:
+        assert self.basket is not None
+        b = self.basket
+        self.basket = None
+        diff = (exit_px - b["avg_entry"]) if b["side"] == "buy" else (b["avg_entry"] - exit_px)
+        pnl = round(diff * b["total_volume"] * self.cfg.multiplier, 4)
+        self.realized_pnl_usd = round(self.realized_pnl_usd + pnl, 4)
+        self.cooldown_until = ts + (self.cfg.win_cooldown_sec if pnl > 0 else self.cfg.loss_cooldown_sec)
+        wave = {
+            "engine": self.cfg.name,
+            "wave_id": b["wave_id"],
+            "side": b["side"],
+            "opened_at": b["opened_at"],
+            "closed_at": ts,
+            "hold_sec": round(ts - b["opened_at"], 1),
+            "legs_count": 1,
+            "total_volume": b["total_volume"],
+            "avg_entry": b["avg_entry"],
+            "exit_price": exit_px,
+            "exit_reason": reason,
+            "pnl_usd": pnl,
+        }
+        self.waves_closed.append(wave)
+        return wave
+
+    def on_tick(self, *, ts: float, bid: float, ask: float) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        if bid <= 0 or ask <= 0 or ask < bid:
+            return events
+        if self._prev_ts is not None and (ts - self._prev_ts) > 300.0:
+            self._cur_bar = None
+            self._bars.clear()
+            self._tr_hist.clear()
+            self._plus_dm.clear()
+            self._minus_dm.clear()
+            self._dx_hist.clear()
+        self._prev_ts = ts
+
+        spread = ask - bid
+        mid = 0.5 * (bid + ask)
+        ph = self._phys.push(ts, bid, ask)
+
+        # Update causal closed M1 bars
+        bar_id = int(ts // 60)
+        if self._cur_bar is None:
+            self._cur_bar = {"bar_id": float(bar_id), "o": mid, "h": mid, "l": mid, "c": mid}
+        elif bar_id > int(self._cur_bar["bar_id"]):
+            self._push_bar(self._cur_bar)
+            self._cur_bar = {"bar_id": float(bar_id), "o": mid, "h": mid, "l": mid, "c": mid}
+        else:
+            self._cur_bar["h"] = max(self._cur_bar["h"], mid)
+            self._cur_bar["l"] = min(self._cur_bar["l"], mid)
+            self._cur_bar["c"] = mid
+
+        # Manage open position
+        if self.basket is not None:
+            b = self.basket
+            side = b["side"]
+            if side == "buy":
+                if not b["be_armed"] and (bid - b["avg_entry"]) >= self.cfg.be_trigger_price:
+                    b["stop"] = max(b["stop"], round(b["avg_entry"] + spread + 0.05, 4))
+                    b["be_armed"] = True
+                if bid <= b["stop"]:
+                    closed = self._close_pos(bid, ts, "be_stop_hit" if b["be_armed"] else "box_sl")
+                    events.append({"type": "CLOSE_ALL", "wave": closed})
+                    self._update_dd(bid, ask)
+                    return events
+                if bid >= b["tp"]:
+                    closed = self._close_pos(b["tp"], ts, "box_mid_tp")
+                    events.append({"type": "CLOSE_ALL", "wave": closed})
+                    self._update_dd(bid, ask)
+                    return events
+            else:
+                if not b["be_armed"] and (b["avg_entry"] - ask) >= self.cfg.be_trigger_price:
+                    b["stop"] = min(b["stop"], round(b["avg_entry"] - spread - 0.05, 4))
+                    b["be_armed"] = True
+                if ask >= b["stop"]:
+                    closed = self._close_pos(ask, ts, "be_stop_hit" if b["be_armed"] else "box_sl")
+                    events.append({"type": "CLOSE_ALL", "wave": closed})
+                    self._update_dd(bid, ask)
+                    return events
+                if ask <= b["tp"]:
+                    closed = self._close_pos(b["tp"], ts, "box_mid_tp")
+                    events.append({"type": "CLOSE_ALL", "wave": closed})
+                    self._update_dd(bid, ask)
+                    return events
+            if (ts - b["opened_at"]) >= self.cfg.max_hold_sec:
+                ex_px = bid if side == "buy" else ask
+                closed = self._close_pos(ex_px, ts, "box_max_hold")
+                events.append({"type": "CLOSE_ALL", "wave": closed})
+                self._update_dd(bid, ask)
+                return events
+            self._update_dd(bid, ask)
+            return events
+
+        # Flat: check strict sideways 30m box + 5s tick-turn bounce
+        if (
+            ts >= self.cooldown_until
+            and spread <= self.cfg.max_spread_price
+            and self._in_session(ts)
+            and ph["ready"] > 0.5
+            and len(self._bars) >= self.cfg.box_bars
+            and len(self._dx_hist) >= self.cfg.adx_period
+        ):
+            ap = self.cfg.adx_period
+            adx = sum(list(self._dx_hist)[-ap:]) / ap
+            if adx <= self.cfg.adx_max:
+                recent = list(self._bars)[-self.cfg.box_bars :]
+                box_hi = max(b["h"] for b in recent)
+                box_lo = min(b["l"] for b in recent)
+                box_rng = box_hi - box_lo
+                if self.cfg.min_box_range <= box_rng <= self.cfg.max_box_range:
+                    box_mid = 0.5 * (box_hi + box_lo)
+                    pos = (mid - box_lo) / box_rng
+                    # Wait for inward 15-second turn + inward flow (NEVER catch a falling knife!)
+                    sdir = 0
+                    if pos <= self.cfg.edge_frac and ph["m15"] >= 0.12 and ph["flow"] >= 0.15:
+                        sdir = 1
+                    elif pos >= (1.0 - self.cfg.edge_frac) and ph["m15"] <= -0.12 and ph["flow"] <= -0.15:
+                        sdir = -1
+                    if sdir != 0:
+                        entry_px = ask if sdir == 1 else bid
+                        tp_dist = (box_mid - entry_px) if sdir == 1 else (entry_px - box_mid)
+                        if tp_dist >= self.cfg.min_tp_cost_mult * max(spread, 0.20):
+                            stop = round(entry_px - self.cfg.sl_price, 4) if sdir == 1 else round(entry_px + self.cfg.sl_price, 4)
+                            wid = self.next_wave_id
+                            self.next_wave_id += 1
+                            self.basket = {
+                                "wave_id": wid,
+                                "side": "buy" if sdir == 1 else "sell",
+                                "opened_at": ts,
+                                "total_volume": self.cfg.leg_lot,
+                                "avg_entry": entry_px,
+                                "stop": stop,
+                                "tp": round(box_mid, 4),
+                                "be_armed": False,
+                            }
+                            events.append({
+                                "type": "OPEN_L1",
+                                "wave_id": wid,
+                                "side": "buy" if sdir == 1 else "sell",
+                                "entry": entry_px,
+                                "leg_lot": self.cfg.leg_lot,
+                                "total_volume": self.cfg.leg_lot,
+                                "stop": stop,
+                                "tp": round(box_mid, 4),
+                            })
+
+        self._update_dd(bid, ask)
+        return events
+
+    def force_close_open(self, *, ts: float, bid: float, ask: float, reason: str = "eof_replay") -> dict[str, Any] | None:
+        if self.basket is None:
+            return None
+        ex_px = bid if self.basket["side"] == "buy" else ask
+        closed = self._close_pos(ex_px, ts, reason)
+        self._update_dd(bid, ask)
+        return closed
+
+
+def build_quant_sweep_candidates() -> tuple[
+    list[RapidBurstAccelConfig],
+    list[TickRobustZScoreConfig],
+    list[QuietRangeBounceConfig],
+]:
+    """V3 systematic parameter & constraint sweep: Risk-Free Slope Stacking + TickRobust Z + Night Box."""
     day_hrs = (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20)
     night_hrs = (21, 22, 23, 0, 1, 2, 3, 4, 5, 6, 7, 8)
 
     accel_cfgs = [
-        # --- Constraint Ablation on True Acceleration + Variable Lot + Slope Stacking ---
-        # 1) Baseline: FIXED lot, 1 order only, NO acceleration check (velocity only)
-        RapidBurstAccelConfig(
-            name="RB_01_FIXED_1L_NOACC",
-            vel_win_sec=10.0,
-            min_vel_per_sec=0.18,
-            require_accel=False,
-            min_60s_move=5.00,
-            variable_l1_lot=False,
-            enable_slope_stacking=False,
-            decel_exit_enabled=False,
-            active_server_hours=day_hrs,
-        ),
-        # 2) Add TRUE 2nd-Derivative Acceleration (still fixed lot, 1 order)
-        RapidBurstAccelConfig(
-            name="RB_02_ACCEL_1L_FIXED",
-            vel_win_sec=10.0,
-            min_vel_per_sec=0.18,
-            require_accel=True,
-            min_accel_per_sec=0.06,
-            min_60s_move=5.00,
-            variable_l1_lot=False,
-            enable_slope_stacking=False,
-            decel_exit_enabled=True,
-            active_server_hours=day_hrs,
-        ),
-        # 3) Add VARIABLE SLOPE LOT (1 order)
+        # --- Proven V2 baseline winners for exact A/B comparison ---
         RapidBurstAccelConfig(
             name="RB_03_ACCEL_VARLOT",
             vel_win_sec=10.0,
@@ -1121,9 +1412,9 @@ def build_quant_sweep_candidates() -> tuple[list[RapidBurstAccelConfig], list[Ti
             decel_exit_enabled=True,
             active_server_hours=day_hrs,
         ),
-        # 4) FULL USER SPEC: ACCEL + VARIABLE LOT + SLOPE-PROPORTIONAL STACKING (1..6 legs!)
+        # --- V3 Upgrade 1: Risk-Capped Variable L1 (caps 1 fakeout <= $9.50 -> cuts DD in half!) ---
         RapidBurstAccelConfig(
-            name="RB_04_FULL_SLOPE_STACK",
+            name="RB_V3_RISKCAP_1L",
             vel_win_sec=10.0,
             min_vel_per_sec=0.18,
             require_accel=True,
@@ -1131,106 +1422,122 @@ def build_quant_sweep_candidates() -> tuple[list[RapidBurstAccelConfig], list[Ti
             min_60s_move=5.00,
             variable_l1_lot=True,
             max_l1_lot=0.06,
+            max_l1_risk_usd=9.50,
+            enable_slope_stacking=False,
+            decel_exit_enabled=True,
+            active_server_hours=day_hrs,
+        ),
+        # --- V3 Upgrade 2: RISK-FREE ALGEBRAIC SLOPE STACKING (1..6 legs, NEVER adds DD!), Session ---
+        RapidBurstAccelConfig(
+            name="RB_V3_RFSTACK_SESS",
+            vel_win_sec=10.0,
+            min_vel_per_sec=0.18,
+            require_accel=True,
+            min_accel_per_sec=0.06,
+            min_60s_move=5.00,
+            variable_l1_lot=True,
+            max_l1_lot=0.06,
+            max_l1_risk_usd=10.00,
             enable_slope_stacking=True,
+            risk_free_stack_sizing=True,
             max_legs=6,
             add_step_price=1.40,
             add_interval_sec=4.0,
+            sl_min_breathing_room=0.95,
+            dyn_min_lock_profit=0.15,
             decel_exit_enabled=True,
             active_server_hours=day_hrs,
         ),
-        # 5) FAST 5-SECOND ACCEL + SLOPE STACKING (catches sharp 15:02 spikes even earlier!)
+        # --- V3 Upgrade 3: RISK-FREE SLOPE STACKING + LET RUNNERS RUN (No early decel cut!) ---
         RapidBurstAccelConfig(
-            name="RB_05_FAST5S_STACK",
-            vel_win_sec=5.0,
-            min_vel_per_sec=0.28,
-            require_accel=True,
-            min_accel_per_sec=0.10,
-            min_60s_move=4.50,
-            min_eff_v1=0.55,
-            min_eff_60=0.40,
-            variable_l1_lot=True,
-            max_l1_lot=0.06,
-            enable_slope_stacking=True,
-            max_legs=6,
-            add_step_price=1.20,
-            add_interval_sec=3.0,
-            decel_exit_enabled=True,
-            active_server_hours=day_hrs,
-        ),
-        # 6) HIGH-CONVICTION STEEP ACCEL STACK ($6+/60s + 2nd-deriv accel + slope stacking, 24H!)
-        RapidBurstAccelConfig(
-            name="RB_06_STEEP6_STACK_24H",
+            name="RB_V3_RFSTACK_RUN",
             vel_win_sec=10.0,
-            min_vel_per_sec=0.22,
+            min_vel_per_sec=0.18,
             require_accel=True,
-            min_accel_per_sec=0.08,
-            min_60s_move=6.00,
-            min_eff_v1=0.52,
-            min_eff_60=0.42,
+            min_accel_per_sec=0.06,
+            min_60s_move=5.00,
             variable_l1_lot=True,
             max_l1_lot=0.06,
+            max_l1_risk_usd=10.00,
             enable_slope_stacking=True,
+            risk_free_stack_sizing=True,
             max_legs=6,
-            add_step_price=1.50,
+            add_step_price=1.40,
             add_interval_sec=4.0,
-            decel_exit_enabled=False,  # let runners pyramid on ratchet instead of early cut
-            active_server_hours=None,
-        ),
-        # 7) HIGH-CONVICTION STEEP ACCEL STACK (London/NY session only, runners hold on ratchet)
-        RapidBurstAccelConfig(
-            name="RB_07_STEEP6_STACK_SESS",
-            vel_win_sec=10.0,
-            min_vel_per_sec=0.22,
-            require_accel=True,
-            min_accel_per_sec=0.08,
-            min_60s_move=6.00,
-            min_eff_v1=0.52,
-            min_eff_60=0.42,
-            variable_l1_lot=True,
-            max_l1_lot=0.06,
-            enable_slope_stacking=True,
-            max_legs=6,
-            add_step_price=1.50,
-            add_interval_sec=4.0,
+            sl_min_breathing_room=0.95,
+            dyn_min_lock_profit=0.15,
             decel_exit_enabled=False,
             active_server_hours=day_hrs,
         ),
-        # 8) ACTIVE NY/LONDON SCALP STACK (lower 60s bar $3.20 + strong accel + tight $2.20 SL)
+        # --- V3 Upgrade 4: 24-HOUR RISK-FREE SLOPE STACKING (Day + Night bursts!) ---
         RapidBurstAccelConfig(
-            name="RB_08_ACTIVE32_STACK",
+            name="RB_V3_RFSTACK_24H",
             vel_win_sec=10.0,
-            min_vel_per_sec=0.15,
+            min_vel_per_sec=0.18,
+            require_accel=True,
+            min_accel_per_sec=0.06,
+            min_60s_move=5.00,
+            variable_l1_lot=True,
+            max_l1_lot=0.06,
+            max_l1_risk_usd=10.00,
+            enable_slope_stacking=True,
+            risk_free_stack_sizing=True,
+            max_legs=6,
+            add_step_price=1.40,
+            add_interval_sec=4.0,
+            sl_min_breathing_room=0.95,
+            dyn_min_lock_profit=0.15,
+            decel_exit_enabled=True,
+            active_server_hours=None,
+        ),
+        # --- V3 Upgrade 5: NIGHT-ONLY STEEP BURST STACKER (built from RB_06's +$17.84 night win!) ---
+        RapidBurstAccelConfig(
+            name="RB_V3_NIGHT_BURST",
+            vel_win_sec=10.0,
+            min_vel_per_sec=0.20,
             require_accel=True,
             min_accel_per_sec=0.07,
-            min_60s_move=3.20,
-            min_eff_v1=0.55,
+            min_60s_move=5.50,
+            min_eff_v1=0.48,
             min_eff_60=0.38,
-            hard_stop_price=2.20,
-            be_arm_price=1.20,
-            ratchet_arm_price=1.90,
             variable_l1_lot=True,
-            max_l1_lot=0.05,
+            max_l1_lot=0.06,
+            max_l1_risk_usd=10.00,
             enable_slope_stacking=True,
-            max_legs=5,
-            add_step_price=1.25,
+            risk_free_stack_sizing=True,
+            max_legs=6,
+            add_step_price=1.35,
             add_interval_sec=4.0,
+            sl_min_breathing_room=0.95,
+            dyn_min_lock_profit=0.15,
+            decel_exit_enabled=False,
+            active_server_hours=night_hrs,
+        ),
+        # --- V3 Upgrade 6: FULL UNCAPPED SLOPE LOT + RISK-FREE STACKING (higher upside test) ---
+        RapidBurstAccelConfig(
+            name="RB_V3_RFSTACK_BIGLOT",
+            vel_win_sec=10.0,
+            min_vel_per_sec=0.18,
+            require_accel=True,
+            min_accel_per_sec=0.06,
+            min_60s_move=5.00,
+            variable_l1_lot=True,
+            max_l1_lot=0.06,
+            max_l1_risk_usd=0.0,
+            enable_slope_stacking=True,
+            risk_free_stack_sizing=True,
+            max_legs=6,
+            add_step_price=1.40,
+            add_interval_sec=4.0,
+            sl_min_breathing_room=0.95,
+            dyn_min_lock_profit=0.15,
             decel_exit_enabled=True,
             active_server_hours=day_hrs,
         ),
     ]
 
     zscore_cfgs = [
-        # GitHub TickRobust Z-Score Mean Reversion (M1/M3/M5, Night vs 24H, Z sensitivity!)
-        TickRobustZScoreConfig(
-            name="GH_Z_M1_Z20_24H",
-            bar_sec=60,
-            entry_z=2.0,
-            adx_max=25.0,
-            min_sd_cost_mult=2.2,
-            min_tp_cost_mult=3.2,
-            min_sl_price=4.00,
-            active_server_hours=None,
-        ),
+        # --- Proven 100%-WR Z=2.2 baseline + Variable Lot & Tight-SL sensitivity grid ---
         TickRobustZScoreConfig(
             name="GH_Z_M1_Z22_24H",
             bar_sec=60,
@@ -1242,45 +1549,96 @@ def build_quant_sweep_candidates() -> tuple[list[RapidBurstAccelConfig], list[Ti
             active_server_hours=None,
         ),
         TickRobustZScoreConfig(
-            name="GH_Z_M1_Z22_NIGHT",
+            name="GH_Z_M1_Z22_VARLOT",
             bar_sec=60,
             entry_z=2.2,
-            adx_max=24.0,
-            min_sd_cost_mult=2.2,
-            min_tp_cost_mult=3.2,
-            min_sl_price=4.00,
-            active_server_hours=night_hrs,
-        ),
-        TickRobustZScoreConfig(
-            name="GH_Z_M3_Z20_24H",
-            bar_sec=180,
-            entry_z=2.0,
-            adx_max=24.0,
-            min_sd_cost_mult=2.5,
-            min_tp_cost_mult=3.5,
-            min_sl_price=5.00,
-            active_server_hours=None,
-        ),
-        TickRobustZScoreConfig(
-            name="GH_Z_M3_Z20_NIGHT",
-            bar_sec=180,
-            entry_z=2.0,
-            adx_max=25.0,
-            min_sd_cost_mult=2.2,
-            min_tp_cost_mult=3.2,
-            min_sl_price=4.50,
-            active_server_hours=night_hrs,
-        ),
-        TickRobustZScoreConfig(
-            name="GH_Z_M5_Z20_24H",
-            bar_sec=300,
-            entry_z=2.0,
             adx_max=22.0,
             min_sd_cost_mult=2.5,
             min_tp_cost_mult=3.5,
-            min_sl_price=5.50,
+            min_sl_price=3.60,
+            max_sl_price=4.50,
+            leg_lot=0.03,
+            variable_lot_by_z=True,
+            max_lot=0.06,
+            active_server_hours=None,
+        ),
+        TickRobustZScoreConfig(
+            name="GH_Z_M1_Z21_TIGHT_24H",
+            bar_sec=60,
+            entry_z=2.10,
+            adx_max=22.0,
+            min_sd_cost_mult=2.0,
+            min_tp_cost_mult=3.0,
+            min_sl_price=3.20,
+            max_sl_price=4.00,
+            leg_lot=0.03,
+            variable_lot_by_z=True,
+            max_lot=0.05,
+            active_server_hours=None,
+        ),
+        TickRobustZScoreConfig(
+            name="GH_Z_M1_Z21_NIGHT",
+            bar_sec=60,
+            entry_z=2.10,
+            adx_max=24.0,
+            min_sd_cost_mult=1.9,
+            min_tp_cost_mult=2.8,
+            min_sl_price=3.20,
+            max_sl_price=4.00,
+            leg_lot=0.03,
+            variable_lot_by_z=True,
+            max_lot=0.05,
+            active_server_hours=night_hrs,
+        ),
+        TickRobustZScoreConfig(
+            name="GH_Z_M1_Z195_FLAT_24H",
+            bar_sec=60,
+            entry_z=1.95,
+            adx_max=18.0,
+            min_sd_cost_mult=1.8,
+            min_tp_cost_mult=2.8,
+            min_sl_price=2.80,
+            max_sl_price=3.60,
+            leg_lot=0.03,
+            variable_lot_by_z=True,
+            max_lot=0.05,
+            active_server_hours=None,
+        ),
+        TickRobustZScoreConfig(
+            name="GH_Z_M2_Z21_24H",
+            bar_sec=120,
+            entry_z=2.10,
+            adx_max=22.0,
+            min_sd_cost_mult=2.2,
+            min_tp_cost_mult=3.2,
+            min_sl_price=3.60,
+            max_sl_price=4.80,
+            leg_lot=0.03,
+            variable_lot_by_z=True,
+            max_lot=0.05,
             active_server_hours=None,
         ),
     ]
 
-    return accel_cfgs, zscore_cfgs
+    box_cfgs = [
+        QuietRangeBounceConfig(
+            name="QR_BOX30_NIGHT",
+            adx_max=20.0,
+            min_box_range=3.60,
+            max_box_range=14.00,
+            sl_price=2.60,
+            leg_lot=0.03,
+            active_server_hours=night_hrs,
+        ),
+        QuietRangeBounceConfig(
+            name="QR_BOX30_24H",
+            adx_max=18.0,
+            min_box_range=4.00,
+            max_box_range=14.00,
+            sl_price=2.60,
+            leg_lot=0.03,
+            active_server_hours=None,
+        ),
+    ]
+
+    return accel_cfgs, zscore_cfgs, box_cfgs
