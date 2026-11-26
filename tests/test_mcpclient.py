@@ -286,3 +286,18 @@ def test_key_paste_problem_detects_a_pasted_copy_block():
     assert key_paste_problem("abc def")
     assert key_paste_problem("0123456789abcdef") is None
     assert key_paste_problem("") is None
+
+
+def test_reconnect_clears_stale_session_id(stub):
+    """Regression: re-calling connect() after MT5 restarts must NOT send stale Mcp-Session-Id on initialize."""
+    client = McpHttpClient(stub, TOKEN, timeout=5).connect()
+    assert client.session_id == SESSION
+    client.session_id = "stale-dead-session-from-before-mt5-restart"
+    _Stub.calls.clear()
+
+    client.connect()
+    init_calls = [c for c in _Stub.calls if c["method"] == "initialize"]
+    assert len(init_calls) == 1
+    assert init_calls[0]["session"] is None
+    assert client.session_id == SESSION
+

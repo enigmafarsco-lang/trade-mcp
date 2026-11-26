@@ -255,6 +255,9 @@ class McpHttpClient:
 
     # ------------------------------------------------------------- handshake
     def initialize(self) -> dict[str, Any]:
+        # Clear any stale session before re-initializing (e.g. after MT5 terminal restart -> avoids HTTP 404 loop)
+        self.session_id = None
+        self._handshaken = False
         message = self._post(
             {
                 "jsonrpc": "2.0",
