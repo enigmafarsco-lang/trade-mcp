@@ -32,6 +32,7 @@ ENGINE_LABELS: dict[str, str] = {
     "SHOCK10_DYN_RUN": "NEWS_SHOCK",
     "MACRO_WAVE_DYN": "MACRO_WAVE",
     "CALM_M1_PRO_SESS": "CALM_M1_PRO",
+    "CALM_M1_PRO_150": "CALM_M1_150",
 }
 
 
@@ -43,6 +44,7 @@ class AllWeatherPaperSuite:
     news_leg_lot: float = 0.01
     calm_leg_lot: float = 0.02
     max_legs: int = 6
+    calm_profile: str = "CALM_M1_PRO_SESS"
 
     shock_engine: S1VelocitySurferEngine = field(init=False)
     macro_engine: PullbackDipEngine = field(init=False)
@@ -62,7 +64,7 @@ class AllWeatherPaperSuite:
     def __post_init__(self) -> None:
         self.peak_balance_usd = float(self.initial_capital_usd)
         self.peak_equity_usd = float(self.initial_capital_usd)
-        self.engine_order = ["SHOCK10_DYN_RUN", "MACRO_WAVE_DYN", "CALM_M1_PRO_SESS"]
+        self.engine_order = ["SHOCK10_DYN_RUN", "MACRO_WAVE_DYN", self.calm_profile]
         self._init_engines()
 
     def _init_engines(self) -> None:
@@ -75,13 +77,13 @@ class AllWeatherPaperSuite:
             initial_capital_usd=self.initial_capital_usd,
         )
         self.calm_engine = CalmRegimeEngine(
-            cfg=build_calm_regime_profile_config("CALM_M1_PRO_SESS", leg_lot=self.calm_leg_lot, max_legs=max(8, self.max_legs)),
+            cfg=build_calm_regime_profile_config(self.calm_profile, leg_lot=self.calm_leg_lot, max_legs=max(8, self.max_legs)),
             initial_capital_usd=self.initial_capital_usd,
         )
         self.engines = {
             "SHOCK10_DYN_RUN": self.shock_engine,
             "MACRO_WAVE_DYN": self.macro_engine,
-            "CALM_M1_PRO_SESS": self.calm_engine,
+            self.calm_profile: self.calm_engine,
         }
         self.set_multiplier(self._multiplier)
 
@@ -249,6 +251,31 @@ class AllWeatherPaperSuite:
             "seeded_m1_bars": self.seeded_m1_bars,
         }
 
+    def live_status(self, ts: float | None = None) -> dict[str, Any]:
+        """Human-readable market radar status across all 3 engines."""
+        cs = self.calm_engine.live_status(ts)
+        m60 = float(cs.get("move_60s", 0.0))
+        open_labels = [
+            ENGINE_LABELS.get(name, name)
+            for name in self.engine_order
+            if self.engines[name].basket is not None
+        ]
+        if open_labels:
+            headline = f"ACTIVE TRADE ({', '.join(open_labels)})"
+        else:
+            headline = str(cs["reason"])
+        return {
+            "headline": headline,
+            "calm_profile": self.calm_profile,
+            "in_session": bool(cs["in_session"]),
+            "bars_ready": int(cs["bars_ready"]),
+            "atr_m1": float(cs["atr"]),
+            "move_60s": round(m60, 2),
+            "move_15m": float(cs["htf_move"]),
+            "eff_8m": float(cs["eff"]),
+            "ema_dir": str(cs["ema_dir"]),
+        }
+
     def snapshot(
         self,
         *,
@@ -273,7 +300,7 @@ class AllWeatherPaperSuite:
             eng = self.engines[eng_name]
             e_flt = round(float(eng.unrealized_pnl_usd(last_bid, last_ask)), 2) if eng.basket is not None else 0.0
             e_real = round(sum(float(t["net_pnl_usd"]) for t in e_trades), 2)
-            by_engine[ENGINE_LABELS[eng_name]] = {
+            by_engine[ENGINE_LABELS.get(eng_name, eng_name)] = {
                 "strategy": eng_name,
                 "trades": len(e_trades),
                 "wins": len(e_wins),
@@ -293,6 +320,7 @@ class AllWeatherPaperSuite:
             "server_time": server_time_str,
             "elapsed_minutes": round(elapsed_minutes, 2),
             "account": acct,
+            "market_status": self.live_status(),
             "open_positions": self.open_positions(last_bid, last_ask),
             "by_engine": by_engine,
             "recent_trades": self.trades_closed[-50:],

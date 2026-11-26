@@ -743,6 +743,62 @@ class CalmRegimeEngine:
         self._update_dd(bid, ask)
         return events
 
+    def live_status(self, ts: float | None = None) -> dict[str, Any]:
+        """Human-readable causal diagnostic explaining why the calm engine is active or waiting."""
+        t_now = float(ts if ts is not None else self.last_metrics.get("ts", 0.0))
+        sec = int(t_now)
+        bid = float(self.last_metrics.get("bid", 0.0))
+        ask = float(self.last_metrics.get("ask", 0.0))
+        mid = 0.5 * (bid + ask) if bid > 0.0 and ask > 0.0 else 0.0
+        spread = round(ask - bid, 3) if bid > 0.0 and ask > 0.0 else 0.0
+        atr = float(self._atr) if self._atr is not None else 0.0
+        m60 = self._window_move(sec, mid, 60) if mid > 0.0 else 0.0
+        htf = self._htf_bar_move(sec, mid, self.cfg.htf_window_sec) if mid > 0.0 else 0.0
+        eff = self._trend_efficiency(8)
+        srv_hour = datetime.fromtimestamp(t_now, tz=timezone.utc).hour if t_now > 0 else -1
+        in_sess = self.cfg.active_server_hours is None or srv_hour in self.cfg.active_server_hours
+        ef = float(self._ema_fast) if self._ema_fast is not None else 0.0
+        es = float(self._ema_slow) if self._ema_slow is not None else 0.0
+        ema_dir = "BULL" if ef > es else ("BEAR" if ef < es else "FLAT")
+
+        if self.basket is not None:
+            reason = f"OPEN {str(self.basket['side']).upper()} ({len(self.basket['legs'])}L)"
+        elif not in_sess:
+            hrs = self.cfg.active_server_hours or ()
+            reason = f"OFF-SESSION (active {min(hrs):02d}-{max(hrs):02d} SRV)" if hrs else "OFF-SESSION"
+        elif t_now > 0.0 and t_now < self.cooldown_until:
+            rem = max(1, int(self.cooldown_until - t_now))
+            reason = f"COOLDOWN ({rem}s left)"
+        elif len(self._bars) < self.cfg.min_bars:
+            reason = f"WARMING UP ({len(self._bars)}/{self.cfg.min_bars} bars)"
+        elif spread > self.cfg.max_spread_price:
+            reason = f"HIGH SPREAD (${spread:.2f} > ${self.cfg.max_spread_price:.2f})"
+        elif self.cfg.max_60s_shock_block > 0.0 and abs(m60) >= self.cfg.max_60s_shock_block:
+            reason = f"SHOCK MODE (60s {m60:+.2f} -> News engines active)"
+        elif atr < self.cfg.min_atr_price:
+            reason = f"QUIET MARKET (ATR ${atr:.2f} < ${self.cfg.min_atr_price:.2f})"
+        elif atr > self.cfg.max_atr_price:
+            reason = f"EXTREME VOL (ATR ${atr:.2f} > ${self.cfg.max_atr_price:.2f})"
+        elif self.cfg.min_dir_htf_move > 0.0 and abs(htf) < self.cfg.min_dir_htf_move:
+            reason = f"RANGE / CHOP (15m {htf:+.2f}, need +/-${self.cfg.min_dir_htf_move:.2f})"
+        elif abs(ef - es) < self.cfg.min_trend_sep_atr * atr:
+            reason = f"FLAT EMAs (sep ${abs(ef - es):.2f} < ${self.cfg.min_trend_sep_atr * atr:.2f})"
+        elif eff < self.cfg.min_trend_eff:
+            reason = f"CHOPPY PATH (eff {eff:.2f} < {self.cfg.min_trend_eff:.2f})"
+        else:
+            reason = f"HUNTING {ema_dir} PULLBACK (15m {htf:+.2f} | ATR ${atr:.2f})"
+
+        return {
+            "in_session": in_sess,
+            "bars_ready": len(self._bars),
+            "atr": round(atr, 2),
+            "move_60s": round(m60, 2),
+            "htf_move": round(htf, 2),
+            "eff": round(eff, 2),
+            "ema_dir": ema_dir,
+            "reason": reason,
+        }
+
     def summary(self, bid: float = 0.0, ask: float = 0.0) -> dict[str, Any]:
         wins = [w for w in self.waves_closed if w["net_pnl_usd"] > 0]
         losses = [w for w in self.waves_closed if w["net_pnl_usd"] <= 0]
@@ -1104,6 +1160,55 @@ def calm_regime_profiles(
                 pullback_ema_atr_pad=0.30,
                 htf_window_sec=900,
                 min_dir_htf_move=3.00,
+                sl_atr_mult=1.45,
+                min_stop_price=2.80,
+                max_stop_price=4.60,
+                sl_min_breathing_room=1.75,
+                be_arm_atr_mult=1.05,
+                be_arm_min_price=2.80,
+                profit_lock_arm_price=4.80,
+                profit_lock_floor_price=2.20,
+                trail_arm_price=4.50,
+                trail_atr_mult=1.40,
+                trail_min_pullback=2.80,
+                trail_max_pullback=6.50,
+                max_hold_sec=2400.0,
+                enable_adds=True,
+                add_step_atr_mult=0.90,
+                add_step_min_price=2.60,
+                add_interval_sec=30.0,
+                dyn_max_leg_lot=0.08,
+                dyn_max_total_lot=0.30,
+                dyn_min_lock_profit=0.45,
+                dyn_profit_ratchet_arm=3.40,
+                dyn_profit_ratchet_frac=0.55,
+                ratchet_min_legs=1,
+                ratchet_breathing_room=1.65,
+                win_cooldown_sec=60.0,
+                loss_cooldown_sec=180.0,
+                consec_loss_cooldown_sec=480.0,
+                active_server_hours=(9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19),
+            ),
+        ),
+        (
+            "CALM_M1_PRO_150",
+            CalmRegimeConfig(
+                mode="trend_reclaim",
+                bar_sec=60,
+                leg_lot=base_lot,
+                max_legs=max(8, max_legs),
+                fast_ema=9,
+                slow_ema=21,
+                atr_period=14,
+                min_bars=22,
+                max_60s_shock_block=10.0,
+                min_atr_price=1.50,
+                min_trend_sep_atr=0.22,
+                min_trend_eff=0.28,
+                min_body_frac=0.35,
+                pullback_ema_atr_pad=0.30,
+                htf_window_sec=900,
+                min_dir_htf_move=3.50,
                 sl_atr_mult=1.45,
                 min_stop_price=2.80,
                 max_stop_price=4.60,

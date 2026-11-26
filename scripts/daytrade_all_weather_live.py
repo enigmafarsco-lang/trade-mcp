@@ -141,10 +141,12 @@ def _print_mt5_panel(
     bid: float,
     ask: float,
     srv_time: str,
+    now_ts: float | None = None,
     mode_tag: str = "LIVE PAPER",
 ) -> None:
     acct = suite.account_summary(bid, ask)
     opens = suite.open_positions(bid, ask)
+    st = suite.live_status(now_ts)
     pf_s = f"{acct['pf']:.2f}" if acct["pf"] is not None else "-"
     bar = "=" * 74
     print(f"\n{bar}", flush=True)
@@ -160,6 +162,10 @@ def _print_mt5_panel(
     print(
         f"Closed: {acct['wins']}W/{acct['losses']}L ({acct['win_rate_pct']:.1f}%)  |  "
         f"Realized: {_fmt_usd(acct['realized_pnl_usd'])}  |  PF: {pf_s}  |  MaxDD: -${acct['max_dd_usd']:.2f}",
+        flush=True,
+    )
+    print(
+        f"Status:  {st['headline']}  (15m {st['move_15m']:+.2f} | ATR ${st['atr_m1']:.2f} | 60s {st['move_60s']:+.2f})",
         flush=True,
     )
     print("-" * 74, flush=True)
@@ -206,11 +212,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--symbol", default="XAUUSD_i", help="Symbol to watch (default XAUUSD_i)")
     parser.add_argument("--capital", type=float, default=1000.0, help="Starting paper balance USD (default 1000)")
+    parser.add_argument(
+        "--calm-profile",
+        default="CALM_M1_PRO_SESS",
+        choices=("CALM_M1_PRO_SESS", "CALM_M1_PRO_150"),
+        help="Calm-market engine profile (default CALM_M1_PRO_SESS)",
+    )
     parser.add_argument("--poll-seconds", type=float, default=0.30, help="Tick poll interval (default 0.30s)")
     parser.add_argument("--status-seconds", type=float, default=10.0, help="MT5 panel refresh interval (default 10s)")
     parser.add_argument("--minutes", type=float, default=0.0, help="Run duration in minutes (0 = until Ctrl+C)")
     parser.add_argument("--record", action="store_true", help="Record live ticks to logs/s1_ticks_*.jsonl")
-    parser.add_argument("--report-file", default="", help="Optional atomic JSON status path under reports/ or logs/")
+    parser.add_argument("--report-file", default="", help="Atomic JSON status path (live defaults to reports/paper_live/all_weather_live.json)")
     parser.add_argument("--report-seconds", type=float, default=30.0, help="JSON report interval (default 30s)")
     parser.add_argument("--replay", nargs="+", default=[], help="Offline replay on recorded logs/s1_ticks_*.jsonl files")
     parser.add_argument("--rebuild-m1", action="store_true", help="Rebuild causal M1 context during --replay")
@@ -220,12 +232,17 @@ def main(argv: list[str] | None = None) -> int:
     os.environ["TRADE_MCP_ALLOW_TRADING"] = "false"
     os.environ["TRADE_MCP_PAPER_TRADING"] = "true"
 
-    report_path = _ensure_in_reports_or_logs(Path(args.report_file)) if args.report_file else None
+    if args.report_file:
+        report_path = _ensure_in_reports_or_logs(Path(args.report_file))
+    elif not args.mock and not args.replay:
+        report_path = _ensure_in_reports_or_logs(ROOT / "reports" / "paper_live" / "all_weather_live.json")
+    else:
+        report_path = None
     started_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     # 1) Offline synthetic smoke test
     if args.mock:
-        suite = AllWeatherPaperSuite(initial_capital_usd=args.capital)
+        suite = AllWeatherPaperSuite(initial_capital_usd=args.capital, calm_profile=args.calm_profile)
         ticks = make_synthetic_dual_session()
         last_ts, last_bid, last_ask = 0.0, 0.0, 0.0
         for ts, bid, ask, m1_ctx in ticks:
@@ -259,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # 2) Offline replay on recorded JSONL tick files
     if args.replay:
-        suite = AllWeatherPaperSuite(initial_capital_usd=args.capital)
+        suite = AllWeatherPaperSuite(initial_capital_usd=args.capital, calm_profile=args.calm_profile)
         total_ticks = 0
         last_ts, last_bid, last_ask = 0.0, 0.0, 0.0
         for idx, raw_p in enumerate(args.replay):
@@ -328,14 +345,14 @@ def main(argv: list[str] | None = None) -> int:
             spec, quote = feed.connect()
             _, mult = resolve_pricing_basis(spec, "auto")
 
-            suite = AllWeatherPaperSuite(initial_capital_usd=args.capital)
+            suite = AllWeatherPaperSuite(initial_capital_usd=args.capital, calm_profile=args.calm_profile)
             suite.set_multiplier(float(mult))
 
             srv_ts0, srv_dt0 = _server_now(feed)
             clock_offset = srv_ts0 - time.time()
             last_bid, last_ask = float(quote["bid"]), float(quote["ask"])
 
-            # Warm start CALM_M1_PRO_SESS from strictly closed MT5 M1 bars
+            # Warm start calm engine from strictly closed MT5 M1 bars
             m1_bars0 = _fetch_m1_bars(feed, now_label=srv_dt0, limit=200)
             seeded = suite.seed_m1_bars(m1_bars0, server_now_ts=srv_ts0, spread=max(0.0, last_ask - last_bid))
             m1_ctx = analyze_m1_sr_context(m1_bars0, server_now_ts=srv_ts0)
@@ -343,7 +360,7 @@ def main(argv: list[str] | None = None) -> int:
             started_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
             print(
                 f"[START | ALL-WEATHER PAPER MONITOR | ORDERS=0]  {args.symbol} | "
-                f"Start Balance=${args.capital:,.2f} | SRV={srv_dt0.strftime('%H:%M:%S')} | "
+                f"Calm={args.calm_profile} | Start Balance=${args.capital:,.2f} | SRV={srv_dt0.strftime('%H:%M:%S')} | "
                 f"M1 Warmup={seeded} bars READY"
                 + (f" | REC=logs/{tick_path.name}" if tick_path is not None else "")
                 + (f" | REPORT={report_path.relative_to(ROOT)}" if report_path is not None else ""),
@@ -378,7 +395,14 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 _write_atomic_json(report_path, snap_now)
 
-            _print_mt5_panel(suite, symbol=args.symbol, bid=last_bid, ask=last_ask, srv_time=srv_dt0.strftime("%H:%M:%S"))
+            _print_mt5_panel(
+                suite,
+                symbol=args.symbol,
+                bid=last_bid,
+                ask=last_ask,
+                srv_time=srv_dt0.strftime("%H:%M:%S"),
+                now_ts=srv_ts0,
+            )
             _flush_report("running", srv_dt0.strftime("%H:%M:%S"))
             last_status_mono = time.monotonic()
             last_report_mono = last_status_mono
@@ -453,6 +477,7 @@ def main(argv: list[str] | None = None) -> int:
                                 bid=bid_now,
                                 ask=ask_now,
                                 srv_time=_fmt_hhmmss(now_ts),
+                                now_ts=now_ts,
                             )
                             last_status_mono = now_mono
 

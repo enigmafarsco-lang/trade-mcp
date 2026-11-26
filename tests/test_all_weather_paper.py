@@ -133,21 +133,22 @@ def test_all_weather_cli_mock_replay_and_live_smoke(
     monkeypatch.setattr(aw_cli, "_server_now", lambda _feed: (t_srv, datetime(2026, 11, 26, 14, 25, 10)))
     monkeypatch.setattr(aw_cli, "_fetch_m1_bars", lambda _feed, now_label, limit=200: stub_bars)
 
-    rep_live = tmp_path / "reports" / "paper_live" / "aw_live.json"
+    # Omit --report-file to verify live mode auto-writes reports/paper_live/all_weather_live.json
+    default_rep = tmp_path / "reports" / "paper_live" / "all_weather_live.json"
     rc3 = aw_cli.main(
         [
             "--symbol",
             "XAUUSD_i",
             "--capital",
             "1000",
+            "--calm-profile",
+            "CALM_M1_PRO_150",
             "--poll-seconds",
             "0.05",
             "--status-seconds",
             "0.1",
             "--minutes",
             "0.004",
-            "--report-file",
-            str(rep_live),
         ]
     )
     assert rc3 == 0
@@ -155,10 +156,13 @@ def test_all_weather_cli_mock_replay_and_live_smoke(
     assert "M1 Warmup=30 bars READY" in out3
     assert "Balance:" in out3
     assert "PROFIT:" in out3
-    live_data = json.loads(rep_live.read_text(encoding="utf-8"))
+    assert "Status:" in out3
+    live_data = json.loads(default_rep.read_text(encoding="utf-8"))
     assert live_data["status"] == "stopped"
     assert live_data["orders_submitted"] == 0
     assert live_data["account"]["seeded_m1_bars"] == 30
+    assert live_data["market_status"]["calm_profile"] == "CALM_M1_PRO_150"
+    assert "headline" in live_data["market_status"]
     assert live_data["live_state"]["ticks_processed"] >= 1
 
 
