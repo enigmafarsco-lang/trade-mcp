@@ -1475,6 +1475,394 @@ class QuietRangeBounceEngine:
         return closed
 
 
+# =====================================================================
+# 5) GITHUB DONCHIAN STRUCTURAL BREAKOUT + ADX + EMA TREND ENGINE
+#    (Causal port of breakout half of n30dyn4m1c/gold-pro-scalper)
+# =====================================================================
+@dataclass
+class DonchianBreakoutConfig:
+    """Structural Donchian break + EMA trend + ADX expansion + profit-locked trail/pyramid (ORDERS=0)."""
+
+    name: str = "GH_DONCH_M1_30_24H"
+    bar_sec: int = 60  # 60=M1, 180=M3
+    donch_period: int = 30
+    ema_period: int = 50
+    atr_period: int = 14
+    adx_period: int = 14
+    adx_min: float = 25.0  # breakout ONLY in trending/expanding regime (exact complement to ZSCORE_MR ADX<=22!)
+    intrabar_break: bool = True  # fire immediately when price breaks prior closed-bar Donchian channel!
+    break_margin_price: float = 0.25  # must push cleanly beyond channel high/low
+    min_channel_range: float = 3.00  # ignore dead flat micro-channels
+    min_30s_confirm: float = 0.0  # >0 requires 30s tick move aligned with breakout
+    require_accel: bool = False  # True requires positive 2nd-derivative 10s tick acceleration!
+    max_spread_price: float = 0.55
+
+    # Position sizing & optional risk-free pyramiding
+    leg_lot: float = 0.02
+    variable_l1_lot: bool = False
+    max_l1_lot: float = 0.05
+    enable_pyramid: bool = False
+    max_legs: int = 4
+    add_step_price: float = 2.00
+    add_interval_sec: float = 15.0
+    dyn_max_leg_lot: float = 0.06
+    dyn_max_total_lot: float = 0.25
+
+    # Risk & trend-following trail
+    min_sl_price: float = 2.40
+    sl_atr_mult: float = 2.0
+    max_sl_price: float = 4.20
+    be_arm_price: float = 1.60
+    be_lock_profit: float = 0.15
+    ratchet_arm_price: float = 2.60
+    ratchet_frac: float = 0.55
+    ratchet_breathing_room: float = 1.25
+    trail_arm_price: float = 3.80
+    trail_pullback_price: float = 2.20
+    max_hold_sec: float = 1800.0
+
+    active_server_hours: tuple[int, ...] | None = None
+    win_cooldown_sec: float = 90.0
+    loss_cooldown_sec: float = 300.0
+    consec_loss_cooldown_sec: float = 600.0
+    multiplier: float = 100.0
+
+
+@dataclass
+class DonchianBreakoutEngine:
+    """Strictly causal Donchian structural breakdown/breakout engine paired with ZSCORE_MR (ORDERS=0)."""
+
+    cfg: DonchianBreakoutConfig = field(default_factory=DonchianBreakoutConfig)
+    initial_capital_usd: float = 1000.0
+
+    _phys: IncrementalTickPhysics = field(default_factory=lambda: IncrementalTickPhysics(vel_win=10.0))
+    _cur_bar: dict[str, float] | None = None
+    _bars: deque[dict[str, float]] = field(default_factory=lambda: deque(maxlen=150))
+    _tr_hist: deque[float] = field(default_factory=lambda: deque(maxlen=80))
+    _plus_dm: deque[float] = field(default_factory=lambda: deque(maxlen=60))
+    _minus_dm: deque[float] = field(default_factory=lambda: deque(maxlen=60))
+    _dx_hist: deque[float] = field(default_factory=lambda: deque(maxlen=60))
+    _ema: float | None = None
+    _prev_ts: float | None = None
+
+    basket: dict[str, Any] | None = None
+    cooldown_until: float = 0.0
+    consecutive_losses: int = 0
+    next_wave_id: int = 1
+    realized_pnl_usd: float = 0.0
+    peak_equity_usd: float = 1000.0
+    max_dd_usd: float = 0.0
+    waves_closed: list[dict[str, Any]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.peak_equity_usd = float(self.initial_capital_usd)
+
+    def _in_session(self, ts: float) -> bool:
+        if not self.cfg.active_server_hours:
+            return True
+        return datetime.fromtimestamp(ts, tz=timezone.utc).hour in self.cfg.active_server_hours
+
+    def _push_closed_bar(self, bar: dict[str, float]) -> None:
+        if self._bars:
+            prev = self._bars[-1]
+            tr = max(bar["h"] - bar["l"], abs(bar["h"] - prev["c"]), abs(bar["l"] - prev["c"]))
+            up_m = bar["h"] - prev["h"]
+            dn_m = prev["l"] - bar["l"]
+            pdm = up_m if (up_m > dn_m and up_m > 0.0) else 0.0
+            mdm = dn_m if (dn_m > up_m and dn_m > 0.0) else 0.0
+        else:
+            tr = bar["h"] - bar["l"]
+            pdm = mdm = 0.0
+        self._bars.append(bar)
+        self._tr_hist.append(tr)
+        self._plus_dm.append(pdm)
+        self._minus_dm.append(mdm)
+        alpha = 2.0 / (self.cfg.ema_period + 1.0)
+        self._ema = bar["c"] if self._ema is None else (alpha * bar["c"] + (1.0 - alpha) * self._ema)
+
+        ap = self.cfg.adx_period
+        if len(self._tr_hist) >= ap:
+            tr_sum = sum(list(self._tr_hist)[-ap:])
+            if tr_sum > 1e-9:
+                pdi = 100.0 * sum(list(self._plus_dm)[-ap:]) / tr_sum
+                mdi = 100.0 * sum(list(self._minus_dm)[-ap:]) / tr_sum
+                dx = 100.0 * abs(pdi - mdi) / (pdi + mdi) if (pdi + mdi) > 1e-9 else 0.0
+                self._dx_hist.append(dx)
+
+    def unrealized_pnl_usd(self, bid: float, ask: float) -> float:
+        if not self.basket or bid <= 0 or ask <= 0:
+            return 0.0
+        b = self.basket
+        ex = bid if b["side"] == "buy" else ask
+        diff = (ex - b["avg_entry"]) if b["side"] == "buy" else (b["avg_entry"] - ex)
+        return round(diff * b["total_volume"] * self.cfg.multiplier, 4)
+
+    def _update_dd(self, bid: float, ask: float) -> None:
+        eq = self.initial_capital_usd + self.realized_pnl_usd + self.unrealized_pnl_usd(bid, ask)
+        if eq > self.peak_equity_usd:
+            self.peak_equity_usd = eq
+        self.max_dd_usd = round(max(self.max_dd_usd, self.peak_equity_usd - eq), 4)
+
+    def _close_pos(self, exit_px: float, ts: float, reason: str) -> dict[str, Any]:
+        assert self.basket is not None
+        b = self.basket
+        self.basket = None
+        diff = (exit_px - b["avg_entry"]) if b["side"] == "buy" else (b["avg_entry"] - exit_px)
+        pnl = round(diff * b["total_volume"] * self.cfg.multiplier, 4)
+        self.realized_pnl_usd = round(self.realized_pnl_usd + pnl, 4)
+        if pnl > 0:
+            self.consecutive_losses = 0
+            self.cooldown_until = ts + self.cfg.win_cooldown_sec
+        else:
+            self.consecutive_losses += 1
+            cd = self.cfg.consec_loss_cooldown_sec if self.consecutive_losses >= 2 else self.cfg.loss_cooldown_sec
+            self.cooldown_until = ts + cd
+        wave = {
+            "engine": self.cfg.name,
+            "wave_id": b["wave_id"],
+            "side": b["side"],
+            "opened_at": b["opened_at"],
+            "closed_at": ts,
+            "hold_sec": round(ts - b["opened_at"], 1),
+            "legs_count": len(b["legs"]),
+            "total_volume": b["total_volume"],
+            "avg_entry": b["avg_entry"],
+            "exit_price": exit_px,
+            "exit_reason": reason,
+            "net_pnl_usd": pnl,
+            "orders_submitted": 0,
+        }
+        self.waves_closed.append(wave)
+        return wave
+
+    def on_tick(self, *, ts: float, bid: float, ask: float) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        if bid <= 0 or ask <= 0 or ask < bid:
+            return events
+        if self._prev_ts is not None and (ts - self._prev_ts) > 300.0:
+            self._cur_bar = None
+            self._bars.clear()
+            self._tr_hist.clear()
+            self._plus_dm.clear()
+            self._minus_dm.clear()
+            self._dx_hist.clear()
+            self._ema = None
+        self._prev_ts = ts
+
+        spread = ask - bid
+        mid = 0.5 * (bid + ask)
+        ph = self._phys.push(ts, bid, ask)
+
+        # Build causal closed bars
+        bar_id = int(ts // self.cfg.bar_sec)
+        bar_closed = False
+        if self._cur_bar is None:
+            self._cur_bar = {"bar_id": float(bar_id), "o": mid, "h": mid, "l": mid, "c": mid}
+        elif bar_id > int(self._cur_bar["bar_id"]):
+            self._push_closed_bar(self._cur_bar)
+            self._cur_bar = {"bar_id": float(bar_id), "o": mid, "h": mid, "l": mid, "c": mid}
+            bar_closed = True
+        else:
+            self._cur_bar["h"] = max(self._cur_bar["h"], mid)
+            self._cur_bar["l"] = min(self._cur_bar["l"], mid)
+            self._cur_bar["c"] = mid
+
+        # Manage open position
+        if self.basket is not None:
+            b = self.basket
+            side = b["side"]
+            ex_px = bid if side == "buy" else ask
+            if side == "buy":
+                b["best_px"] = max(b["best_px"], bid)
+                avg_gain = bid - b["avg_entry"]
+                pullback = b["best_px"] - bid
+                last_net = bid - b["legs"][-1]["entry"]
+            else:
+                b["best_px"] = min(b["best_px"], ask)
+                avg_gain = b["avg_entry"] - ask
+                pullback = ask - b["best_px"]
+                last_net = b["legs"][-1]["entry"] - ask
+
+            # BE lock
+            if not b["stop_locked"] and avg_gain >= self.cfg.be_arm_price:
+                if side == "buy":
+                    be_sl = round(min(b["avg_entry"] + self.cfg.be_lock_profit, bid - 0.70), 4)
+                    if be_sl > b["stop"]:
+                        b["stop"] = be_sl
+                        b["stop_locked"] = True
+                else:
+                    be_sl = round(max(b["avg_entry"] - self.cfg.be_lock_profit, ask + 0.70), 4)
+                    if be_sl < b["stop"]:
+                        b["stop"] = be_sl
+                        b["stop_locked"] = True
+
+            # Continuous 55% profit ratchet
+            if avg_gain >= self.cfg.ratchet_arm_price:
+                if side == "buy":
+                    r_sl = round(min(b["avg_entry"] + self.cfg.ratchet_frac * avg_gain, bid - self.cfg.ratchet_breathing_room), 4)
+                    if r_sl > b["stop"]:
+                        b["stop"] = r_sl
+                        b["stop_locked"] = True
+                else:
+                    r_sl = round(max(b["avg_entry"] - self.cfg.ratchet_frac * avg_gain, ask + self.cfg.ratchet_breathing_room), 4)
+                    if r_sl < b["stop"]:
+                        b["stop"] = r_sl
+                        b["stop_locked"] = True
+
+            # Stop check
+            if (side == "buy" and bid <= b["stop"]) or (side == "sell" and ask >= b["stop"]):
+                reason = ("profit_floor_hit" if avg_gain >= 0 else "locked_sl_gap_slip") if b["stop_locked"] else "donch_sl"
+                closed = self._close_pos(ex_px, ts, reason)
+                events.append({"type": "CLOSE_ALL", "wave": closed})
+                self._update_dd(bid, ask)
+                return events
+
+            # Pullback trail
+            if avg_gain >= self.cfg.trail_arm_price and pullback >= self.cfg.trail_pullback_price:
+                closed = self._close_pos(ex_px, ts, "donch_trail_exit")
+                events.append({"type": "CLOSE_ALL", "wave": closed})
+                self._update_dd(bid, ask)
+                return events
+
+            # Max hold
+            if (ts - b["opened_at"]) >= self.cfg.max_hold_sec:
+                closed = self._close_pos(ex_px, ts, "donch_max_hold")
+                events.append({"type": "CLOSE_ALL", "wave": closed})
+                self._update_dd(bid, ask)
+                return events
+
+            # Optional risk-free pyramiding on sustained breakout continuation
+            if (
+                self.cfg.enable_pyramid
+                and len(b["legs"]) < self.cfg.max_legs
+                and spread <= self.cfg.max_spread_price
+                and (ts - b["last_add_ts"]) >= self.cfg.add_interval_sec
+                and last_net >= self.cfg.add_step_price
+            ):
+                cur_vol = float(b["total_volume"])
+                cur_avg = float(b["avg_entry"])
+                fill_px = ask if side == "buy" else bid
+                breath = self.cfg.ratchet_breathing_room
+                lock_p = 0.20
+                add_lot = 0.0
+                if side == "buy":
+                    target_avg = bid - breath - lock_p
+                    if target_avg > cur_avg and fill_px > target_avg + 1e-6:
+                        safe_max = cur_vol * (target_avg - cur_avg) / (fill_px - target_avg)
+                        raw = min(safe_max, self.cfg.dyn_max_leg_lot, max(0.0, self.cfg.dyn_max_total_lot - cur_vol))
+                        add_lot = math.floor(raw * 100.0) / 100.0
+                else:
+                    target_avg = ask + breath + lock_p
+                    if target_avg < cur_avg and target_avg > fill_px + 1e-6:
+                        safe_max = cur_vol * (cur_avg - target_avg) / (target_avg - fill_px)
+                        raw = min(safe_max, self.cfg.dyn_max_leg_lot, max(0.0, self.cfg.dyn_max_total_lot - cur_vol))
+                        add_lot = math.floor(raw * 100.0) / 100.0
+                if add_lot >= 0.01:
+                    new_vol = round(cur_vol + add_lot, 2)
+                    new_avg = round((cur_avg * cur_vol + fill_px * add_lot) / new_vol, 4)
+                    lock_sl = round(
+                        (min(new_avg + lock_p, bid - breath) if side == "buy" else max(new_avg - lock_p, ask + breath)),
+                        4,
+                    )
+                    if (side == "buy" and lock_sl >= new_avg) or (side == "sell" and lock_sl <= new_avg):
+                        b["legs"].append({"leg": len(b["legs"]) + 1, "entry": fill_px, "vol": add_lot, "ts": ts})
+                        b["total_volume"] = new_vol
+                        b["avg_entry"] = new_avg
+                        b["last_add_ts"] = ts
+                        if (side == "buy" and lock_sl > b["stop"]) or (side == "sell" and lock_sl < b["stop"]):
+                            b["stop"] = lock_sl
+                            b["stop_locked"] = True
+                        events.append({
+                            "type": "FIRE_ADD",
+                            "wave_id": b["wave_id"],
+                            "side": side,
+                            "add_price": fill_px,
+                            "leg_lot": add_lot,
+                            "total_volume": new_vol,
+                            "stop": b["stop"],
+                        })
+
+            self._update_dd(bid, ask)
+            return events
+
+        # Flat: check structural Donchian breakout (either intra-bar immediate OR on closed bar)
+        need = max(self.cfg.donch_period, self.cfg.atr_period) + 2
+        if (
+            ts >= self.cooldown_until
+            and spread <= self.cfg.max_spread_price
+            and self._in_session(ts)
+            and self._ema is not None
+            and len(self._bars) >= need
+            and len(self._dx_hist) >= self.cfg.adx_period
+            and (self.cfg.intrabar_break or bar_closed)
+        ):
+            ap = self.cfg.adx_period
+            adx = sum(list(self._dx_hist)[-ap:]) / ap
+            if adx >= self.cfg.adx_min:
+                bars_list = list(self._bars)
+                if self.cfg.intrabar_break:
+                    prior = bars_list[-self.cfg.donch_period :]
+                    ref_px = mid
+                else:
+                    prior = bars_list[-(self.cfg.donch_period + 1) : -1]
+                    ref_px = bars_list[-1]["c"]
+                ch_hi = max(b["h"] for b in prior)
+                ch_lo = min(b["l"] for b in prior)
+                ch_rng = ch_hi - ch_lo
+                if ch_rng >= self.cfg.min_channel_range:
+                    sdir = 0
+                    if ref_px >= (ch_hi + self.cfg.break_margin_price) and ref_px > self._ema:
+                        sdir = 1
+                    elif ref_px <= (ch_lo - self.cfg.break_margin_price) and ref_px < self._ema:
+                        sdir = -1
+                    if sdir != 0:
+                        m30_ok = (self.cfg.min_30s_confirm <= 0.0) or ((ph["m15"] * sdir) >= self.cfg.min_30s_confirm)
+                        acc_ok = (not self.cfg.require_accel) or ((ph["accel"] * sdir) > 0.0 and (ph["vel_now"] * sdir) > 0.05)
+                        if m30_ok and acc_ok:
+                            atr = sum(list(self._tr_hist)[-self.cfg.atr_period :]) / self.cfg.atr_period
+                            sl_dist = min(self.cfg.max_sl_price, max(self.cfg.min_sl_price, self.cfg.sl_atr_mult * atr))
+                            entry_px = ask if sdir == 1 else bid
+                            lot = self.cfg.leg_lot
+                            if self.cfg.variable_l1_lot and ph["ready"] > 0.5:
+                                mult = _clip(abs(ph["vel_now"]) / 0.12, 1.0, 2.5)
+                                lot = max(0.01, min(self.cfg.max_l1_lot, round(self.cfg.leg_lot * mult, 2)))
+                            stop = round(entry_px - sl_dist, 4) if sdir == 1 else round(entry_px + sl_dist, 4)
+                            wid = self.next_wave_id
+                            self.next_wave_id += 1
+                            self.basket = {
+                                "wave_id": wid,
+                                "side": "buy" if sdir == 1 else "sell",
+                                "opened_at": ts,
+                                "last_add_ts": ts,
+                                "legs": [{"leg": 1, "entry": entry_px, "vol": lot, "ts": ts}],
+                                "total_volume": lot,
+                                "avg_entry": entry_px,
+                                "best_px": bid if sdir == 1 else ask,
+                                "stop": stop,
+                                "stop_locked": False,
+                            }
+                            events.append({
+                                "type": "OPEN_L1",
+                                "wave_id": wid,
+                                "side": "buy" if sdir == 1 else "sell",
+                                "entry": entry_px,
+                                "leg_lot": lot,
+                                "total_volume": lot,
+                                "stop": stop,
+                            })
+
+        self._update_dd(bid, ask)
+        return events
+
+    def force_close_open(self, *, ts: float, bid: float, ask: float, reason: str = "eof_replay") -> dict[str, Any] | None:
+        if self.basket is None:
+            return None
+        ex_px = bid if self.basket["side"] == "buy" else ask
+        closed = self._close_pos(ex_px, ts, reason)
+        self._update_dd(bid, ask)
+        return closed
+
+
 def build_quant_sweep_candidates() -> tuple[
     list[RapidBurstAccelConfig],
     list[TickRobustZScoreConfig],

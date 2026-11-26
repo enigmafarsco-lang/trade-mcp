@@ -241,6 +241,40 @@ def test_inspect_drop_window_cli(
     assert "CLIFF_10S_28_24H" in out
 
 
+def test_donchian_breakout_and_latest_cli(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    import inspect_latest_and_test_breakout as brk_cli
+
+    monkeypatch.setattr(brk_cli, "ROOT", tmp_path)
+    (tmp_path / "logs").mkdir(parents=True)
+    f1 = tmp_path / "logs" / "s1_ticks_XAUUSD_i_20261126.jsonl"
+    # Build 35 minutes of gentle range followed by a clean downward structural breakdown!
+    t0 = 1795708800.0  # 2026-11-26 16:00:00 UTC
+    ticks: list[tuple[float, float, float]] = []
+    for m in range(35):
+        base = 3580.0 - 0.12 * m + (1.4 if m % 2 == 0 else -1.4)
+        for s in range(0, 60, 4):
+            mid = base + 0.3 * math.sin(s / 10.0)
+            ticks.append((t0 + m * 60 + s, round(mid - 0.18, 2), round(mid + 0.18, 2)))
+    # Sharp structural breakdown -$9 over 3 minutes
+    cur_t = t0 + 35 * 60
+    for s in range(0, 180, 2):
+        mid = 3574.0 - 9.0 * (s / 180.0)
+        ticks.append((cur_t + s, round(mid - 0.18, 2), round(mid + 0.18, 2)))
+    with f1.open("w", encoding="utf-8") as fh:
+        for ts, bid, ask in ticks:
+            fh.write(json.dumps({"ts": ts, "bid": bid, "ask": ask}) + "\n")
+
+    rc = brk_cli.main(["--since-hour", "16"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "PART 1: TRUE LATEST STITCHED TIMELINE" in out
+    assert "GH_DONCH_M1_30_24H" in out
+
+
 def test_reverse_engineer_manual_edge_enriches_ticks() -> None:
     import reverse_engineer_manual_edge as rev
 
