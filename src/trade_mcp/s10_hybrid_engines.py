@@ -2,7 +2,9 @@
 
 Bridges proven multi-year OHLCV concepts (VSA effort/wick morphology, SMC liquidity sweeps,
 causal 15m Swing S/R breakouts, and `day-trader-skill` EMA reclaim) onto sub-second live
-Bid/Ask tick streams with realistic 0.25s fill latency and live spread protection:
+Bid/Ask tick streams with realistic 0.25s fill latency, live spread protection, and
+non-saturating realized micro-path effort (`sum |dMid|` per 10s bar — immune to the 0.30s
+polling quote-count ceiling during active London/NY sessions):
 
   1. SR_SWEEP_VSA_24H / SR_SWEEP_VSA_SESS:
      Range / stop-hunt mean-reversion engine. Detects causal 15-minute Support/Resistance
@@ -139,7 +141,7 @@ class S10HybridEngine:
 
     _s10_bars: deque[dict[str, float]] = field(default_factory=deque)
     _cur_s10: dict[str, float] | None = None
-    _prev_quote: tuple[float, float] | None = None
+    _prev_mid: float | None = None
     _last_ts: float = 0.0
     _ema_fast: float | None = None
     _ema_slow: float | None = None
@@ -168,7 +170,7 @@ class S10HybridEngine:
     def _reset_bars(self) -> None:
         self._s10_bars.clear()
         self._cur_s10 = None
-        self._prev_quote = None
+        self._prev_mid = None
         self._ema_fast = None
         self._ema_slow = None
         self._ema_fast_hist.clear()
@@ -243,9 +245,11 @@ class S10HybridEngine:
             return (bid - self.cfg.sl_min_breathing_room) >= (new_avg + 0.05)
         return (ask + self.cfg.sl_min_breathing_room) <= (new_avg - 0.05)
 
-    def _update_s10_bar(self, ts: float, bid: float, ask: float, mid: float) -> dict[str, float] | None:
-        quote_changed = self._prev_quote is None or bid != self._prev_quote[0] or ask != self._prev_quote[1]
-        self._prev_quote = (bid, ask)
+    def _update_s10_bar(self, ts: float, mid: float) -> dict[str, float] | None:
+        # Realized micro-path effort (sum |dMid| per 10s bar): unlike raw quote-change count,
+        # this does NOT saturate at the 0.30s polling Nyquist ceiling (~33 updates/10s) during London/NY.
+        delta_effort = abs(mid - self._prev_mid) if self._prev_mid is not None else 0.0
+        self._prev_mid = mid
 
         bucket = int(ts // self.cfg.bar_sec)
         completed: dict[str, float] | None = None
@@ -256,7 +260,7 @@ class S10HybridEngine:
                 "h": mid,
                 "l": mid,
                 "c": mid,
-                "vol": 1.0 if quote_changed else 0.0,
+                "vol": delta_effort,
             }
         elif bucket > int(self._cur_s10["bucket"]):
             completed = self._cur_s10
@@ -286,7 +290,7 @@ class S10HybridEngine:
                 "h": mid,
                 "l": mid,
                 "c": mid,
-                "vol": 1.0 if quote_changed else 0.0,
+                "vol": delta_effort,
             }
         else:
             if mid > self._cur_s10["h"]:
@@ -294,8 +298,7 @@ class S10HybridEngine:
             if mid < self._cur_s10["l"]:
                 self._cur_s10["l"] = mid
             self._cur_s10["c"] = mid
-            if quote_changed:
-                self._cur_s10["vol"] += 1.0
+            self._cur_s10["vol"] += delta_effort
         return completed
 
     def _trend_5m_move_and_eff(self, bars: list[dict[str, float]]) -> tuple[float, float]:
@@ -324,7 +327,7 @@ class S10HybridEngine:
 
         last = bars[-1]
         prior_vol = [b["vol"] for b in bars[-(self.cfg.vol_ma_bars + 1) : -1]]
-        vol_ma = max(1.0, sum(prior_vol) / len(prior_vol))
+        vol_ma = max(0.40, sum(prior_vol) / len(prior_vol))
         vol_ratio = last["vol"] / vol_ma
 
         m1_bias = int(m1_context.get("bias", 0))
@@ -532,7 +535,7 @@ class S10HybridEngine:
         spread = round(ask - bid, 5)
         srv_hour = (int(ts) // 3600) % 24
         in_session = (self.cfg.active_server_hours is None) or (srv_hour in self.cfg.active_server_hours)
-        completed_s10 = self._update_s10_bar(ts, bid, ask, mid)
+        completed_s10 = self._update_s10_bar(ts, mid)
 
         self.last_metrics = {
             "ts": ts,

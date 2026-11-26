@@ -450,22 +450,21 @@ def test_s10_sr_sweep_vsa_trades_stop_hunt_respects_session_and_blocks_vertical_
     eng_sess = S10HybridEngine(cfg=build_s10_hybrid_profile_config("SR_SWEEP_VSA_SESS", leg_lot=0.01))
     rng_ctx = {"bias": 0, "label": "RANGE_NEUTRAL", "support": 3498.0, "resistance": 3502.5}
 
-    # 1) Active London/NY hour (14:00 server): build 40 oscillating 10s bars inside [3498.0, 3502.5] (box_span=$4.50)
+    # 1) Active London/NY hour (14:00 server): 40 realistic quiet 10s bars slowly oscillating inside [3498.0, 3502.5]
+    # (~$0.50 effort/bar vs $2.70 effort on the liquidity sweep spike!)
     t0 = float(datetime(2026, 11, 26, 14, 0, 0, tzinfo=timezone.utc).timestamp())
+    box_cycle = [
+        3500.0, 3499.5, 3499.0, 3498.5, 3498.0, 3498.5, 3499.0, 3499.5, 3500.0, 3500.5,
+        3501.0, 3501.5, 3502.0, 3502.5, 3502.0, 3501.5, 3501.0, 3500.5, 3500.0, 3499.5,
+    ]
     for i in range(40):
-        # 5 quote updates per quiet bar, oscillating cleanly between 3498.0 and 3502.5
-        if i % 4 == 0:
-            mids = [3500.0, 3499.0, 3498.0, 3498.8, 3499.5]
-        elif i % 4 == 1:
-            mids = [3499.5, 3500.5, 3501.5, 3502.5, 3501.8]
-        elif i % 4 == 2:
-            mids = [3501.8, 3500.8, 3499.8, 3498.9, 3499.2]
-        else:
-            mids = [3499.2, 3500.1, 3501.0, 3501.9, 3500.2]
+        c0 = box_cycle[i % len(box_cycle)]
+        c1 = box_cycle[(i + 1) % len(box_cycle)]
+        mids = [c0, round(0.5 * (c0 + c1), 2), c1]
         _emit_s10_bar(eng_24h, t0 + i * 10.0, mids, m1_ctx=rng_ctx)
         _emit_s10_bar(eng_sess, t0 + i * 10.0, mids, m1_ctx=rng_ctx)
 
-    # Bar 40: bullish stop-hunt wick below 3498.0 -> pokes to 3497.2 (-$0.80), surges 12 updates, closes at 3498.6!
+    # Bar 40: bullish stop-hunt wick below 3498.0 -> pokes to 3497.2 (-$0.80), surges effort ($2.70 vs ~$0.50 MA), closes 3498.6!
     sweep_mids = [3498.5, 3498.2, 3497.9, 3497.6, 3497.2, 3497.4, 3497.7, 3498.0, 3498.2, 3498.4, 3498.5, 3498.6]
     _emit_s10_bar(eng_24h, t0 + 400.0, sweep_mids, m1_ctx=rng_ctx)
     _emit_s10_bar(eng_sess, t0 + 400.0, sweep_mids, m1_ctx=rng_ctx)
@@ -484,7 +483,9 @@ def test_s10_sr_sweep_vsa_trades_stop_hunt_respects_session_and_blocks_vertical_
     # 2) Jump to 03:00 Asia off-session (gap reset): SR_SWEEP_VSA_SESS must block while SR_SWEEP_VSA_24H trades!
     t_asia = float(datetime(2026, 11, 27, 3, 0, 0, tzinfo=timezone.utc).timestamp())
     for i in range(40):
-        mids = [3500.0, 3498.0, 3499.0, 3502.5, 3500.2]
+        c0 = box_cycle[i % len(box_cycle)]
+        c1 = box_cycle[(i + 1) % len(box_cycle)]
+        mids = [c0, round(0.5 * (c0 + c1), 2), c1]
         _emit_s10_bar(eng_24h, t_asia + i * 10.0, mids, m1_ctx=rng_ctx)
         _emit_s10_bar(eng_sess, t_asia + i * 10.0, mids, m1_ctx=rng_ctx)
     _emit_s10_bar(eng_24h, t_asia + 400.0, sweep_mids, m1_ctx=rng_ctx)
@@ -521,17 +522,20 @@ def test_s10_sr_break_vsa_captures_two_candle_breakout_and_resets_on_gap() -> No
     bull_ctx = {"bias": 1, "label": "BULL_TREND", "support": 3498.0, "resistance": 3502.0}
     t0 = float(datetime(2026, 11, 26, 14, 0, 0, tzinfo=timezone.utc).timestamp())
 
-    # 38 calm consolidation bars strictly inside [3498.5, 3502.0] with 4 updates/bar
+    # 38 calm consolidation bars strictly inside [3498.5, 3502.0] (~$0.50 effort/bar)
+    box_seq = [
+        3500.0, 3499.5, 3499.0, 3498.5, 3499.0, 3499.5, 3500.0, 3500.5,
+        3501.0, 3501.5, 3502.0, 3501.5, 3501.0, 3500.5,
+    ]
     for i in range(38):
-        if i % 2 == 0:
-            mids = [3500.0, 3499.0, 3498.5, 3500.5]
-        else:
-            mids = [3500.5, 3501.4, 3502.0, 3501.2]
+        c0 = box_seq[i % len(box_seq)]
+        c1 = box_seq[(i + 1) % len(box_seq)]
+        mids = [c0, round(0.5 * (c0 + c1), 2), c1]
         _emit_s10_bar(eng, t0 + i * 10.0, mids, m1_ctx=bull_ctx)
 
     # Bar 38 (B1) + Bar 39 (B2): 2 clean accelerating bullish VSA candles clearing 3502.0 Resistance
     b1 = [3501.2, 3501.4, 3501.6, 3501.8, 3502.0, 3502.15]  # body +0.95, clean
-    b2 = [3502.15, 3502.3, 3502.5, 3502.7, 3502.9, 3503.1, 3503.3, 3503.5]  # body +1.35, vol=8 (2x baseline!)
+    b2 = [3502.15, 3502.3, 3502.5, 3502.7, 3502.9, 3503.1, 3503.3, 3503.5]  # body +1.35, effort ~$1.35 (~2.7x MA!)
     _emit_s10_bar(eng, t0 + 380.0, b1, m1_ctx=bull_ctx)
     _emit_s10_bar(eng, t0 + 390.0, b2, m1_ctx=bull_ctx)
 
