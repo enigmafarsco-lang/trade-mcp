@@ -74,7 +74,7 @@ def load_tick_stream(
                     if len(synth_bars) >= 25:
                         cached_m1 = analyze_m1_sr_context(synth_bars, server_now_ts=ts)
                     else:
-                        cached_m1 = _mini_m1_context(synth_bars, cur_min)
+                        cached_m1 = _mini_m1_context(synth_bars)
                 m1_ctx = cached_m1
 
             rows.append((ts, bid, ask, m1_ctx))

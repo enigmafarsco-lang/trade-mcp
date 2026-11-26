@@ -724,6 +724,8 @@ def test_shock_gates_and_pullback_dip_audit_end_to_end(
             fh.write(json.dumps({"ts": ts, "bid": b, "ask": a, "m1": ctx}) + "\n")
 
     loaded = load_tick_stream(jsonl)
+    loaded_rebuilt = load_tick_stream(jsonl, rebuild_m1=True)
+    assert len(loaded_rebuilt) == len(dip_ticks)
     phys = analyze_tape_physics(loaded)
     assert phys["ticks"] == len(dip_ticks)
     assert len(phys["clean_waves"]) >= 1
