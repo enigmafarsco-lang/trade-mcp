@@ -218,6 +218,29 @@ def test_run_champions_24h_evolution_cli(
     assert "AW_V3_24H_PRO_VARLOT" in saved["portfolios"]
 
 
+def test_inspect_drop_window_cli(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    import inspect_drop_window as drop_cli
+
+    monkeypatch.setattr(drop_cli, "ROOT", tmp_path)
+    (tmp_path / "logs").mkdir(parents=True)
+    f1 = tmp_path / "logs" / "s1_ticks_XAUUSD_i_20261126.jsonl"
+    ticks = _make_accel_wave_ticks()
+    with f1.open("w", encoding="utf-8") as fh:
+        for ts, bid, ask in ticks:
+            fh.write(json.dumps({"ts": ts, "bid": bid, "ask": ask}) + "\n")
+
+    rc = drop_cli.main(["--since-hour", "14"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "PART 1: FORENSIC DROP MICROSCOPE" in out
+    assert "PART 2: 5s/15s VERTICAL-CLIFF A/B" in out
+    assert "CLIFF_10S_28_24H" in out
+
+
 def test_reverse_engineer_manual_edge_enriches_ticks() -> None:
     import reverse_engineer_manual_edge as rev
 
