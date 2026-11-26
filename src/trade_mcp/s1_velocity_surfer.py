@@ -148,6 +148,7 @@ class S1SurferConfig:
     base_vel_floor: float = 0.18  # minimum baseline $/3s
     base_s1_body_floor: float = 0.08  # minimum baseline 1-second candle body $
     vel_mult: float = 2.5  # normal-session C3 trigger: live 3s speed >= 2.5x baseline
+    enable_news_c1: bool = True  # allow NEWS_STEEP_C1 single-candle probe (set False to restrict to NORMAL_C3)
     news_c1_mult: float = 5.0  # news steep C1 probe: |body(C1)| >= 5x baseline S1 body
     news_c1_min_body: float = 0.55  # minimum $ body for steep news C1 probe
     news_c1_min_vel_ratio: float = 2.0  # prevent 1s whipsaw bounce (e.g. vel=0.6x) from faking news C1
@@ -158,6 +159,9 @@ class S1SurferConfig:
     sr_wall_buffer_price: float = 0.80  # block entering right INTO closed M1 Resistance/Support wall before clean break
     sr_break_clear_price: float = 0.30  # clean clearance beyond M1 S/R counts as breakout, not wall
     min_60s_move_price: float = 0.0  # optional ripping-tape gate: require >= $X directional move over last 60s (0=off)
+    min_60s_efficiency: float = 0.0  # optional straight-line 60s efficiency gate |move_60s|/path_60s (0=off)
+    require_15m_breakout: bool = False  # optional causal 15-minute range breakout gate
+    min_updates_10s: int = 0  # optional live quote activity surge gate (price-changing ticks in last 10s, 0=off)
     extreme_slope_mult: float = 9.0  # extreme vertical blow-off -> stop adding at C5+ & tighten exit
     extreme_3s_move: float = 3.50  # or >= $3.50 move in 3s counts as extreme blow-off
     min_burst_price: float = 0.90  # minimum 3s move for normal C3 entry (spread-aware)
@@ -207,6 +211,9 @@ class S1VelocitySurferEngine:
     ticks: deque[tuple[float, float, float, float]] = field(default_factory=deque)  # (ts, bid, ask, mid)
     s1_bars: deque[dict[str, Any]] = field(default_factory=deque)  # completed 1-second OHLC bars
     cur_s1: dict[str, Any] | None = None
+    _range_15s: deque[list[float]] = field(default_factory=deque)  # [bucket_id, hi, lo] for causal 15m box
+    _price_change_ts: deque[float] = field(default_factory=deque)  # timestamps of price-changing quotes (10s window)
+    _prev_quote: tuple[float, float] | None = None
 
     # Live position / order state
     pending_order: dict[str, Any] | None = None
@@ -235,6 +242,26 @@ class S1VelocitySurferEngine:
         keep_sec = max(self.cfg.burst_window_sec + 4.0, 12.0)
         while self.ticks and (ts - self.ticks[0][0]) > keep_sec:
             self.ticks.popleft()
+
+        # Causal 10s live quote-update surge counter
+        if self._prev_quote is None or bid != self._prev_quote[0] or ask != self._prev_quote[1]:
+            self._price_change_ts.append(ts)
+            self._prev_quote = (bid, ask)
+        while self._price_change_ts and (ts - self._price_change_ts[0]) > 10.0:
+            self._price_change_ts.popleft()
+
+        # Causal 15-minute range buckets (15s resolution -> max 64 buckets = 16 min)
+        b_id = int(ts // 15.0)
+        if not self._range_15s or self._range_15s[-1][0] < b_id:
+            self._range_15s.append([float(b_id), mid, mid])
+            while len(self._range_15s) > 64:
+                self._range_15s.popleft()
+        else:
+            cur_b = self._range_15s[-1]
+            if mid > cur_b[1]:
+                cur_b[1] = mid
+            if mid < cur_b[2]:
+                cur_b[2] = mid
 
         sec_ep = int(ts)
         completed_bar: dict[str, Any] | None = None
@@ -301,22 +328,44 @@ class S1VelocitySurferEngine:
         base_body = max(float(statistics.median(body_samples)), self.cfg.base_s1_body_floor)
         return base_vel, base_body, len(vel_samples)
 
-    def _tape_move_60s(self, ts: float, mid: float) -> tuple[float, bool]:
-        """Return signed 60-second tape displacement ($/min) strictly from past completed S1 bars."""
+    def _tape_move_and_eff_60s(self, ts: float, mid: float) -> tuple[float, float, bool]:
+        """Return (signed 60s move $, straight-line efficiency in [0,1], valid) strictly from past S1 bars."""
         if not self.s1_bars:
-            return 0.0, False
+            return 0.0, 0.0, False
         cutoff = int(ts) - 60
         ref_bar = None
+        path = 0.0
+        last_c = mid
         for bar in self.s1_bars:
             if bar["sec"] >= cutoff:
-                ref_bar = bar
-                break
+                if ref_bar is None:
+                    ref_bar = bar
+                path += abs(float(bar["body"]))
+                last_c = float(bar["c"])
         if ref_bar is None:
-            return 0.0, False
+            return 0.0, 0.0, False
         span = int(ts) - int(ref_bar["sec"])
         if span < 20:
-            return 0.0, False
-        return round(mid - float(ref_bar["o"]), 3), True
+            return 0.0, 0.0, False
+        path += abs(mid - last_c)
+        move = mid - float(ref_bar["o"])
+        eff = (abs(move) / path) if path > 1e-9 else 0.0
+        return round(move, 3), round(eff, 3), True
+
+    def _breakout_15m_ok(self, ts: float, mid: float, burst_dir: int) -> bool:
+        """True if mid breaks outside the strictly-prior 15-minute high/low box (min 5m warmup)."""
+        if len(self._range_15s) < 21:
+            return False
+        cur_bid = int(ts // 15.0)
+        # Strictly prior buckets (exclude current 15s bucket so breakout is real, not self-referential)
+        prior = [b for b in self._range_15s if b[0] < cur_bid]
+        if len(prior) < 20:
+            return False
+        if burst_dir == 1:
+            prior_hi = max(b[1] for b in prior)
+            return mid > prior_hi
+        prior_lo = min(b[2] for b in prior)
+        return mid < prior_lo
 
     def _s1_candle_streak(self, base_body: float) -> tuple[int, int, float, float]:
         """Return (streak_count, streak_dir, c1_slope_mult, last_slope_mult) on completed S1 candles."""
@@ -480,7 +529,8 @@ class S1VelocitySurferEngine:
         mid, completed_s1 = self._record_tick(ts, bid, ask)
         move_3s, eff_3s, has_3s = self._window_move_and_eff(ts, self.cfg.burst_window_sec)
         move_2s, _, has_2s = self._window_move_and_eff(ts, self.cfg.decel_window_sec)
-        move_60s, has_60s = self._tape_move_60s(ts, mid)
+        move_60s, eff_60s, has_60s = self._tape_move_and_eff_60s(ts, mid)
+        updates_10s = len(self._price_change_ts)
         base_vel, base_body, base_n = self._baselines(ts)
         vel_ratio = round(abs(move_3s) / base_vel, 2) if (has_3s and base_vel > 0) else 0.0
         streak_n, streak_dir, c1_slope, last_slope = self._s1_candle_streak(base_body)
@@ -493,6 +543,8 @@ class S1VelocitySurferEngine:
             "move_3s": round(move_3s, 3),
             "move_2s": round(move_2s, 3),
             "move_60s": round(move_60s, 2),
+            "eff_60s": round(eff_60s, 2),
+            "updates_10s": updates_10s,
             "eff_3s": round(eff_3s, 2),
             "base_vel": round(base_vel, 3),
             "base_s1_body": round(base_body, 3),
@@ -812,7 +864,7 @@ class S1VelocitySurferEngine:
         slope_metric = last_slope
 
         # Regime A: News / Session-Open Steep C1 Probe (just closed steep Candle 1 + real 3s directional vel!)
-        if completed_s1 is not None and streak_n == 1 and streak_dir != 0:
+        if self.cfg.enable_news_c1 and completed_s1 is not None and streak_n == 1 and streak_dir != 0:
             c1_abs = abs(float(completed_s1["body"]))
             news_3s_ok = (not has_3s) or (
                 (move_3s * streak_dir) >= max(self.cfg.news_c1_min_3s_move, spread * 1.8)
@@ -861,9 +913,16 @@ class S1VelocitySurferEngine:
                     if (s_val - self.cfg.sr_break_clear_price) <= mid <= (s_val + self.cfg.sr_wall_buffer_price):
                         blocked_by_sr_wall = True
 
+            blocked_quiet = (
+                (self.cfg.min_60s_move_price > 0.0 and (not has_60s or (move_60s * burst_dir) < self.cfg.min_60s_move_price))
+                or (self.cfg.min_60s_efficiency > 0.0 and (not has_60s or eff_60s < self.cfg.min_60s_efficiency))
+                or (self.cfg.min_updates_10s > 0 and updates_10s < self.cfg.min_updates_10s)
+                or (self.cfg.require_15m_breakout and not self._breakout_15m_ok(ts, mid, burst_dir))
+            )
+
             if spread > self.cfg.max_spread_price:
                 self.signals_blocked_spread += 1
-            elif self.cfg.min_60s_move_price > 0.0 and (not has_60s or (move_60s * burst_dir) < self.cfg.min_60s_move_price):
+            elif blocked_quiet:
                 self.signals_blocked_quiet += 1
             elif m1_bias != burst_dir or blocked_by_sr_wall:
                 self.signals_blocked_m1 += 1

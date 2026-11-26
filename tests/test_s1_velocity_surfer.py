@@ -663,6 +663,80 @@ def test_live_tick_recorder_daily_path_and_replay_compat(
     assert res["waves_count"] >= 1
 
 
+def test_shock_gates_and_pullback_dip_audit_end_to_end(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """Verify causal shock gates (no news C1, 60s efficiency, 15m breakout), PullbackDipEngine, and audit CLI."""
+    import daytrade_s1_impulse_audit as audit_cli
+
+    from trade_mcp.s1_impulse_audit import (
+        PullbackDipConfig,
+        PullbackDipEngine,
+        analyze_tape_physics,
+        load_tick_stream,
+        run_structural_benchmark,
+    )
+
+    monkeypatch.setenv("TRADE_MCP_ALLOW_TRADING", "false")
+    monkeypatch.setenv("TRADE_MCP_PAPER_TRADING", "true")
+
+    # 1) enable_news_c1=False blocks NEWS_STEEP_C1 single-candle probes
+    m1_bars, news_ticks = make_synthetic_s1_session(mode="news_steep_fakeout")
+    m1_ctx = analyze_m1_sr_context(m1_bars, server_now_ts=news_ticks[0][0])
+    eng_no_news = S1VelocitySurferEngine(cfg=S1SurferConfig(enable_news_c1=False))
+    for ts, bid, ask in news_ticks:
+        eng_no_news.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_ctx)
+    assert len(eng_no_news.waves_closed) == 0
+
+    # 2) PullbackDipEngine buys a -$3.00 dip inside a +$10 5-min bull trend and rides continuation
+    t0 = 1_764_100_000.0
+    bull_ctx = {"bias": 1, "label": "BULL_TREND", "support": 3440.0, "resistance": 3560.0}
+    dip_ticks: list[tuple[float, float, float, dict[str, object]]] = []
+    bid = 3480.00
+    spread = 0.40
+    for step in range(4 * 390):  # 390s = 6.5 min
+        sec = step * 0.25
+        if sec < 300.0:
+            bid = round(3480.00 + (12.00 * sec / 300.0), 2)  # +$12 5m bull trend to 3492
+        elif sec < 320.0:
+            bid = round(3492.00 - (3.00 * (sec - 300.0) / 20.0), 2)  # -$3.00 pullback dip to 3489
+        elif sec < 324.0:
+            bid = round(3489.00 + (1.20 * (sec - 320.0) / 4.0), 2)  # +$1.20 S1 bounce -> triggers BUY!
+        elif sec < 370.0:
+            bid = round(3490.20 + (10.00 * (sec - 324.0) / 46.0), 2)  # +$10 continuation to 3500.20
+        else:
+            bid = round(3500.20 - (4.00 * (sec - 370.0) / 20.0), 2)  # -$4 reversal -> triggers trail exit!
+        dip_ticks.append((t0 + sec, bid, round(bid + spread, 2), bull_ctx))
+
+    deng = PullbackDipEngine(cfg=PullbackDipConfig(leg_lot=0.01, max_legs=4))
+    for ts, b, a, ctx in dip_ticks:
+        deng.on_tick(ts=ts, bid=b, ask=a, m1_context=ctx)
+    assert len(deng.waves_closed) >= 1
+    assert deng.waves_closed[0]["side"] == "buy"
+    assert deng.waves_closed[0]["net_pnl_usd"] > 3.0
+
+    # 3) Write JSONL and run tape physics + structural benchmark + CLI smoke
+    jsonl = tmp_path / "dip_sample.jsonl"
+    with jsonl.open("w", encoding="utf-8") as fh:
+        for ts, b, a, ctx in dip_ticks:
+            fh.write(json.dumps({"ts": ts, "bid": b, "ask": a, "m1": ctx}) + "\n")
+
+    loaded = load_tick_stream(jsonl)
+    phys = analyze_tape_physics(loaded)
+    assert phys["ticks"] == len(dip_ticks)
+    assert len(phys["clean_waves"]) >= 1
+    rows = run_structural_benchmark(loaded)
+    assert len(rows) == 8
+    rc = audit_cli.main([str(jsonl)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "PART 1: TAPE PHYSICS" in out
+    assert "PULLBACK_DIP_5M" in out
+
+
+
 
 
 
