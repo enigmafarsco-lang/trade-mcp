@@ -1206,7 +1206,8 @@ def run_structural_benchmark(
     leg_lot: float = 0.01,
     max_legs: int = 6,
 ) -> list[dict[str, Any]]:
-    """Evaluate 19 distinct causal architectures (fixed-lot baselines + Acceleration x Duration dynamic-lot runners)."""
+    """Evaluate 23 distinct causal architectures (fixed baselines, dynamic news runners, S10 hybrids, and calm M1/M3/M5)."""
+    from trade_mcp.calm_regime_engines import CalmRegimeEngine, calm_regime_profiles
     from trade_mcp.s10_hybrid_engines import S10HybridEngine, s10_hybrid_profiles
 
     s1_specs: list[tuple[str, S1SurferConfig]] = [
@@ -1258,5 +1259,16 @@ def run_structural_benchmark(
             ex = b_l if heng.basket["side"] == "buy" else a_l
             heng._close(ex, ts_l, "eof_replay")
         results.append(_summarize_waves(name, heng.waves_closed, heng.max_dd_usd))
+
+    calm_specs = calm_regime_profiles(leg_lot=max(0.02, leg_lot), max_legs=max(8, max_legs))
+    for name, ccfg in calm_specs:
+        ceng = CalmRegimeEngine(cfg=ccfg)
+        for ts, bid, ask, m1_ctx in ticks:
+            ceng.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_ctx)
+        if ceng.basket is not None and ticks:
+            ts_l, b_l, a_l, _ = ticks[-1]
+            ex = b_l if ceng.basket["side"] == "buy" else a_l
+            ceng._close(ex, ts_l, "eof_replay")
+        results.append(_summarize_waves(name, ceng.waves_closed, ceng.max_dd_usd))
 
     return results

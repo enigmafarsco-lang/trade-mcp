@@ -730,7 +730,7 @@ def test_shock_gates_and_pullback_dip_audit_end_to_end(
     assert phys["ticks"] == len(dip_ticks)
     assert len(phys["clean_waves"]) >= 1
     rows = run_structural_benchmark(loaded)
-    assert len(rows) == 19
+    assert len(rows) == 23
     names = {r["strategy"] for r in rows}
     assert {
         "SHOCK_10_RUNNER",
@@ -744,6 +744,10 @@ def test_shock_gates_and_pullback_dip_audit_end_to_end(
         "SR_SWEEP_VSA_SESS",
         "SR_BREAK_VSA_S10",
         "EMA_RECLAIM_S10",
+        "CALM_M1_EMA_24H",
+        "CALM_M3_SWING_24H",
+        "CALM_M5_TREND_24H",
+        "CALM_M5_RANGE_24H",
     }.issubset(names)
     rc = audit_cli.main([str(jsonl)])
     assert rc == 0
@@ -754,9 +758,14 @@ def test_shock_gates_and_pullback_dip_audit_end_to_end(
     assert "PB_V2_DYN_SESS" in out
     assert "MACRO_WAVE_DYN" in out
     assert "SHOCK10_DYN_RUN" in out
+    assert "CALM_M3_SWING_24H" in out
+    assert "CALM_M5_TREND_24H" in out
+    assert "CALM_M5_RANGE_24H" in out
     assert "COMBO_SHK10_PBV2" in out
     assert "COMBO_DYN_SUITE" in out
     assert "COMBO_DYN_MACRO" in out
+    assert "COMBO_AW_M3" in out
+    assert "COMBO_AW_M5" in out
 
 
 

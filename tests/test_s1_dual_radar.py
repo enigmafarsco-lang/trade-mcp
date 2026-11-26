@@ -760,3 +760,137 @@ def test_dynamic_runners_scale_winners_cut_losers_and_run_in_dual_radar_cli(
     assert w["net_pnl_usd"] >= -8.0  # defensive 0.02 probe caps hard SL tightly (never -$18 or -$171!)
 
 
+def _emit_bar_ticks(
+    eng: Any,
+    *,
+    t_bar: float,
+    bar_sec: int,
+    o: float,
+    h: float,
+    low: float,
+    c: float,
+    spread: float = 0.36,
+    ctx: dict[str, Any] | None = None,
+) -> None:
+    """Emit causal intra-bar OHLC ticks for a single multi-minute bar (t_bar .. t_bar + bar_sec - 1)."""
+    m1_ctx = ctx or {"bias": 0, "label": "CALM"}
+    pts = [
+        (0.5, o),
+        (bar_sec * 0.25, low if c >= o else h),
+        (bar_sec * 0.65, h if c >= o else low),
+        (bar_sec - 1.0, c),
+    ]
+    for dt, mid in pts:
+        bid = round(mid - 0.5 * spread, 4)
+        ask = round(mid + 0.5 * spread, 4)
+        eng.on_tick(ts=t_bar + dt, bid=bid, ask=ask, m1_context=m1_ctx)
+
+
+def test_calm_regime_trend_reclaim_rides_steady_drift_and_pyramids() -> None:
+    """CALM_M3_SWING_24H catches steady calm pullback-reclaim drifts and compounds risk-free on house money."""
+    from trade_mcp.calm_regime_engines import CalmRegimeEngine, build_calm_regime_profile_config
+
+    eng = CalmRegimeEngine(cfg=build_calm_regime_profile_config("CALM_M3_SWING_24H", leg_lot=0.02, max_legs=8))
+    t0 = 1764000000.0 - (1764000000.0 % 180.0)
+    bar_sec = 180
+    px = 3500.0
+    bar_idx = 0
+
+    # 14 steady bullish M3 bars (+$1.50/bar -> calm drift, NOT a $10/60s shock!)
+    for _ in range(14):
+        _emit_bar_ticks(eng, t_bar=t0 + bar_idx * bar_sec, bar_sec=bar_sec, o=px, h=px + 2.2, low=px - 0.8, c=px + 1.5)
+        px += 1.5
+        bar_idx += 1
+
+    # Pullback bar into EMA8 zone, then bullish reclaim close back above EMA8
+    _emit_bar_ticks(eng, t_bar=t0 + bar_idx * bar_sec, bar_sec=bar_sec, o=px, h=px + 0.4, low=px - 3.6, c=px - 2.6)
+    px -= 2.6
+    bar_idx += 1
+    _emit_bar_ticks(eng, t_bar=t0 + bar_idx * bar_sec, bar_sec=bar_sec, o=px, h=px + 3.2, low=px - 0.6, c=px + 2.6)
+    px += 2.6
+    bar_idx += 1
+
+    # Next bar starts (closes reclaim bar -> queues open -> fills +0.25s later!) and drifts smoothly +$18 then pulls back -$7
+    t_open = t0 + bar_idx * bar_sec
+    for step in range(4 * 420):
+        sec = step * 0.25
+        if sec < 300.0:
+            mid = px + 18.0 * (sec / 300.0)
+        else:
+            mid = px + 18.0 - 8.5 * ((sec - 300.0) / 120.0)
+        eng.on_tick(ts=t_open + sec, bid=round(mid - 0.18, 4), ask=round(mid + 0.18, 4), m1_context={"bias": 1, "label": "BULL_TREND"})
+
+    assert len(eng.waves_closed) >= 1
+    w0 = eng.waves_closed[0]
+    assert w0["side"] == "buy"
+    assert w0["legs_count"] >= 2
+    assert w0["total_volume"] >= 0.03
+    assert w0["net_pnl_usd"] > 20.0
+    assert eng.summary()["orders_submitted"] == 0
+
+
+def test_calm_regime_m5_range_bb_mean_reversion_and_anti_trend_guard() -> None:
+    """CALM_M5_RANGE_24H fades lower-BB rejection in genuine sideways range and blocks fading strong trends."""
+    from trade_mcp.calm_regime_engines import CalmRegimeEngine, build_calm_regime_profile_config
+
+    eng = CalmRegimeEngine(cfg=build_calm_regime_profile_config("CALM_M5_RANGE_24H", leg_lot=0.02))
+    t0 = 1764000000.0 - (1764000000.0 % 300.0)
+    bar_sec = 300
+    # 16 calm sideways M5 bars oscillating around 3565 (+/- $3.5)
+    seq = [3564.0, 3567.0, 3563.5, 3566.5, 3564.0, 3567.5, 3563.0, 3566.0, 3564.5, 3567.0, 3563.5, 3566.5, 3564.0, 3567.0, 3564.5, 3566.0]
+    bar_idx = 0
+    for c_val in seq:
+        _emit_bar_ticks(
+            eng,
+            t_bar=t0 + bar_idx * bar_sec,
+            bar_sec=bar_sec,
+            o=3565.0,
+            h=max(3565.0, c_val) + 1.2,
+            low=min(3565.0, c_val) - 1.2,
+            c=c_val,
+        )
+        bar_idx += 1
+
+    # Lower BB sweep + strong bullish rejection close back inside band (~3562.0)
+    _emit_bar_ticks(
+        eng,
+        t_bar=t0 + bar_idx * bar_sec,
+        bar_sec=bar_sec,
+        o=3561.5,
+        h=3562.4,
+        low=3556.5,
+        c=3562.2,
+    )
+    bar_idx += 1
+
+    # Next bar starts (triggers fill) and mean-reverts back up to 3567.5 -> mean_tp_hit!
+    t_fill = t0 + bar_idx * bar_sec
+    for step in range(4 * 90):
+        sec = step * 0.25
+        mid = 3562.2 + 5.5 * (sec / 90.0)
+        eng.on_tick(ts=t_fill + sec, bid=round(mid - 0.18, 4), ask=round(mid + 0.18, 4), m1_context={"bias": 0, "label": "CHOP_NEUTRAL"})
+
+    assert len(eng.waves_closed) == 1
+    assert eng.waves_closed[0]["side"] == "buy"
+    assert eng.waves_closed[0]["exit_reason"] == "mean_tp_hit"
+    assert eng.waves_closed[0]["net_pnl_usd"] > 5.0
+
+    # Strict anti-trend guard: steady strong downtrend must NOT be faded!
+    eng_trend = CalmRegimeEngine(cfg=build_calm_regime_profile_config("CALM_M5_RANGE_24H", leg_lot=0.02))
+    px = 3600.0
+    for i in range(22):
+        _emit_bar_ticks(
+            eng_trend,
+            t_bar=t0 + i * bar_sec,
+            bar_sec=bar_sec,
+            o=px,
+            h=px + 0.6,
+            low=px - 4.2,
+            c=px - 3.0,
+        )
+        px -= 3.0
+    assert eng_trend.basket is None
+    assert len(eng_trend.waves_closed) == 0
+
+
+
