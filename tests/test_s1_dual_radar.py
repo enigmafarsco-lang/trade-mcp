@@ -635,3 +635,124 @@ def test_dual_radar_cli_include_hybrids_runs_all_nine_engines_readonly(
     assert data["orders_submitted"] == 0
     assert len(data["engines"]) == 9
 
+
+def test_dynamic_accel_duration_lot_scaler_invariants() -> None:
+    """Verify Acceleration x Duration lot scaling and strict house-money risk-free SL cushion invariant."""
+    from trade_mcp.s1_velocity_surfer import compute_dynamic_add_lot, compute_dynamic_l1_lot
+
+    # 1) L1 scales up monotonically with tape acceleration and respects max_l1_lot cap
+    calm = compute_dynamic_l1_lot(base_lot=0.02, max_l1_lot=0.06, max_total_lot=0.50, abs_move_60s=2.0, abs_move_5m=5.0)
+    med = compute_dynamic_l1_lot(base_lot=0.02, max_l1_lot=0.06, max_total_lot=0.50, abs_move_60s=7.0, abs_move_5m=10.0)
+    news = compute_dynamic_l1_lot(base_lot=0.02, max_l1_lot=0.06, max_total_lot=0.50, abs_move_60s=12.0, abs_move_5m=16.0, abs_move_15m=24.0)
+    assert calm == 0.02
+    assert calm < med <= news == 0.06
+
+    # 2) In loss or without breathing cushion -> ZERO add lot!
+    no_add = compute_dynamic_add_lot(
+        side="sell",
+        bid=3482.5,
+        ask=3482.9,
+        fill_px=3482.5,
+        old_vol=0.06,
+        old_avg=3483.1,
+        breathing_room=1.50,
+        base_lot=0.02,
+        max_leg_lot=0.10,
+        max_total_lot=0.50,
+        dir_move_60s=10.0,
+        dir_move_5m=15.0,
+        hold_sec=60.0,
+    )
+    assert no_add == 0.0
+
+    # 3) Deep in profit: add lot increases with BOTH acceleration AND duration, and post-add avg stays risk-free!
+    short_slow = compute_dynamic_add_lot(
+        side="sell",
+        bid=3474.0,
+        ask=3474.4,
+        fill_px=3474.0,
+        old_vol=0.12,
+        old_avg=3481.0,
+        breathing_room=1.50,
+        base_lot=0.02,
+        max_leg_lot=0.10,
+        max_total_lot=0.50,
+        dir_move_60s=1.0,
+        dir_move_5m=3.0,
+        hold_sec=5.0,
+    )
+    sustained_fast = compute_dynamic_add_lot(
+        side="sell",
+        bid=3474.0,
+        ask=3474.4,
+        fill_px=3474.0,
+        old_vol=0.12,
+        old_avg=3481.0,
+        breathing_room=1.50,
+        base_lot=0.02,
+        max_leg_lot=0.10,
+        max_total_lot=0.50,
+        dir_move_60s=10.0,
+        dir_move_5m=16.0,
+        hold_sec=90.0,
+    )
+    assert 0.01 <= short_slow < sustained_fast <= 0.10
+    # Verify ironclad house-money invariant: new_avg leaves >= breathing_room + 0.05 above live ask!
+    new_vol = round(0.12 + sustained_fast, 2)
+    new_avg = (3481.0 * 0.12 + 3474.0 * sustained_fast) / new_vol
+    assert (new_avg - 0.05 + 1e-6) >= (3474.4 + 1.50)
+
+
+def test_dynamic_runners_scale_winners_cut_losers_and_run_in_dual_radar_cli(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """Dynamic-lot runners compound winners on house money, never add to losers, and wire cleanly via --include-dynamic."""
+    monkeypatch.setenv("TRADE_MCP_ALLOW_TRADING", "false")
+    monkeypatch.setenv("TRADE_MCP_PAPER_TRADING", "true")
+    monkeypatch.setattr(dual_cli, "ROOT", tmp_path)
+    (tmp_path / "reports" / "paper_live").mkdir(parents=True)
+    rep = tmp_path / "reports" / "paper_live" / "dual_dyn_mock.json"
+
+    rc = dual_cli.main(["--mock", "--include-dynamic", "--no-bell", "--report-file", str(rep)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "SHOCK10_DYN_RUN" in out
+    assert "PB_V2_DYN_SESS" in out
+    assert "MACRO_WAVE_DYN" in out
+
+    data = json.loads(rep.read_text(encoding="utf-8"))
+    assert data["orders_submitted"] == 0
+    assert len(data["engines"]) == 8
+
+    flat_pb_pnl = data["engines"]["PB_DIP_V2_SESS"]["summary"]["realized_pnl_usd"]
+    dyn_pb_pnl = data["engines"]["PB_V2_DYN_SESS"]["summary"]["realized_pnl_usd"]
+    dyn_pb_max_vol = max(w["total_volume"] for w in data["engines"]["PB_V2_DYN_SESS"]["waves"])
+    assert dyn_pb_max_vol >= 0.15  # compounded well beyond flat 0.04 lot!
+    assert dyn_pb_pnl > flat_pb_pnl * 3.0
+
+    # Verify failed-dip loser: PB_V2_DYN_SESS MUST NOT add a single leg in loss and cuts strictly at pivot SL!
+    t0 = float(datetime(2026, 11, 26, 14, 0, 0, tzinfo=timezone.utc).timestamp())
+    bull_ctx = {"bias": 1, "label": "BULL_TREND", "support": 3450.0, "resistance": 3600.0}
+    eng_fail = PullbackDipEngine(cfg=build_pullback_dip_profile_config("PB_V2_DYN_SESS", leg_lot=0.01, max_legs=4))
+    spread = 0.36
+    for step in range(4 * 365):
+        sec = step * 0.25
+        if sec < 300.0:
+            bid = round(3480.00 + (12.00 * sec / 300.0), 2)
+        elif sec < 320.0:
+            bid = round(3492.00 - (3.10 * (sec - 300.0) / 20.0), 2)
+        elif sec < 324.0:
+            bid = round(3488.90 + (1.30 * (sec - 320.0) / 4.0), 2)
+        else:
+            bid = round(3490.20 - (15.00 * (sec - 324.0) / 41.0), 2)  # -$15 crash right after fill!
+        eng_fail.on_tick(ts=t0 + sec, bid=bid, ask=round(bid + spread, 2), m1_context=bull_ctx)
+
+    assert len(eng_fail.waves_closed) == 1
+    w = eng_fail.waves_closed[0]
+    assert w["legs_count"] == 1  # zero adds to loser!
+    assert w["exit_reason"] == "hard_stop_loss"
+    assert w["net_pnl_usd"] >= -20.0  # tightly capped hard SL (never -$171 unstopped bleed!)
+
+

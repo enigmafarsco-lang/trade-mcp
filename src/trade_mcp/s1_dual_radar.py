@@ -280,6 +280,11 @@ class DualRadarPaperSuite:
         "PB_DIP_V2_SESS",
         "PB_DIP_V2_24H",
     )
+    DYNAMIC_ENGINE_ORDER: tuple[str, ...] = (
+        "SHOCK10_DYN_RUN",
+        "PB_V2_DYN_SESS",
+        "MACRO_WAVE_DYN",
+    )
     HYBRID_ENGINE_ORDER: tuple[str, ...] = (
         "SR_SWEEP_VSA_24H",
         "SR_SWEEP_VSA_SESS",
@@ -294,17 +299,22 @@ class DualRadarPaperSuite:
         leg_lot: float = 0.01,
         max_legs: int = 6,
         radar_cfg: ShockRadarConfig | None = None,
+        include_dynamic: bool = False,
         include_hybrids: bool = False,
     ) -> None:
         self.initial_capital_usd = float(initial_capital_usd)
         self.leg_lot = float(leg_lot)
         self.max_legs = int(max_legs)
+        self.include_dynamic = bool(include_dynamic)
         self.include_hybrids = bool(include_hybrids)
         self.radar = ShockRadar(cfg=radar_cfg or ShockRadarConfig())
         dip_max_legs = min(4, self.max_legs)
-        self.engine_order: tuple[str, ...] = (
-            self.ENGINE_ORDER + self.HYBRID_ENGINE_ORDER if self.include_hybrids else self.ENGINE_ORDER
-        )
+        order: list[str] = list(self.ENGINE_ORDER)
+        if self.include_dynamic:
+            order.extend(self.DYNAMIC_ENGINE_ORDER)
+        if self.include_hybrids:
+            order.extend(self.HYBRID_ENGINE_ORDER)
+        self.engine_order: tuple[str, ...] = tuple(order)
         self.engines: dict[str, S1VelocitySurferEngine | PullbackDipEngine | S10HybridEngine] = {
             "v2.5_SHOCK_10": S1VelocitySurferEngine(
                 cfg=build_s1_profile_config("v2.5_SHOCK_10", leg_lot=self.leg_lot, max_legs=self.max_legs),
@@ -327,6 +337,19 @@ class DualRadarPaperSuite:
                 initial_capital_usd=self.initial_capital_usd,
             ),
         }
+        if self.include_dynamic:
+            self.engines["SHOCK10_DYN_RUN"] = S1VelocitySurferEngine(
+                cfg=build_s1_profile_config("v2.6_SHOCK10_DYN", leg_lot=self.leg_lot, max_legs=self.max_legs),
+                initial_capital_usd=self.initial_capital_usd,
+            )
+            self.engines["PB_V2_DYN_SESS"] = PullbackDipEngine(
+                cfg=build_pullback_dip_profile_config("PB_V2_DYN_SESS", leg_lot=self.leg_lot, max_legs=dip_max_legs),
+                initial_capital_usd=self.initial_capital_usd,
+            )
+            self.engines["MACRO_WAVE_DYN"] = PullbackDipEngine(
+                cfg=build_pullback_dip_profile_config("MACRO_WAVE_DYN", leg_lot=self.leg_lot, max_legs=dip_max_legs),
+                initial_capital_usd=self.initial_capital_usd,
+            )
         if self.include_hybrids:
             hyb_max_legs = min(3, self.max_legs)
             for hname in self.HYBRID_ENGINE_ORDER:

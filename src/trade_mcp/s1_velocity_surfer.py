@@ -26,6 +26,7 @@ real-account protections and ZERO broker orders (Paper-only + tick recorder/repl
 from __future__ import annotations
 
 import json
+import math
 import os
 import statistics
 from collections import deque
@@ -39,6 +40,72 @@ from .m1_momentum import atr_series, clean_ohlcv_bars, ema_series
 
 def _iso_utc(ts: float) -> str:
     return datetime.fromtimestamp(float(ts), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def compute_dynamic_l1_lot(
+    *,
+    base_lot: float,
+    max_l1_lot: float,
+    max_total_lot: float,
+    abs_move_60s: float = 0.0,
+    abs_move_5m: float = 0.0,
+    abs_move_15m: float = 0.0,
+) -> float:
+    """Scale initial Leg-1 lot causally with confirmed tape acceleration (strictly bounded)."""
+    accel = 1.0
+    if abs_move_60s >= 6.0:
+        accel += min(1.5, (abs_move_60s - 4.0) / 4.0)
+    if abs_move_5m >= 8.0:
+        accel += min(1.5, (abs_move_5m - 6.0) / 6.0)
+    if abs_move_15m >= 15.0:
+        accel += min(0.75, (abs_move_15m - 12.0) / 16.0)
+    raw = round(base_lot * accel, 2)
+    cap = min(max_l1_lot, max_total_lot, 0.10)
+    return max(round(base_lot, 2), min(raw, round(cap, 2)))
+
+
+def compute_dynamic_add_lot(
+    *,
+    side: str,
+    bid: float,
+    ask: float,
+    fill_px: float,
+    old_vol: float,
+    old_avg: float,
+    breathing_room: float,
+    base_lot: float,
+    max_leg_lot: float,
+    max_total_lot: float,
+    dir_move_60s: float = 0.0,
+    dir_move_5m: float = 0.0,
+    hold_sec: float = 0.0,
+) -> float:
+    """Compute Acceleration x Duration scaled winner add lot, strictly capped by house-money risk-free SL cushion."""
+    rem = round(max(0.0, max_total_lot - old_vol), 2)
+    if rem < 0.01:
+        return 0.0
+
+    breath = max(0.0, breathing_room)
+    if side == "buy":
+        limit_avg = bid - breath - 0.05
+        cushion = limit_avg - old_avg
+        denom = fill_px - limit_avg
+    else:
+        limit_avg = ask + breath + 0.05
+        cushion = old_avg - limit_avg
+        denom = limit_avg - fill_px
+    if cushion <= 0.0 or denom <= 1e-9:
+        return 0.0
+
+    max_safe_add = math.floor((old_vol * (cushion / denom)) * 100.0) / 100.0
+    if max_safe_add < 0.01:
+        return 0.0
+
+    accel_mult = 1.0 + min(1.2, max(0.0, dir_move_60s) / 6.0) + min(0.8, max(0.0, dir_move_5m) / 15.0)
+    dur_mult = 1.0 + min(1.5, max(0.0, hold_sec) / 60.0)
+    target = round(base_lot * accel_mult * dur_mult, 2)
+    capped = min(target, max_leg_lot, 0.10, rem, max_safe_add)
+    return round(capped, 2) if capped >= 0.01 else 0.0
 
 
 def analyze_m1_sr_context(
@@ -198,6 +265,10 @@ class S1SurferConfig:
     win_cooldown_sec: float = 2.0
     loss_cooldown_sec: float = 20.0
     consec_loss_cooldown_sec: float = 45.0  # step back after >=2 consecutive choppy losses
+    dynamic_sizing: bool = False  # Acceleration x Duration house-money lot scaling (opt-in)
+    dyn_max_l1_lot: float = 0.06
+    dyn_max_leg_lot: float = 0.10
+    dyn_max_total_lot: float = 0.50
 
 
 @dataclass
@@ -570,6 +641,16 @@ class S1VelocitySurferEngine:
                     start_cnum = int(po["wave_candle_num"])  # 2 if entered right after steep C1; 3 if entered on C3
                     init_slope = float(po["slope_mult"])
                     is_extreme = init_slope >= self.cfg.extreme_slope_mult or abs(move_3s) >= self.cfg.extreme_3s_move
+                    l1_vol = (
+                        compute_dynamic_l1_lot(
+                            base_lot=self.cfg.leg_lot,
+                            max_l1_lot=self.cfg.dyn_max_l1_lot,
+                            max_total_lot=self.cfg.dyn_max_total_lot,
+                            abs_move_60s=abs(move_60s),
+                        )
+                        if self.cfg.dynamic_sizing
+                        else round(self.cfg.leg_lot, 2)
+                    )
                     self.basket = {
                         "wave_id": self.next_wave_id,
                         "side": side,
@@ -578,8 +659,8 @@ class S1VelocitySurferEngine:
                         "wave_candle_num": start_cnum,
                         "peak_slope_mult": init_slope,
                         "extreme_blowoff": is_extreme,
-                        "legs": [{"entry": round(fill_px, 4), "volume": self.cfg.leg_lot, "ts": ts}],
-                        "total_volume": round(self.cfg.leg_lot, 2),
+                        "legs": [{"entry": round(fill_px, 4), "volume": l1_vol, "ts": ts}],
+                        "total_volume": l1_vol,
                         "avg_entry": round(fill_px, 4),
                         "stop": stop_px,
                         "stop_locked": False,
@@ -599,6 +680,7 @@ class S1VelocitySurferEngine:
                         "candle_num": start_cnum,
                         "entry": round(fill_px, 4),
                         "stop": stop_px,
+                        "leg_lot": l1_vol,
                         "vel_ratio": po["vel_ratio"],
                         "slope_mult": init_slope,
                         "move_3s": po["move_3s"],
@@ -612,12 +694,31 @@ class S1VelocitySurferEngine:
                         last_ent = float(b["legs"][-1]["entry"])
                         last_net = (bid - last_ent) if side == "buy" else (last_ent - ask)
                         safe_sl = (bid > b["stop"]) if side == "buy" else (ask < b["stop"])
-                        risk_free_ok = self._can_add_risk_free(side=side, bid=bid, ask=ask, fill_px=fill_px)
+                        old_vol = float(b["total_volume"])
+                        if self.cfg.dynamic_sizing:
+                            dir_m60 = move_60s if side == "buy" else -move_60s
+                            add_vol = compute_dynamic_add_lot(
+                                side=side,
+                                bid=bid,
+                                ask=ask,
+                                fill_px=fill_px,
+                                old_vol=old_vol,
+                                old_avg=float(b["avg_entry"]),
+                                breathing_room=self.cfg.sl_min_breathing_room,
+                                base_lot=self.cfg.leg_lot,
+                                max_leg_lot=self.cfg.dyn_max_leg_lot,
+                                max_total_lot=self.cfg.dyn_max_total_lot,
+                                dir_move_60s=dir_m60,
+                                hold_sec=max(0.0, ts - float(b["opened_at"])),
+                            )
+                            risk_free_ok = add_vol >= 0.01
+                        else:
+                            add_vol = round(self.cfg.leg_lot, 2)
+                            risk_free_ok = self._can_add_risk_free(side=side, bid=bid, ask=ask, fill_px=fill_px)
                         if last_net >= self.cfg.add_min_profit_price and safe_sl and risk_free_ok:
-                            old_vol = float(b["total_volume"])
-                            new_vol = round(old_vol + self.cfg.leg_lot, 2)
-                            new_avg = round((float(b["avg_entry"]) * old_vol + fill_px * self.cfg.leg_lot) / new_vol, 4)
-                            b["legs"].append({"entry": round(fill_px, 4), "volume": self.cfg.leg_lot, "ts": ts})
+                            new_vol = round(old_vol + add_vol, 2)
+                            new_avg = round((float(b["avg_entry"]) * old_vol + fill_px * add_vol) / new_vol, 4)
+                            b["legs"].append({"entry": round(fill_px, 4), "volume": add_vol, "ts": ts})
                             b["total_volume"] = new_vol
                             b["avg_entry"] = new_avg
                             b["last_leg_ts"] = ts
@@ -630,6 +731,7 @@ class S1VelocitySurferEngine:
                                 "regime": b["regime"],
                                 "candle_num": b["wave_candle_num"],
                                 "leg_num": len(b["legs"]),
+                                "leg_lot": add_vol,
                                 "add_price": round(fill_px, 4),
                                 "total_volume": new_vol,
                                 "avg_entry": new_avg,
@@ -825,11 +927,28 @@ class S1VelocitySurferEngine:
                 else:
                     mom_ok = signed_vel_2s > 0.0
                 est_fill = ask if side == "buy" else bid
-                if (
-                    last_net >= self.cfg.add_min_profit_price
-                    and mom_ok
-                    and self._can_add_risk_free(side=side, bid=bid, ask=ask, fill_px=est_fill)
-                ):
+                if self.cfg.dynamic_sizing:
+                    dir_m60 = move_60s if side == "buy" else -move_60s
+                    can_rf = (
+                        compute_dynamic_add_lot(
+                            side=side,
+                            bid=bid,
+                            ask=ask,
+                            fill_px=est_fill,
+                            old_vol=float(b["total_volume"]),
+                            old_avg=float(b["avg_entry"]),
+                            breathing_room=self.cfg.sl_min_breathing_room,
+                            base_lot=self.cfg.leg_lot,
+                            max_leg_lot=self.cfg.dyn_max_leg_lot,
+                            max_total_lot=self.cfg.dyn_max_total_lot,
+                            dir_move_60s=dir_m60,
+                            hold_sec=hold_sec,
+                        )
+                        >= 0.01
+                    )
+                else:
+                    can_rf = self._can_add_risk_free(side=side, bid=bid, ask=ask, fill_px=est_fill)
+                if last_net >= self.cfg.add_min_profit_price and mom_ok and can_rf:
                     self.pending_order = {
                         "kind": "add",
                         "side": side,
@@ -1545,6 +1664,43 @@ def s1_calibration_profiles(
                 max_hold_sec=300.0,
                 loss_cooldown_sec=30.0,
                 consec_loss_cooldown_sec=60.0,
+            ),
+        ),
+        (
+            "v2.6_SHOCK10_DYN",
+            S1SurferConfig(
+                leg_lot=max(0.02, leg_lot),
+                max_legs=max(12, max_legs),
+                enable_news_c1=False,
+                vel_mult=3.0,
+                min_burst_price=1.20,
+                min_60s_move_price=10.0,
+                min_60s_efficiency=0.50,
+                add_interval_sec=2.5,
+                add_min_profit_price=1.40,
+                min_stop_price=2.20,
+                max_stop_price=3.20,
+                decel_loss_cut_sec=6.0,
+                disable_decel_exit=True,
+                decel_only_in_loss_1l=False,
+                loss_cut_min_loss_price=0.85,
+                candle_cap_adds=False,
+                sl_min_breathing_room=1.50,
+                be_arm_price=2.20,
+                require_be_on_add=True,
+                s1_reversal_cut_body=0.0,
+                trail_arm_price=3.20,
+                trail_min_pullback=2.60,
+                trail_max_pullback_price=6.00,
+                trail_giveback_frac=0.32,
+                multi_leg_giveback_frac=0.0,
+                max_hold_sec=420.0,
+                loss_cooldown_sec=30.0,
+                consec_loss_cooldown_sec=60.0,
+                dynamic_sizing=True,
+                dyn_max_l1_lot=0.06,
+                dyn_max_leg_lot=0.10,
+                dyn_max_total_lot=0.50,
             ),
         ),
     ]

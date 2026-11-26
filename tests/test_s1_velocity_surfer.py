@@ -730,13 +730,16 @@ def test_shock_gates_and_pullback_dip_audit_end_to_end(
     assert phys["ticks"] == len(dip_ticks)
     assert len(phys["clean_waves"]) >= 1
     rows = run_structural_benchmark(loaded)
-    assert len(rows) == 16
+    assert len(rows) == 19
     names = {r["strategy"] for r in rows}
     assert {
         "SHOCK_10_RUNNER",
+        "SHOCK10_DYN_RUN",
         "PB_DIP_V2_24H",
         "PB_DIP_V2_SESS",
         "PB_DIP_V2_SAFE",
+        "PB_V2_DYN_SESS",
+        "MACRO_WAVE_DYN",
         "SR_SWEEP_VSA_24H",
         "SR_SWEEP_VSA_SESS",
         "SR_BREAK_VSA_S10",
@@ -748,10 +751,12 @@ def test_shock_gates_and_pullback_dip_audit_end_to_end(
     assert "PART 1: TAPE PHYSICS" in out
     assert "PULLBACK_DIP_5M" in out
     assert "PB_DIP_V2_SESS" in out
-    assert "SR_SWEEP_VSA_24H" in out
-    assert "SR_BREAK_VSA_S10" in out
-    assert "EMA_RECLAIM_S10" in out
+    assert "PB_V2_DYN_SESS" in out
+    assert "MACRO_WAVE_DYN" in out
+    assert "SHOCK10_DYN_RUN" in out
     assert "COMBO_SHK10_PBV2" in out
+    assert "COMBO_DYN_SUITE" in out
+    assert "COMBO_DYN_MACRO" in out
 
 
 

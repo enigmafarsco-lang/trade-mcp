@@ -26,6 +26,8 @@ from trade_mcp.s1_velocity_surfer import (
     _mini_m1_context,
     analyze_m1_sr_context,
     build_s1_profile_config,
+    compute_dynamic_add_lot,
+    compute_dynamic_l1_lot,
 )
 
 
@@ -303,6 +305,10 @@ class PullbackDipConfig:
     loss_cooldown_sec: float = 60.0
     consec_loss_cooldown_sec: float = 0.0  # optional step-back cooldown after >=2 consecutive losses (0=off)
     active_server_hours: tuple[int, ...] | None = None  # optional broker-server active session hours (None=24h)
+    dynamic_sizing: bool = False  # Acceleration x Duration house-money lot scaling (opt-in)
+    dyn_max_l1_lot: float = 0.06
+    dyn_max_leg_lot: float = 0.10
+    dyn_max_total_lot: float = 0.50
 
 
 @dataclass
@@ -408,6 +414,14 @@ class PullbackDipEngine:
             return (bid - self.cfg.sl_min_breathing_room) >= (new_avg + 0.05)
         return (ask + self.cfg.sl_min_breathing_room) <= (new_avg - 0.05)
 
+    def _window_move(self, sec: int, mid: float, lookback_sec: int) -> float:
+        """Causal signed price move over lookback_sec using completed 1s history."""
+        t_cut = sec - lookback_sec
+        for row in self._sec_hist:
+            if row[0] >= t_cut:
+                return mid - row[3]
+        return 0.0
+
     def _trend_efficiency_15s(self, t_cut: int, ref_trend: float, mid: float) -> float:
         """Causal 15-second bar straight-line efficiency in [0, 1] over trend_window_sec."""
         path = 0.0
@@ -473,8 +487,10 @@ class PullbackDipEngine:
         while self._ticks_3s and (ts - self._ticks_3s[0][0]) > (self.cfg.resume_window_sec + 1.0):
             self._ticks_3s.popleft()
 
-        # Update 1s OHLC history up to max(trend_window_sec, extreme_window_sec) + 15s
-        max_sec_keep = int(max(self.cfg.trend_window_sec, self.cfg.extreme_window_sec)) + 15
+        # Update 1s OHLC history up to max(trend_window_sec, extreme_window_sec, 900s when dynamic_sizing) + 15s
+        max_sec_keep = int(
+            max(self.cfg.trend_window_sec, self.cfg.extreme_window_sec, 900.0 if self.cfg.dynamic_sizing else 0.0)
+        ) + 15
         if self._cur_sec is None:
             self._cur_sec = [float(sec), mid, mid, mid]
         elif sec > int(self._cur_sec[0]):
@@ -509,12 +525,26 @@ class PullbackDipEngine:
             if spread <= self.cfg.max_spread_price:
                 if po["kind"] == "open" and self.basket is None:
                     stop_px = self._compute_initial_stop(side=side, fill_px=fill_px, sec=sec)
+                    if self.cfg.dynamic_sizing:
+                        m60 = abs(self._window_move(sec, mid, 60))
+                        m5 = max(abs(float(po.get("trend_move", 0.0))), abs(self._window_move(sec, mid, 300)))
+                        m15 = abs(self._window_move(sec, mid, 900))
+                        l1_vol = compute_dynamic_l1_lot(
+                            base_lot=self.cfg.leg_lot,
+                            max_l1_lot=self.cfg.dyn_max_l1_lot,
+                            max_total_lot=self.cfg.dyn_max_total_lot,
+                            abs_move_60s=m60,
+                            abs_move_5m=m5,
+                            abs_move_15m=m15,
+                        )
+                    else:
+                        l1_vol = round(self.cfg.leg_lot, 2)
                     self.basket = {
                         "wave_id": self.next_wave_id,
                         "side": side,
                         "regime": "PULLBACK_DIP",
-                        "legs": [{"entry": round(fill_px, 4), "volume": self.cfg.leg_lot, "ts": ts}],
-                        "total_volume": self.cfg.leg_lot,
+                        "legs": [{"entry": round(fill_px, 4), "volume": l1_vol, "ts": ts}],
+                        "total_volume": l1_vol,
                         "avg_entry": round(fill_px, 4),
                         "stop": stop_px,
                         "stop_locked": False,
@@ -531,6 +561,7 @@ class PullbackDipEngine:
                         "regime": "PULLBACK_DIP",
                         "entry": round(fill_px, 4),
                         "stop": stop_px,
+                        "leg_lot": l1_vol,
                         "trend_move": round(float(po.get("trend_move", 0.0)), 2),
                         "trend_eff": round(float(po.get("trend_eff", 0.0)), 2),
                         "pullback_depth": round(float(po.get("pullback_depth", 0.0)), 2),
@@ -540,35 +571,58 @@ class PullbackDipEngine:
                     })
                 elif po["kind"] == "add" and self.basket is not None:
                     b = self.basket
-                    if len(b["legs"]) < self.cfg.max_legs and self._can_add_risk_free(side, bid, ask, fill_px):
-                        last_ent = float(b["legs"][-1]["entry"])
-                        last_net = (bid - last_ent) if side == "buy" else (last_ent - ask)
-                        old_v = b["total_volume"]
-                        new_v = round(old_v + self.cfg.leg_lot, 2)
-                        new_avg = round((b["avg_entry"] * old_v + fill_px * self.cfg.leg_lot) / new_v, 4)
-                        b["legs"].append({"entry": round(fill_px, 4), "volume": self.cfg.leg_lot, "ts": ts})
-                        b["total_volume"] = new_v
-                        b["avg_entry"] = new_avg
-                        b["last_leg_ts"] = ts
-                        if side == "buy":
-                            lock_sl = min(new_avg + 0.08, bid - self.cfg.sl_min_breathing_room)
-                            b["stop"] = round(max(b["stop"], lock_sl), 4)
+                    if len(b["legs"]) < self.cfg.max_legs:
+                        old_v = float(b["total_volume"])
+                        if self.cfg.dynamic_sizing:
+                            s_sign = 1.0 if side == "buy" else -1.0
+                            add_vol = compute_dynamic_add_lot(
+                                side=side,
+                                bid=bid,
+                                ask=ask,
+                                fill_px=fill_px,
+                                old_vol=old_v,
+                                old_avg=float(b["avg_entry"]),
+                                breathing_room=self.cfg.sl_min_breathing_room,
+                                base_lot=self.cfg.leg_lot,
+                                max_leg_lot=self.cfg.dyn_max_leg_lot,
+                                max_total_lot=self.cfg.dyn_max_total_lot,
+                                dir_move_60s=s_sign * self._window_move(sec, mid, 60),
+                                dir_move_5m=s_sign * self._window_move(sec, mid, 300),
+                                hold_sec=max(0.0, ts - float(b["opened_at"])),
+                            )
+                            rf_ok = add_vol >= 0.01
                         else:
-                            lock_sl = max(new_avg - 0.08, ask + self.cfg.sl_min_breathing_room)
-                            b["stop"] = round(min(b["stop"], lock_sl), 4)
-                        b["stop_locked"] = True
-                        events.append({
-                            "type": "FIRE_ADD",
-                            "wave_id": b["wave_id"],
-                            "side": side,
-                            "regime": "PULLBACK_DIP",
-                            "leg_num": len(b["legs"]),
-                            "add_price": round(fill_px, 4),
-                            "total_volume": new_v,
-                            "avg_entry": new_avg,
-                            "stop": b["stop"],
-                            "last_leg_net": round(last_net, 3),
-                        })
+                            add_vol = round(self.cfg.leg_lot, 2)
+                            rf_ok = self._can_add_risk_free(side, bid, ask, fill_px)
+                        if rf_ok:
+                            last_ent = float(b["legs"][-1]["entry"])
+                            last_net = (bid - last_ent) if side == "buy" else (last_ent - ask)
+                            new_v = round(old_v + add_vol, 2)
+                            new_avg = round((b["avg_entry"] * old_v + fill_px * add_vol) / new_v, 4)
+                            b["legs"].append({"entry": round(fill_px, 4), "volume": add_vol, "ts": ts})
+                            b["total_volume"] = new_v
+                            b["avg_entry"] = new_avg
+                            b["last_leg_ts"] = ts
+                            if side == "buy":
+                                lock_sl = min(new_avg + 0.08, bid - self.cfg.sl_min_breathing_room)
+                                b["stop"] = round(max(b["stop"], lock_sl), 4)
+                            else:
+                                lock_sl = max(new_avg - 0.08, ask + self.cfg.sl_min_breathing_room)
+                                b["stop"] = round(min(b["stop"], lock_sl), 4)
+                            b["stop_locked"] = True
+                            events.append({
+                                "type": "FIRE_ADD",
+                                "wave_id": b["wave_id"],
+                                "side": side,
+                                "regime": "PULLBACK_DIP",
+                                "leg_num": len(b["legs"]),
+                                "leg_lot": add_vol,
+                                "add_price": round(fill_px, 4),
+                                "total_volume": new_v,
+                                "avg_entry": new_avg,
+                                "stop": b["stop"],
+                                "last_leg_net": round(last_net, 3),
+                            })
 
         # 2) Manage open basket (always managed regardless of session hour!)
         if self.basket is not None:
@@ -654,7 +708,29 @@ class PullbackDipEngine:
                 last_ent = b["legs"][-1]["entry"]
                 last_net = (bid - last_ent) if side == "buy" else (last_ent - ask)
                 est_fill = ask if side == "buy" else bid
-                if last_net >= self.cfg.add_step_price and self._can_add_risk_free(side, bid, ask, est_fill):
+                if self.cfg.dynamic_sizing:
+                    s_sign = 1.0 if side == "buy" else -1.0
+                    rf_ok = (
+                        compute_dynamic_add_lot(
+                            side=side,
+                            bid=bid,
+                            ask=ask,
+                            fill_px=est_fill,
+                            old_vol=float(b["total_volume"]),
+                            old_avg=float(b["avg_entry"]),
+                            breathing_room=self.cfg.sl_min_breathing_room,
+                            base_lot=self.cfg.leg_lot,
+                            max_leg_lot=self.cfg.dyn_max_leg_lot,
+                            max_total_lot=self.cfg.dyn_max_total_lot,
+                            dir_move_60s=s_sign * self._window_move(sec, mid, 60),
+                            dir_move_5m=s_sign * self._window_move(sec, mid, 300),
+                            hold_sec=hold_sec,
+                        )
+                        >= 0.01
+                    )
+                else:
+                    rf_ok = self._can_add_risk_free(side, bid, ask, est_fill)
+                if last_net >= self.cfg.add_step_price and rf_ok:
                     self.pending = {"kind": "add", "side": side, "fill_ts": ts + self.cfg.latency_sec}
 
             self._update_dd(bid, ask)
@@ -920,6 +996,82 @@ def pullback_dip_profiles(
                 active_server_hours=ALPARI_LONDON_NY_HOURS,
             ),
         ),
+        (
+            "PB_V2_DYN_SESS",
+            PullbackDipConfig(
+                leg_lot=max(0.02, leg_lot),
+                max_legs=max(12, max_legs),
+                trend_window_sec=300.0,
+                min_trend_move_price=8.0,
+                min_trend_efficiency=0.30,
+                extreme_window_sec=180.0,
+                min_pullback_price=2.0,
+                max_pullback_price=5.5,
+                min_resume_price=0.80,
+                use_pivot_stop=True,
+                pivot_lookback_sec=45.0,
+                pivot_stop_buffer=0.70,
+                min_stop_price=2.00,
+                max_stop_price=3.00,
+                be_arm_price=2.30,
+                profit_lock_arm_price=3.80,
+                profit_lock_floor_price=1.40,
+                sl_min_breathing_room=1.50,
+                add_step_price=2.00,
+                add_interval_sec=4.0,
+                trail_arm_price=4.20,
+                trail_min_pullback=2.20,
+                trail_max_pullback=4.80,
+                trail_giveback_frac=0.30,
+                max_hold_sec=600.0,
+                win_cooldown_sec=15.0,
+                loss_cooldown_sec=60.0,
+                consec_loss_cooldown_sec=180.0,
+                active_server_hours=ALPARI_LONDON_NY_HOURS,
+                dynamic_sizing=True,
+                dyn_max_l1_lot=0.06,
+                dyn_max_leg_lot=0.10,
+                dyn_max_total_lot=0.50,
+            ),
+        ),
+        (
+            "MACRO_WAVE_DYN",
+            PullbackDipConfig(
+                leg_lot=max(0.02, leg_lot),
+                max_legs=max(14, max_legs),
+                trend_window_sec=300.0,
+                min_trend_move_price=7.0,
+                min_trend_efficiency=0.28,
+                extreme_window_sec=180.0,
+                min_pullback_price=1.60,
+                max_pullback_price=5.5,
+                min_resume_price=0.70,
+                use_pivot_stop=True,
+                pivot_lookback_sec=45.0,
+                pivot_stop_buffer=0.70,
+                min_stop_price=2.20,
+                max_stop_price=3.20,
+                be_arm_price=2.60,
+                profit_lock_arm_price=4.50,
+                profit_lock_floor_price=1.80,
+                sl_min_breathing_room=1.50,
+                add_step_price=1.80,
+                add_interval_sec=4.0,
+                trail_arm_price=5.50,
+                trail_min_pullback=3.20,
+                trail_max_pullback=6.50,
+                trail_giveback_frac=0.34,
+                max_hold_sec=900.0,
+                win_cooldown_sec=15.0,
+                loss_cooldown_sec=60.0,
+                consec_loss_cooldown_sec=180.0,
+                active_server_hours=ALPARI_LONDON_NY_HOURS,
+                dynamic_sizing=True,
+                dyn_max_l1_lot=0.06,
+                dyn_max_leg_lot=0.10,
+                dyn_max_total_lot=0.60,
+            ),
+        ),
     ]
 
 
@@ -943,10 +1095,12 @@ def _summarize_waves(name: str, waves: list[dict[str, Any]], max_dd_usd: float) 
     gw = sum(wins)
     gl = abs(sum(losses))
     pf = round(gw / gl, 2) if gl > 0 else (99.0 if gw > 0 else None)
+    max_lot = round(max((float(w.get("total_volume", 0.0)) for w in waves), default=0.0), 2)
     return {
         "strategy": name,
         "waves_count": len(waves),
         "total_legs": sum(int(w["legs_count"]) for w in waves),
+        "max_lot": max_lot,
         "wins": len(wins),
         "losses": len(losses),
         "wr_pct": round(100.0 * len(wins) / len(waves), 1) if waves else 0.0,
@@ -1024,7 +1178,7 @@ def run_structural_benchmark(
     leg_lot: float = 0.01,
     max_legs: int = 6,
 ) -> list[dict[str, Any]]:
-    """Evaluate 16 distinct causal architectures (S1 Shock, 15m Breakout, Pullback-Dip, and S10 VSA/SR/EMA hybrids)."""
+    """Evaluate 19 distinct causal architectures (fixed-lot baselines + Acceleration x Duration dynamic-lot runners)."""
     from trade_mcp.s10_hybrid_engines import S10HybridEngine, s10_hybrid_profiles
 
     s1_specs: list[tuple[str, S1SurferConfig]] = [
@@ -1032,6 +1186,7 @@ def run_structural_benchmark(
         ("SHOCK_8_EFF45", build_s1_profile_config("v2.5_SHOCK_8", leg_lot=leg_lot, max_legs=max_legs)),
         ("SHOCK_10_EFF50", build_s1_profile_config("v2.5_SHOCK_10", leg_lot=leg_lot, max_legs=max_legs)),
         ("SHOCK_10_RUNNER", build_s1_profile_config("v2.5_SHOCK_10_RUNNER", leg_lot=leg_lot, max_legs=max_legs)),
+        ("SHOCK10_DYN_RUN", build_s1_profile_config("v2.6_SHOCK10_DYN", leg_lot=leg_lot, max_legs=max_legs)),
         ("SHOCK_12_EFF50", _s1_shock_cfg(leg_lot=leg_lot, max_legs=max_legs, min_60s=12.0, min_eff_60s=0.50)),
         (
             "BRK15M_RIP6_E40",

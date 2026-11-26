@@ -175,15 +175,17 @@ def _print_engine_event(eng_name: str, ev: dict[str, Any]) -> None:
             extra = f"{regime} {ev.get('detail', '')}{tp_part}".strip()
         else:
             extra = f"vel={ev.get('vel_ratio', 0):.1f}x ({ev.get('move_3s', 0):+.2f}/3s)"
+        lot_part = f" ({ev['leg_lot']:.2f}lot)" if ev.get("leg_lot") is not None else ""
         print(
-            f"[{now_str}Z] [{eng_name:20s} | OPEN L1] #{ev['wave_id']} {ev['side'].upper()} @ {ev['entry']:.2f} "
+            f"[{now_str}Z] [{eng_name:20s} | OPEN L1] #{ev['wave_id']} {ev['side'].upper()}{lot_part} @ {ev['entry']:.2f} "
             f"| SL={ev['stop']:.2f} | {extra} | M1={ev.get('m1_label', '')}",
             flush=True,
         )
     elif et == "FIRE_ADD":
+        add_part = f"+{ev['leg_lot']:.2f}lot " if ev.get("leg_lot") is not None else ""
         print(
             f"[{now_str}Z] [{eng_name:20s} | ADD +L{ev['leg_num']}] #{ev['wave_id']} {ev['side'].upper()} "
-            f"@ {ev['add_price']:.2f} -> {ev['total_volume']:.2f}lot avg={ev['avg_entry']:.2f} | SL={ev['stop']:.2f}",
+            f"{add_part}@ {ev['add_price']:.2f} -> {ev['total_volume']:.2f}lot avg={ev['avg_entry']:.2f} | SL={ev['stop']:.2f}",
             flush=True,
         )
     elif et == "CLOSE_ALL":
@@ -216,6 +218,9 @@ def _print_status(suite: DualRadarPaperSuite, m1_ctx: dict[str, Any], bid: float
         "v2.5_SHOCK_8": "SHK8",
         "PB_DIP_V2_SESS": "PB_SESS",
         "PB_DIP_V2_24H": "PB_24H",
+        "SHOCK10_DYN_RUN": "SHK10D",
+        "PB_V2_DYN_SESS": "PBDYN",
+        "MACRO_WAVE_DYN": "MACRO",
         "SR_SWEEP_VSA_24H": "SWP24",
         "SR_SWEEP_VSA_SESS": "SWPS",
         "SR_BREAK_VSA_S10": "BRK10",
@@ -284,9 +289,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--report-seconds", type=float, default=300.0, help="Periodic flush seconds for --report-file (default 300)")
     parser.add_argument("--minutes", type=float, default=0.0, help="Run duration minutes (0 = 24/7 until Ctrl+C)")
     parser.add_argument(
+        "--include-dynamic",
+        action="store_true",
+        help="Also run Acceleration x Duration dynamic-lot runners (SHOCK10_DYN_RUN, PB_V2_DYN_SESS, MACRO_WAVE_DYN, ORDERS=0)",
+    )
+    parser.add_argument(
         "--include-hybrids",
         action="store_true",
-        help="Also run the 4 S10 VSA/SR/EMA hybrid engines side-by-side (9 Paper engines total, ORDERS=0)",
+        help="Also run the 4 S10 VSA/SR/EMA hybrid engines side-by-side (ORDERS=0)",
     )
     parser.add_argument("--replay", nargs="+", default=[], help="Offline replay 1+ recorded tick JSONL files through Dual Radar + engines")
     parser.add_argument("--rebuild-m1", action="store_true", help="Rebuild causal M1 context during --replay")
@@ -319,6 +329,7 @@ def main(argv: list[str] | None = None) -> int:
             leg_lot=leg_lot,
             max_legs=max_legs,
             radar_cfg=radar_cfg,
+            include_dynamic=bool(args.include_dynamic),
             include_hybrids=bool(args.include_hybrids),
         )
         started_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -361,6 +372,7 @@ def main(argv: list[str] | None = None) -> int:
             leg_lot=leg_lot,
             max_legs=max_legs,
             radar_cfg=radar_cfg,
+            include_dynamic=bool(args.include_dynamic),
             include_hybrids=bool(args.include_hybrids),
         )
         started_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -432,6 +444,7 @@ def main(argv: list[str] | None = None) -> int:
                 leg_lot=leg_lot,
                 max_legs=max_legs,
                 radar_cfg=radar_cfg,
+                include_dynamic=bool(args.include_dynamic),
                 include_hybrids=bool(args.include_hybrids),
             )
             suite.set_multiplier(float(mult))
