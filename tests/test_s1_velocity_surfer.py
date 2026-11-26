@@ -631,6 +631,39 @@ def test_live_report_snapshot_writes_atomic_git_safe_json(
     assert len(loaded["waves"]) == loaded["summary"]["waves_count"]
 
 
+def test_live_tick_recorder_daily_path_and_replay_compat(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """24/7 tick recorder produces replay-compatible JSONL under logs/ and sanitizes symbol names."""
+    import record_ticks_live as rec
+
+    monkeypatch.setenv("TRADE_MCP_ALLOW_TRADING", "false")
+    monkeypatch.setenv("TRADE_MCP_PAPER_TRADING", "true")
+    p = rec._daily_tick_path("XAUUSD_i", "20261126", logs_dir=tmp_path)
+    assert p.parent == tmp_path.resolve()
+    assert p.name == "s1_ticks_XAUUSD_i_20261126.jsonl"
+
+    # Traversal attempt inside symbol name gets sanitized safely inside logs_dir
+    p2 = rec._daily_tick_path("../../evil", "20261126", logs_dir=tmp_path)
+    assert p2.parent == tmp_path.resolve()
+
+    # Written lines parse cleanly in replay_recorded_ticks()
+    m1_bars, ticks = make_synthetic_s1_session(mode="normal_c3")
+    m1_ctx = analyze_m1_sr_context(m1_bars, server_now_ts=ticks[0][0])
+    fh = rec._open_private_append(p)
+    try:
+        for ts, bid, ask in ticks:
+            fh.write(rec._format_tick_line(ts, bid, ask, m1_ctx))
+    finally:
+        fh.close()
+
+    res = replay_recorded_ticks(p, cfg=build_s1_profile_config("v2.1_DEFAULT", leg_lot=0.01, max_legs=6))
+    assert res["ticks_replayed"] == len(ticks)
+    assert res["waves_count"] >= 1
+
+
+
 
 
 
