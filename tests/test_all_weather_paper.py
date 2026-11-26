@@ -224,7 +224,7 @@ def test_inspect_live_sessions_audits_windows_and_tick_chart(
     assert "1) LIVE PAPER WINDOWS" in out
     assert "2) RECORDED TRADE & ALERT LOGS" in out
     assert "3) TICK-BY-SECOND CHART TIMELINE" in out
-    assert "4) LAST 15 MIN MICROSCOPE" in out
+    assert "4) LAST 240 MIN MICROSCOPE" in out
     assert "SAVED_COMPACT_AUDIT=" in out
     saved = json.loads((tmp_path / "reports" / "paper_live" / "live_audit_summary.json").read_text(encoding="utf-8"))
     assert saved["schema"] == "live_audit_summary_v1"
