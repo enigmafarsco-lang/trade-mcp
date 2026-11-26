@@ -1,0 +1,341 @@
+{
+  "schema": "fast_snap_lab_v1",
+  "generated_utc": "2026-11-26T13:34:16+00:00",
+  "orders_submitted": 0,
+  "files_count": 12,
+  "total_ticks": 322086,
+  "today": {
+    "file": "s1_ticks_XAUUSD_i_20261126.jsonl",
+    "ticks": 70077,
+    "baseline_aw": {
+      "trades": 7,
+      "wins": 3,
+      "losses": 4,
+      "wr": 42.9,
+      "profit": -10.41,
+      "max_dd": 17.06,
+      "pf": 0.6,
+      "max_lot": 0.03
+    },
+    "engines": {
+      "VSNAP_30S_SESS": {
+        "trades": 4,
+        "wins": 0,
+        "losses": 4,
+        "wr": 0.0,
+        "profit": -15.82,
+        "max_dd": 15.82,
+        "pf": 0.0,
+        "max_lot": 0.02
+      },
+      "VSNAP_30S_24H": {
+        "trades": 4,
+        "wins": 0,
+        "losses": 4,
+        "wr": 0.0,
+        "profit": -15.82,
+        "max_dd": 15.82,
+        "pf": 0.0,
+        "max_lot": 0.02
+      },
+      "VSNAP_SHOCK_6": {
+        "trades": 2,
+        "wins": 0,
+        "losses": 2,
+        "wr": 0.0,
+        "profit": -9.01,
+        "max_dd": 9.01,
+        "pf": 0.0,
+        "max_lot": 0.03
+      },
+      "VTOP_SWEEP_SNAP": {
+        "trades": 11,
+        "wins": 7,
+        "losses": 4,
+        "wr": 63.6,
+        "profit": -8.0,
+        "max_dd": 22.0,
+        "pf": 0.66,
+        "max_lot": 0.05
+      },
+      "MICRO_PB_7": {
+        "trades": 2,
+        "wins": 1,
+        "losses": 1,
+        "wr": 50.0,
+        "profit": -7.34,
+        "max_dd": 9.72,
+        "pf": 0.24,
+        "max_lot": 0.03
+      },
+      "ACCEL_SCALP_15S": {
+        "trades": 6,
+        "wins": 0,
+        "losses": 6,
+        "wr": 0.0,
+        "profit": -21.6,
+        "max_dd": 21.6,
+        "pf": 0.0,
+        "max_lot": 0.02
+      }
+    },
+    "spike_window_trades": {
+      "VSNAP_30S_SESS": [
+        {
+          "opened": "15:02:04",
+          "closed": "15:02:13",
+          "side": "BUY",
+          "lot": 0.02,
+          "entry": 3575.48,
+          "exit": 3572.96,
+          "pnl": -5.04,
+          "reason": "hard_stop_loss"
+        }
+      ],
+      "VSNAP_30S_24H": [
+        {
+          "opened": "15:02:04",
+          "closed": "15:02:13",
+          "side": "BUY",
+          "lot": 0.02,
+          "entry": 3575.48,
+          "exit": 3572.96,
+          "pnl": -5.04,
+          "reason": "hard_stop_loss"
+        }
+      ],
+      "VSNAP_SHOCK_6": [
+        {
+          "opened": "15:02:45",
+          "closed": "15:03:16",
+          "side": "SELL",
+          "lot": 0.02,
+          "entry": 3568.23,
+          "exit": 3568.37,
+          "pnl": -0.28,
+          "reason": "locked_sl_gap_slip"
+        }
+      ],
+      "VTOP_SWEEP_SNAP": [
+        {
+          "opened": "15:02:21",
+          "closed": "15:03:07",
+          "side": "SELL",
+          "lot": 0.05,
+          "entry": 3568.89,
+          "exit": 3567.35,
+          "pnl": 7.7,
+          "reason": "profit_floor_hit"
+        },
+        {
+          "opened": "15:06:48",
+          "closed": "15:07:35",
+          "side": "BUY",
+          "lot": 0.02,
+          "entry": 3566.44,
+          "exit": 3566.55,
+          "pnl": 0.22,
+          "reason": "profit_floor_hit"
+        }
+      ],
+      "MICRO_PB_7": [
+        {
+          "opened": "15:03:17",
+          "closed": "15:03:27",
+          "side": "BUY",
+          "lot": 0.03,
+          "entry": 3568.22,
+          "exit": 3564.98,
+          "pnl": -9.72,
+          "reason": "hard_stop_loss"
+        },
+        {
+          "opened": "15:07:36",
+          "closed": "15:09:00",
+          "side": "SELL",
+          "lot": 0.02,
+          "entry": 3566.55,
+          "exit": 3565.36,
+          "pnl": 2.38,
+          "reason": "profit_floor_hit"
+        }
+      ],
+      "ACCEL_SCALP_15S": [
+        {
+          "opened": "15:02:04",
+          "closed": "15:02:08",
+          "side": "BUY",
+          "lot": 0.02,
+          "entry": 3575.48,
+          "exit": 3573.41,
+          "pnl": -4.14,
+          "reason": "hard_stop_loss"
+        },
+        {
+          "opened": "15:07:07",
+          "closed": "15:07:35",
+          "side": "BUY",
+          "lot": 0.02,
+          "entry": 3568.64,
+          "exit": 3566.55,
+          "pnl": -4.18,
+          "reason": "hard_stop_loss"
+        }
+      ]
+    }
+  },
+  "all_standalone": {
+    "VSNAP_30S_SESS": {
+      "trades": 45,
+      "wins": 20,
+      "losses": 25,
+      "wr": 44.4,
+      "profit": -86.97,
+      "max_dd": 101.27,
+      "pf": 0.38,
+      "max_lot": 0.09
+    },
+    "VSNAP_30S_24H": {
+      "trades": 110,
+      "wins": 54,
+      "losses": 56,
+      "wr": 49.1,
+      "profit": -165.9,
+      "max_dd": 180.2,
+      "pf": 0.45,
+      "max_lot": 0.09
+    },
+    "VSNAP_SHOCK_6": {
+      "trades": 18,
+      "wins": 14,
+      "losses": 4,
+      "wr": 77.8,
+      "profit": 37.57,
+      "max_dd": 21.52,
+      "pf": 2.23,
+      "max_lot": 0.08
+    },
+    "VTOP_SWEEP_SNAP": {
+      "trades": 30,
+      "wins": 13,
+      "losses": 17,
+      "wr": 43.3,
+      "profit": -99.31,
+      "max_dd": 111.51,
+      "pf": 0.25,
+      "max_lot": 0.11
+    },
+    "MICRO_PB_7": {
+      "trades": 55,
+      "wins": 27,
+      "losses": 28,
+      "wr": 49.1,
+      "profit": -120.97,
+      "max_dd": 123.35,
+      "pf": 0.48,
+      "max_lot": 0.08
+    },
+    "ACCEL_SCALP_15S": {
+      "trades": 19,
+      "wins": 4,
+      "losses": 15,
+      "wr": 21.1,
+      "profit": -41.98,
+      "max_dd": 64.14,
+      "pf": 0.42,
+      "max_lot": 0.06
+    }
+  },
+  "all_combos": {
+    "BASELINE_AW (Current Live)": {
+      "trades": 29,
+      "wins": 18,
+      "losses": 11,
+      "wr": 62.1,
+      "profit": 148.7,
+      "max_dd": 22.24,
+      "pf": 3.22,
+      "max_lot": 0.43
+    },
+    "AW + VSNAP_30S_SESS": {
+      "trades": 74,
+      "wins": 38,
+      "losses": 36,
+      "wr": 51.4,
+      "profit": 61.73,
+      "max_dd": 83.46,
+      "pf": 1.3,
+      "max_lot": 0.43
+    },
+    "AW + VSNAP_SHOCK_6": {
+      "trades": 47,
+      "wins": 32,
+      "losses": 15,
+      "wr": 68.1,
+      "profit": 186.27,
+      "max_dd": 30.8,
+      "pf": 2.91,
+      "max_lot": 0.43
+    },
+    "AW + VTOP_SWEEP_SNAP": {
+      "trades": 59,
+      "wins": 31,
+      "losses": 28,
+      "wr": 52.5,
+      "profit": 49.39,
+      "max_dd": 91.88,
+      "pf": 1.25,
+      "max_lot": 0.43
+    },
+    "AW + MICRO_PB_7": {
+      "trades": 84,
+      "wins": 45,
+      "losses": 39,
+      "wr": 53.6,
+      "profit": 27.73,
+      "max_dd": 104.17,
+      "pf": 1.09,
+      "max_lot": 0.43
+    },
+    "AW + ACCEL_SCALP_15S": {
+      "trades": 48,
+      "wins": 22,
+      "losses": 26,
+      "wr": 45.8,
+      "profit": 106.72,
+      "max_dd": 57.12,
+      "pf": 1.76,
+      "max_lot": 0.43
+    },
+    "AW + VSNAP30 + VTOP_SWEEP": {
+      "trades": 104,
+      "wins": 51,
+      "losses": 53,
+      "wr": 49.0,
+      "profit": -37.58,
+      "max_dd": 193.15,
+      "pf": 0.89,
+      "max_lot": 0.43
+    },
+    "AW + SHOCK6 + VTOP_SWEEP": {
+      "trades": 77,
+      "wins": 45,
+      "losses": 32,
+      "wr": 58.4,
+      "profit": 86.96,
+      "max_dd": 94.9,
+      "pf": 1.38,
+      "max_lot": 0.43
+    },
+    "AW + SHOCK6 + MICRO_PB_7": {
+      "trades": 102,
+      "wins": 59,
+      "losses": 43,
+      "wr": 57.8,
+      "profit": 65.3,
+      "max_dd": 99.35,
+      "pf": 1.2,
+      "max_lot": 0.43
+    }
+  }
+}
