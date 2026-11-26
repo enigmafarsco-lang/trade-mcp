@@ -893,4 +893,55 @@ def test_calm_regime_m5_range_bb_mean_reversion_and_anti_trend_guard() -> None:
     assert len(eng_trend.waves_closed) == 0
 
 
+def test_calm_m5_rr_and_m1_sess_hour_gate() -> None:
+    """CALM_M5_RR_24H caps structural SL tighter than TREND, and CALM_M1_EMA_SESS gates Asia entries."""
+    from trade_mcp.calm_regime_engines import CalmRegimeEngine, build_calm_regime_profile_config
+
+    cfg_rr = build_calm_regime_profile_config("CALM_M5_RR_24H", leg_lot=0.02)
+    cfg_orig = build_calm_regime_profile_config("CALM_M5_TREND_24H", leg_lot=0.02)
+    assert cfg_rr.max_stop_price < cfg_orig.max_stop_price
+    assert cfg_rr.be_arm_min_price >= cfg_orig.be_arm_min_price
+    assert cfg_rr.active_server_hours is None
+
+    # CALM_M1_EMA_SESS must block new entries in overnight Asia (03:00 UTC/SRV)
+    cfg_sess = build_calm_regime_profile_config("CALM_M1_EMA_SESS", leg_lot=0.02)
+    assert cfg_sess.active_server_hours == (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
+
+    def _run_m1_reclaim_at_hour(hour_utc: int) -> CalmRegimeEngine:
+        eng = CalmRegimeEngine(cfg=cfg_sess)
+        t0 = float(datetime(2026, 11, 26, hour_utc, 0, 0, tzinfo=timezone.utc).timestamp())
+        bar_sec = 60
+        px = 3500.0
+        b_idx = 0
+        # 24 steady bull M1 bars (ATR ~ $2.40 >= min_atr_price=1.80)
+        for _ in range(24):
+            _emit_bar_ticks(eng, t_bar=t0 + b_idx * bar_sec, bar_sec=bar_sec, o=px, h=px + 2.0, low=px - 0.5, c=px + 1.1)
+            px += 1.1
+            b_idx += 1
+        # Pullback into EMA9 then bullish reclaim close
+        _emit_bar_ticks(eng, t_bar=t0 + b_idx * bar_sec, bar_sec=bar_sec, o=px, h=px + 0.3, low=px - 2.6, c=px - 1.8)
+        px -= 1.8
+        b_idx += 1
+        _emit_bar_ticks(eng, t_bar=t0 + b_idx * bar_sec, bar_sec=bar_sec, o=px, h=px + 2.6, low=px - 0.3, c=px + 2.1)
+        px += 2.1
+        b_idx += 1
+        # Next bar triggers pending open & drifts up +$12 then pulls back -$5
+        t_open = t0 + b_idx * bar_sec
+        for step in range(4 * 120):
+            sec = step * 0.25
+            mid = (px + 12.0 * (sec / 80.0)) if sec < 80.0 else (px + 12.0 - 5.5 * ((sec - 80.0) / 40.0))
+            eng.on_tick(ts=t_open + sec, bid=round(mid - 0.18, 4), ask=round(mid + 0.18, 4), m1_context={"bias": 1, "label": "BULL_TREND"})
+        return eng
+
+    eng_asia = _run_m1_reclaim_at_hour(3)
+    assert eng_asia.basket is None
+    assert len(eng_asia.waves_closed) == 0
+
+    eng_london = _run_m1_reclaim_at_hour(14)
+    assert len(eng_london.waves_closed) >= 1
+    assert eng_london.waves_closed[0]["side"] == "buy"
+    assert eng_london.waves_closed[0]["net_pnl_usd"] > 5.0
+    assert eng_london.summary()["orders_submitted"] == 0
+
+
 

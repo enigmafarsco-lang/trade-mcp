@@ -94,10 +94,11 @@ class CalmRegimeConfig:
     dyn_profit_ratchet_arm: float = 4.50
     dyn_profit_ratchet_frac: float = 0.55
 
-    # Cooldowns
+    # Cooldowns & optional session gate
     win_cooldown_sec: float = 60.0
     loss_cooldown_sec: float = 180.0
     consec_loss_cooldown_sec: float = 480.0
+    active_server_hours: tuple[int, ...] | None = None  # optional broker-server active hours (None=24h)
 
 
 @dataclass
@@ -687,8 +688,11 @@ class CalmRegimeEngine:
             return events
 
         # 3) Flat: evaluate signal strictly when a multi-minute bar just closed
+        srv_hour = datetime.fromtimestamp(ts, tz=timezone.utc).hour
+        in_session = self.cfg.active_server_hours is None or srv_hour in self.cfg.active_server_hours
         if (
-            just_closed is not None
+            in_session
+            and just_closed is not None
             and prev_closed is not None
             and self.pending is None
             and ts >= self.cooldown_until
@@ -920,6 +924,95 @@ def calm_regime_profiles(
                 win_cooldown_sec=120.0,
                 loss_cooldown_sec=300.0,
                 consec_loss_cooldown_sec=900.0,
+            ),
+        ),
+        (
+            "CALM_M5_RR_24H",
+            CalmRegimeConfig(
+                mode="trend_reclaim",
+                bar_sec=300,
+                leg_lot=base_lot,
+                max_legs=max(8, max_legs),
+                fast_ema=8,
+                slow_ema=18,
+                atr_period=10,
+                min_bars=12,
+                max_60s_shock_block=10.0,
+                min_atr_price=1.80,
+                min_trend_sep_atr=0.18,
+                min_trend_eff=0.22,
+                min_body_frac=0.28,
+                pullback_ema_atr_pad=0.40,
+                sl_atr_mult=1.25,
+                min_stop_price=3.80,
+                max_stop_price=5.80,
+                sl_min_breathing_room=2.80,
+                be_arm_atr_mult=1.15,
+                be_arm_min_price=5.00,
+                profit_lock_arm_price=7.50,
+                profit_lock_floor_price=2.80,
+                trail_arm_price=7.00,
+                trail_atr_mult=1.50,
+                trail_min_pullback=4.50,
+                trail_max_pullback=9.50,
+                max_hold_sec=3600.0,
+                enable_adds=True,
+                add_step_atr_mult=0.85,
+                add_step_min_price=3.00,
+                add_interval_sec=45.0,
+                dyn_max_leg_lot=0.10,
+                dyn_max_total_lot=0.40,
+                dyn_min_lock_profit=0.55,
+                dyn_profit_ratchet_arm=4.50,
+                dyn_profit_ratchet_frac=0.55,
+                win_cooldown_sec=120.0,
+                loss_cooldown_sec=300.0,
+                consec_loss_cooldown_sec=900.0,
+            ),
+        ),
+        (
+            "CALM_M1_EMA_SESS",
+            CalmRegimeConfig(
+                mode="trend_reclaim",
+                bar_sec=60,
+                leg_lot=base_lot,
+                max_legs=max(8, max_legs),
+                fast_ema=9,
+                slow_ema=21,
+                atr_period=14,
+                min_bars=22,
+                max_60s_shock_block=10.0,
+                min_atr_price=1.80,
+                min_trend_sep_atr=0.22,
+                min_trend_eff=0.26,
+                min_body_frac=0.35,
+                pullback_ema_atr_pad=0.30,
+                sl_atr_mult=1.60,
+                min_stop_price=3.00,
+                max_stop_price=5.20,
+                sl_min_breathing_room=1.90,
+                be_arm_atr_mult=1.15,
+                be_arm_min_price=3.00,
+                profit_lock_arm_price=5.00,
+                profit_lock_floor_price=1.80,
+                trail_arm_price=4.60,
+                trail_atr_mult=1.45,
+                trail_min_pullback=3.00,
+                trail_max_pullback=6.80,
+                max_hold_sec=2400.0,
+                enable_adds=True,
+                add_step_atr_mult=1.00,
+                add_step_min_price=2.80,
+                add_interval_sec=30.0,
+                dyn_max_leg_lot=0.08,
+                dyn_max_total_lot=0.30,
+                dyn_min_lock_profit=0.50,
+                dyn_profit_ratchet_arm=4.20,
+                dyn_profit_ratchet_frac=0.55,
+                win_cooldown_sec=60.0,
+                loss_cooldown_sec=180.0,
+                consec_loss_cooldown_sec=480.0,
+                active_server_hours=(9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19),
             ),
         ),
     ]
