@@ -23,7 +23,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from trade_mcp.s1_impulse_audit import load_tick_stream  # noqa: E402
+from trade_mcp.all_weather_paper import AllWeatherPaperSuite  # noqa: E402
+from trade_mcp.s1_impulse_audit import load_tick_stream, run_structural_benchmark  # noqa: E402
 
 
 def _iso_hms(ts: float) -> str:
@@ -289,10 +290,204 @@ def summarize_trade_logs(logs_dir: Path) -> list[dict[str, Any]]:
     return out
 
 
+def inspect_recent_spike(path: Path, *, last_minutes: float = 15.0) -> dict[str, Any]:
+    """Second-by-second microscope of the last N minutes + every strategy that traded during that window."""
+    ticks = load_tick_stream(path, rebuild_m1=True)
+    if not ticks:
+        return {"file": path.name, "minutes": [], "tape_10s": [], "aw_trades": [], "all_28_trades": []}
+
+    t_end = ticks[-1][0]
+    t_cut = t_end - max(1.0, last_minutes) * 60.0
+
+    # 1) Build 1m bars + 10s tape + 60s speed/efficiency across the recent window
+    sec_hist: deque[tuple[int, float]] = deque(maxlen=400)
+    cur_sec: tuple[int, float] | None = None
+    m1_map: dict[int, dict[str, Any]] = {}
+    s10_map: dict[int, dict[str, Any]] = {}
+
+    for ts, bid, ask, _ in ticks:
+        mid = 0.5 * (bid + ask)
+        sp = ask - bid
+        sec = int(ts)
+        if cur_sec is None:
+            cur_sec = (sec, mid)
+        elif sec > cur_sec[0]:
+            sec_hist.append(cur_sec)
+            while sec_hist and (sec - sec_hist[0][0]) > 120:
+                sec_hist.popleft()
+            cur_sec = (sec, mid)
+        else:
+            cur_sec = (sec, mid)
+
+        if ts < t_cut:
+            continue
+
+        # Causal 10s & 60s move + 60s efficiency
+        m10 = 0.0
+        for s_ts, s_mid in sec_hist:
+            if s_ts >= sec - 10:
+                m10 = mid - s_mid
+                break
+        m60 = 0.0
+        path60 = 0.0
+        prev_m: float | None = None
+        for s_ts, s_mid in sec_hist:
+            if s_ts >= sec - 60:
+                if prev_m is None:
+                    m60 = mid - s_mid
+                else:
+                    path60 += abs(s_mid - prev_m)
+                prev_m = s_mid
+        if prev_m is not None:
+            path60 += abs(mid - prev_m)
+        eff60 = (abs(m60) / path60) if path60 > 1e-9 else 0.0
+
+        b1 = int(ts // 60) * 60
+        if b1 not in m1_map:
+            m1_map[b1] = {
+                "hm": _hm(b1),
+                "o": mid,
+                "h": mid,
+                "l": mid,
+                "c": mid,
+                "max_10s": m10,
+                "max_60s": m60,
+                "peak_eff60": eff60,
+                "max_sp": sp,
+            }
+        else:
+            bm = m1_map[b1]
+            bm["h"] = max(bm["h"], mid)
+            bm["l"] = min(bm["l"], mid)
+            bm["c"] = mid
+            if abs(m10) > abs(bm["max_10s"]):
+                bm["max_10s"] = m10
+            if abs(m60) > abs(bm["max_60s"]):
+                bm["max_60s"] = m60
+                bm["peak_eff60"] = eff60
+            bm["max_sp"] = max(bm["max_sp"], sp)
+
+        # Keep 10s snapshots for the last 8 minutes
+        if ts >= t_end - 480.0:
+            b10 = int(ts // 10) * 10
+            if b10 not in s10_map:
+                s10_map[b10] = {
+                    "hms": _iso_hms(b10)[11:19],
+                    "o": mid,
+                    "h": mid,
+                    "l": mid,
+                    "c": mid,
+                    "m60": m60,
+                    "eff60": eff60,
+                    "sp": sp,
+                }
+            else:
+                bs = s10_map[b10]
+                bs["h"] = max(bs["h"], mid)
+                bs["l"] = min(bs["l"], mid)
+                bs["c"] = mid
+                if abs(m60) > abs(bs["m60"]):
+                    bs["m60"] = m60
+                    bs["eff60"] = eff60
+                bs["sp"] = max(bs["sp"], sp)
+
+    minutes_rows = [
+        {
+            "hm": v["hm"],
+            "o": round(v["o"], 2),
+            "h": round(v["h"], 2),
+            "l": round(v["l"], 2),
+            "c": round(v["c"], 2),
+            "delta": round(v["c"] - v["o"], 2),
+            "range": round(v["h"] - v["l"], 2),
+            "max_10s": round(v["max_10s"], 2),
+            "max_60s": round(v["max_60s"], 2),
+            "eff60": round(v["peak_eff60"], 2),
+            "max_sp": round(v["max_sp"], 2),
+        }
+        for _, v in sorted(m1_map.items())
+    ]
+    tape_10s = [
+        {
+            "hms": v["hms"],
+            "o": round(v["o"], 2),
+            "h": round(v["h"], 2),
+            "l": round(v["l"], 2),
+            "c": round(v["c"], 2),
+            "delta": round(v["c"] - v["o"], 2),
+            "m60": round(v["m60"], 2),
+            "eff60": round(v["eff60"], 2),
+            "sp": round(v["sp"], 2),
+        }
+        for _, v in sorted(s10_map.items())
+    ]
+
+    # 2) Replay FULL file causally through AllWeatherPaperSuite + all 28 benchmark strategies,
+    #    then filter trades that overlapped the last N minutes!
+    suite = AllWeatherPaperSuite(initial_capital_usd=1000.0)
+    for ts, bid, ask, m1_ctx in ticks:
+        suite.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_ctx)
+    suite.close_all_open(ts=ticks[-1][0], bid=ticks[-1][1], ask=ticks[-1][2], reason="eof_now")
+    aw_recent = [
+        {
+            "engine": t.get("engine_label", t.get("engine")),
+            "opened": str(t.get("opened_utc", ""))[11:19],
+            "closed": str(t.get("closed_utc", ""))[11:19],
+            "side": str(t.get("side", "")).upper(),
+            "lot": t.get("total_volume"),
+            "entry": t.get("avg_entry"),
+            "exit": t.get("exit_price"),
+            "pnl": t.get("net_pnl_usd"),
+            "reason": t.get("exit_reason"),
+        }
+        for t in suite.trades_closed
+        if float(t.get("closed_at", 0.0)) >= t_cut or float(t.get("opened_at", 0.0)) >= t_cut
+    ]
+
+    bench_rows = run_structural_benchmark(ticks)
+    active_28: list[dict[str, Any]] = []
+    for r in bench_rows:
+        recent_w = [
+            w for w in r["waves"] if float(w.get("closed_at", 0.0)) >= t_cut or float(w.get("opened_at", 0.0)) >= t_cut
+        ]
+        if recent_w:
+            active_28.append({
+                "strategy": r["strategy"],
+                "trades": len(recent_w),
+                "net_usd": round(sum(float(w["net_pnl_usd"]) for w in recent_w), 2),
+                "waves": [
+                    {
+                        "opened": str(w.get("opened_utc", ""))[11:19],
+                        "closed": str(w.get("closed_utc", ""))[11:19],
+                        "side": str(w.get("side", "")).upper(),
+                        "lot": w.get("total_volume"),
+                        "entry": w.get("avg_entry"),
+                        "exit": w.get("exit_price"),
+                        "pnl": w.get("net_pnl_usd"),
+                        "reason": w.get("exit_reason"),
+                    }
+                    for w in recent_w
+                ],
+            })
+
+    return {
+        "file": path.name,
+        "window_start_srv": _iso_hms(t_cut),
+        "window_end_srv": _iso_hms(t_end),
+        "last_minutes": last_minutes,
+        "minutes": minutes_rows,
+        "tape_10s": tape_10s,
+        "aw_status_at_end": suite.live_status(t_end),
+        "aw_trades": aw_recent,
+        "all_28_trades": active_28,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Audit live paper windows & tick-by-second chart timeline (ORDERS=0)")
     parser.add_argument("--tick-files", nargs="*", default=[], help="Specific tick JSONL files (default: latest 3)")
     parser.add_argument("--latest-ticks", type=int, default=3, help="How many latest tick files to chart (default 3)")
+    parser.add_argument("--last-minutes", type=float, default=15.0, help="Second-by-second microscope on last N minutes (default 15)")
     parser.add_argument("--save", action="store_true", help="Write compact git-safe JSON to reports/paper_live/live_audit_summary.json")
     args = parser.parse_args(argv)
 
@@ -381,6 +576,38 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print("  -- Zero >=$5 swings in 5m window --")
 
+    recent_micro: dict[str, Any] | None = None
+    if tick_paths:
+        # Pick the file that reaches the newest timestamp (prefer largest if tied, e.g. daily recorder)
+        newest_path = max(
+            [p for p in tick_paths if p.exists()],
+            key=lambda p: (p.stat().st_mtime, p.stat().st_size),
+            default=None,
+        )
+        if newest_path is not None:
+            recent_micro = inspect_recent_spike(newest_path, last_minutes=args.last_minutes)
+            print(
+                f"\n=== 4) LAST {int(args.last_minutes)} MIN MICROSCOPE ({recent_micro['file']}) ===\n"
+                f"Window: {recent_micro['window_start_srv']} -> {recent_micro['window_end_srv']}"
+            )
+            print("  MIN   |    OPEN ->   CLOSE (  Δ$  ) |  LOW ..  HIGH  (RNG$ ) | Max10s | Max60s | Eff60 | MaxSp")
+            print("  " + "-" * 94)
+            for m in recent_micro["minutes"]:
+                print(
+                    f"  {m['hm']} | {m['o']:7.2f} -> {m['c']:7.2f} ({m['delta']:+6.2f}) | "
+                    f"{m['l']:7.2f}..{m['h']:7.2f} ({m['range']:5.2f}) | "
+                    f"{m['max_10s']:+6.2f} | {m['max_60s']:+6.2f} | {m['eff60']:5.2f} | {m['max_sp']:5.2f}"
+                )
+            print(f"\n  All-Weather (COMBO_AW_PRO_M1) trades in last {int(args.last_minutes)}m: {len(recent_micro['aw_trades'])}")
+            for t in recent_micro["aw_trades"]:
+                print(
+                    f"    • [{t['engine']:11s}] {t['opened']}->{t['closed']} {t['side']:4s} {t['lot']:.2f}lot "
+                    f"{t['entry']:.2f}->{t['exit']:.2f} PnL=${t['pnl']:+.2f} ({t['reason']})"
+                )
+            print(f"  All-28 strategies that traded in last {int(args.last_minutes)}m: {len(recent_micro['all_28_trades'])}")
+            for s in recent_micro["all_28_trades"]:
+                print(f"    • {s['strategy']:18s}: {s['trades']} trades | NET=${s['net_usd']:+.2f}")
+
     if args.save:
         out_path = reports_dir / "live_audit_summary.json"
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -391,6 +618,7 @@ def main(argv: list[str] | None = None) -> int:
             "live_reports": rep_rows,
             "trade_logs": log_rows,
             "tick_charts": tick_charts,
+            "recent_microscope": recent_micro,
         }
         tmp = out_path.with_name(f".{out_path.name}.{os.getpid()}.tmp")
         tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

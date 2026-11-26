@@ -224,6 +224,7 @@ def test_inspect_live_sessions_audits_windows_and_tick_chart(
     assert "1) LIVE PAPER WINDOWS" in out
     assert "2) RECORDED TRADE & ALERT LOGS" in out
     assert "3) TICK-BY-SECOND CHART TIMELINE" in out
+    assert "4) LAST 15 MIN MICROSCOPE" in out
     assert "SAVED_COMPACT_AUDIT=" in out
     saved = json.loads((tmp_path / "reports" / "paper_live" / "live_audit_summary.json").read_text(encoding="utf-8"))
     assert saved["schema"] == "live_audit_summary_v1"
@@ -231,4 +232,6 @@ def test_inspect_live_sessions_audits_windows_and_tick_chart(
     assert len(saved["live_reports"]) == 1
     assert len(saved["tick_charts"]) == 1
     assert len(saved["tick_charts"][0]["buckets_15m"]) >= 1
+    assert saved["recent_microscope"] is not None
+    assert len(saved["recent_microscope"]["minutes"]) >= 1
 
