@@ -192,6 +192,32 @@ def test_quiet_range_bounce_reverts_night_box() -> None:
     assert eng.waves_closed[0]["orders_submitted"] == 0
 
 
+def test_run_champions_24h_evolution_cli(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    import run_champions_24h_evolution as evo
+
+    monkeypatch.setattr(evo, "ROOT", tmp_path)
+    (tmp_path / "logs").mkdir(parents=True)
+    f1 = tmp_path / "logs" / "s1_ticks_XAUUSD_i_20261126.jsonl"
+    ticks = _make_night_reversion_ticks() + _make_accel_wave_ticks()
+    with f1.open("w", encoding="utf-8") as fh:
+        for ts, bid, ask in ticks:
+            fh.write(json.dumps({"ts": ts, "bid": bid, "ask": ask}) + "\n")
+
+    rc = evo.main(["--save"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "PART 1:" in out
+    assert "PART 2: HEAD-TO-HEAD AW_V3 PORTFOLIOS" in out
+    saved = json.loads((tmp_path / "reports" / "paper_live" / "champions_24h_evolution.json").read_text(encoding="utf-8"))
+    assert saved["schema"] == "champions_24h_evolution_v1"
+    assert saved["orders_submitted"] == 0
+    assert "AW_V3_24H_PRO_VARLOT" in saved["portfolios"]
+
+
 def test_reverse_engineer_manual_edge_enriches_ticks() -> None:
     import reverse_engineer_manual_edge as rev
 
