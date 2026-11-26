@@ -266,6 +266,15 @@ def _print_suite_table(title: str, snap: dict[str, Any]) -> None:
         f"{wl_c:>7s} | {c['wr_pct']:5.1f} | {c['net_usd']:+8.2f} | "
         f"{pf_c:>5s} | {c['max_dd_usd']:6.2f} | {c['avg_win']:+6.2f} | {c['avg_loss']:+6.2f}"
     )
+    if "combined_dynamic" in snap:
+        cd = snap["combined_dynamic"]
+        pf_d = f"{cd['pf']:.2f}" if cd["pf"] is not None else "  -  "
+        wl_d = f"{cd['wins']}/{cd['losses']}"
+        print(
+            f"{'COMBO_DYN(SHK10D+PB)':22s} | {cd['waves_count']:5d} | {cd['total_legs']:4d} | "
+            f"{wl_d:>7s} | {cd['wr_pct']:5.1f} | {cd['net_usd']:+8.2f} | "
+            f"{pf_d:>5s} | {cd['max_dd_usd']:6.2f} | {cd['avg_win']:+6.2f} | {cd['avg_loss']:+6.2f}"
+        )
 
 
 def main(argv: list[str] | None = None) -> int:

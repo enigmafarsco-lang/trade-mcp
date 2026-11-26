@@ -453,7 +453,18 @@ class DualRadarPaperSuite:
         )
         combo_compact = {k: v for k, v in combo.items() if k != "waves"}
 
-        return {
+        combo_dyn_compact: dict[str, Any] | None = None
+        if self.include_dynamic and "SHOCK10_DYN_RUN" in self.engines and "PB_V2_DYN_SESS" in self.engines:
+            combo_dyn = combine_portfolio_waves(
+                "COMBO_DYN_SUITE",
+                [
+                    self.engines["SHOCK10_DYN_RUN"].waves_closed,
+                    self.engines["PB_V2_DYN_SESS"].waves_closed,
+                ],
+            )
+            combo_dyn_compact = {k: v for k, v in combo_dyn.items() if k != "waves"}
+
+        payload: dict[str, Any] = {
             "schema": "s1_dual_radar_live_v1",
             "orders_submitted": 0,
             "paper_only": True,
@@ -483,6 +494,9 @@ class DualRadarPaperSuite:
             "combined_primary": combo_compact,
             "engines": eng_payload,
         }
+        if combo_dyn_compact is not None:
+            payload["combined_dynamic"] = combo_dyn_compact
+        return payload
 
 
 def make_synthetic_dual_session() -> list[tuple[float, float, float, dict[str, Any]]]:

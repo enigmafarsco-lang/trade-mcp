@@ -272,6 +272,8 @@ class S1SurferConfig:
     dyn_max_leg_lot: float = 0.10
     dyn_max_total_lot: float = 0.50
     dyn_min_lock_profit: float = 0.45  # gap-proof locked SL cushion above avg_entry on dynamic adds/BE
+    dyn_profit_ratchet_arm: float = 3.50  # arm % profit-lock ratchet once multi-leg avg_gain >= $X
+    dyn_profit_ratchet_frac: float = 0.55  # lock this fraction of open avg_gain behind breathing room
 
 
 @dataclass
@@ -831,6 +833,31 @@ class S1VelocitySurferEngine:
                 and avg_gain >= self.cfg.be_arm_price
             ):
                 self._lock_basket_stop(bid=bid, ask=ask, lock_half_profit=False)
+
+            # Dynamic Multi-Leg Profit-Lock Ratchet (prevents +$200 pyramided runners giving back 80% to flat BE!)
+            if (
+                self.cfg.dynamic_sizing
+                and self.cfg.dyn_profit_ratchet_frac > 0.0
+                and len(b["legs"]) >= 2
+                and avg_gain >= self.cfg.dyn_profit_ratchet_arm
+            ):
+                r_breath = max(self.cfg.sl_min_breathing_room, 2.00)
+                if side == "buy":
+                    r_sl = min(
+                        float(b["avg_entry"]) + self.cfg.dyn_profit_ratchet_frac * avg_gain,
+                        bid - r_breath,
+                    )
+                    if r_sl > float(b["stop"]):
+                        b["stop"] = round(r_sl, 4)
+                        b["stop_locked"] = True
+                else:
+                    r_sl = max(
+                        float(b["avg_entry"]) - self.cfg.dyn_profit_ratchet_frac * avg_gain,
+                        ask + r_breath,
+                    )
+                    if r_sl < float(b["stop"]):
+                        b["stop"] = round(r_sl, 4)
+                        b["stop_locked"] = True
 
             # Priority 1: Hard / Locked Basket SL
             sl_hit = (bid <= b["stop"]) if side == "buy" else (ask >= b["stop"])

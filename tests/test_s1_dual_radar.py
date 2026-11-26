@@ -725,12 +725,16 @@ def test_dynamic_runners_scale_winners_cut_losers_and_run_in_dual_radar_cli(
     data = json.loads(rep.read_text(encoding="utf-8"))
     assert data["orders_submitted"] == 0
     assert len(data["engines"]) == 8
+    assert "COMBO_DYN(SHK10D+PB)" in out
+    assert data["combined_dynamic"]["net_usd"] > data["combined_primary"]["net_usd"] * 3.0
 
     flat_pb_pnl = data["engines"]["PB_DIP_V2_SESS"]["summary"]["realized_pnl_usd"]
     dyn_pb_pnl = data["engines"]["PB_V2_DYN_SESS"]["summary"]["realized_pnl_usd"]
+    macro_pnl = data["engines"]["MACRO_WAVE_DYN"]["summary"]["realized_pnl_usd"]
     dyn_pb_max_vol = max(w["total_volume"] for w in data["engines"]["PB_V2_DYN_SESS"]["waves"])
     assert dyn_pb_max_vol >= 0.15  # compounded well beyond flat 0.04 lot!
-    assert dyn_pb_pnl > flat_pb_pnl * 3.0
+    assert dyn_pb_pnl > flat_pb_pnl * 4.0
+    assert macro_pnl > 200.0  # 55% multi-leg profit-lock ratchet captures big pyramided surges!
 
     # Verify failed-dip loser: PB_V2_DYN_SESS MUST NOT add a single leg in loss and cuts strictly at pivot SL!
     t0 = float(datetime(2026, 11, 26, 14, 0, 0, tzinfo=timezone.utc).timestamp())

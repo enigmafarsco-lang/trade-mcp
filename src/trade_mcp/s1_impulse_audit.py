@@ -310,6 +310,8 @@ class PullbackDipConfig:
     dyn_max_leg_lot: float = 0.10
     dyn_max_total_lot: float = 0.50
     dyn_min_lock_profit: float = 0.45  # gap-proof locked SL cushion above avg_entry on dynamic adds/BE
+    dyn_profit_ratchet_arm: float = 3.50  # arm % profit-lock ratchet once multi-leg avg_gain >= $X
+    dyn_profit_ratchet_frac: float = 0.55  # lock this fraction of open avg_gain behind breathing room
 
 
 @dataclass
@@ -673,6 +675,25 @@ class PullbackDipEngine:
                     p_sl = max(b["avg_entry"] - self.cfg.profit_lock_floor_price, ask + self.cfg.sl_min_breathing_room)
                     if p_sl < b["stop"]:
                         b["stop"] = round(p_sl, 4)
+                        b["stop_locked"] = True
+
+            # Dynamic Multi-Leg Profit-Lock Ratchet (locks % of big pyramided surges behind >=$2.20 breathing room)
+            if (
+                self.cfg.dynamic_sizing
+                and self.cfg.dyn_profit_ratchet_frac > 0.0
+                and len(b["legs"]) >= 2
+                and avg_gain >= self.cfg.dyn_profit_ratchet_arm
+            ):
+                r_breath = max(self.cfg.sl_min_breathing_room, 2.20)
+                if side == "buy":
+                    r_sl = min(b["avg_entry"] + self.cfg.dyn_profit_ratchet_frac * avg_gain, bid - r_breath)
+                    if r_sl > b["stop"]:
+                        b["stop"] = round(r_sl, 4)
+                        b["stop_locked"] = True
+                else:
+                    r_sl = max(b["avg_entry"] - self.cfg.dyn_profit_ratchet_frac * avg_gain, ask + r_breath)
+                    if r_sl < b["stop"]:
+                        b["stop"] = round(r_sl, 4)
                         b["stop_locked"] = True
 
             # Hard / Locked SL
