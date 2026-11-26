@@ -14,6 +14,7 @@ Strictly read-only / paper-only (`paper_only=True`, `orders_submitted=0`).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
@@ -77,6 +78,24 @@ def _build_zscore_mr_24h_cfg(*, leg_lot: float = 0.03) -> TickRobustZScoreConfig
     )
 
 
+def _scale_cfg_lots(cfg: Any, risk_multiplier: float) -> Any:
+    """Scale all lot-sizing fields linearly by `risk_multiplier` without altering entry/exit price geometry."""
+    rm = float(risk_multiplier)
+    if abs(rm - 1.0) < 1e-9:
+        return cfg
+    updates: dict[str, float] = {}
+    for attr in ("leg_lot", "dyn_max_l1_lot", "dyn_max_leg_lot", "dyn_max_total_lot", "max_lot"):
+        if hasattr(cfg, attr):
+            updates[attr] = max(0.01, round(float(getattr(cfg, attr)) * rm, 2))
+    min_add = max(0.01, round(0.01 * rm, 2))
+    step = min_add if (rm > 1.0 and abs(rm - round(rm)) < 1e-6) else 0.01
+    if hasattr(cfg, "dyn_min_add_lot"):
+        updates["dyn_min_add_lot"] = min_add
+    if hasattr(cfg, "dyn_lot_step"):
+        updates["dyn_lot_step"] = step
+    return replace(cfg, **updates) if updates else cfg
+
+
 ENGINE_LABELS: dict[str, str] = {
     "SHOCK10_DYN_RUN": "NEWS_SHOCK",
     "VSNAP_SHOCK_6": "FAST_SHOCK6",
@@ -101,6 +120,7 @@ class AllWeatherPaperSuite:
     enable_fast_shock6: bool = True
     fast_shock_24h: bool = True
     fast_shock_varlot: bool = False
+    risk_multiplier: float = 1.0
 
     shock_engine: S1VelocitySurferEngine = field(init=False)
     fast_shock_engine: FastSnapEngine | None = field(init=False)
@@ -119,6 +139,10 @@ class AllWeatherPaperSuite:
     _multiplier: float = 100.0
 
     def __post_init__(self) -> None:
+        rm = float(self.risk_multiplier)
+        if not math.isfinite(rm) or rm < 0.25 or rm > 5.0:
+            raise ValueError(f"risk_multiplier must be in [0.25, 5.0], got {self.risk_multiplier!r}")
+        self.risk_multiplier = rm
         self.peak_balance_usd = float(self.initial_capital_usd)
         self.peak_equity_usd = float(self.initial_capital_usd)
         self._fast_name = (
@@ -133,16 +157,23 @@ class AllWeatherPaperSuite:
         self._init_engines()
 
     def _init_engines(self) -> None:
+        rm = self.risk_multiplier
         self.shock_engine = S1VelocitySurferEngine(
-            cfg=build_s1_profile_config("v2.6_SHOCK10_DYN", leg_lot=self.news_leg_lot, max_legs=self.max_legs),
+            cfg=_scale_cfg_lots(
+                build_s1_profile_config("v2.6_SHOCK10_DYN", leg_lot=self.news_leg_lot, max_legs=self.max_legs),
+                rm,
+            ),
             initial_capital_usd=self.initial_capital_usd,
         )
         self.fast_shock_engine = (
             FastSnapEngine(
-                cfg=_build_fast_shock6_cfg(
-                    leg_lot=self.calm_leg_lot,
-                    all_24h=self.fast_shock_24h,
-                    varlot=self.fast_shock_varlot,
+                cfg=_scale_cfg_lots(
+                    _build_fast_shock6_cfg(
+                        leg_lot=self.calm_leg_lot,
+                        all_24h=self.fast_shock_24h,
+                        varlot=self.fast_shock_varlot,
+                    ),
+                    rm,
                 ),
                 initial_capital_usd=self.initial_capital_usd,
             )
@@ -150,20 +181,23 @@ class AllWeatherPaperSuite:
             else None
         )
         self.macro_engine = PullbackDipEngine(
-            cfg=_build_macro_wave_cfg(leg_lot=self.news_leg_lot, max_legs=self.max_legs),
+            cfg=_scale_cfg_lots(_build_macro_wave_cfg(leg_lot=self.news_leg_lot, max_legs=self.max_legs), rm),
             initial_capital_usd=self.initial_capital_usd,
         )
         if self.calm_profile == "ZSCORE_MR_24H":
             self.calm_engine = TickRobustZScoreEngine(
-                cfg=_build_zscore_mr_24h_cfg(leg_lot=max(0.03, self.calm_leg_lot)),
+                cfg=_scale_cfg_lots(_build_zscore_mr_24h_cfg(leg_lot=max(0.03, self.calm_leg_lot)), rm),
                 initial_capital_usd=self.initial_capital_usd,
             )
         else:
             self.calm_engine = CalmRegimeEngine(
-                cfg=build_calm_regime_profile_config(
-                    self.calm_profile,
-                    leg_lot=self.calm_leg_lot,
-                    max_legs=max(8, self.max_legs),
+                cfg=_scale_cfg_lots(
+                    build_calm_regime_profile_config(
+                        self.calm_profile,
+                        leg_lot=self.calm_leg_lot,
+                        max_legs=max(8, self.max_legs),
+                    ),
+                    rm,
                 ),
                 initial_capital_usd=self.initial_capital_usd,
             )
@@ -332,6 +366,7 @@ class AllWeatherPaperSuite:
             "paper_only": True,
             "orders_submitted": 0,
             "portfolio": port_name,
+            "risk_multiplier": round(float(self.risk_multiplier), 2),
             "initial_capital_usd": round(self.initial_capital_usd, 2),
             "balance_usd": bal,
             "equity_usd": eq,

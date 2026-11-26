@@ -237,3 +237,48 @@ def test_inspect_live_sessions_audits_windows_and_tick_chart(
     assert saved["recent_microscope"] is not None
     assert len(saved["recent_microscope"]["minutes"]) >= 1
 
+
+def test_all_weather_risk_multiplier_scales_lots_and_pnl_cleanly(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """risk_multiplier linearly scales lots & PnL across all 4 engines while keeping identical signals & PF."""
+    import daytrade_all_weather_live as aw_live
+
+    with pytest.raises(ValueError):
+        AllWeatherPaperSuite(risk_multiplier=0.0)
+    with pytest.raises(ValueError):
+        AllWeatherPaperSuite(risk_multiplier=6.0)
+
+    ticks = make_synthetic_dual_session()
+    s1 = AllWeatherPaperSuite(initial_capital_usd=1000.0, risk_multiplier=1.0)
+    s2 = AllWeatherPaperSuite(initial_capital_usd=1000.0, risk_multiplier=2.0)
+
+    # Verify all 4 engines scaled their lot configs by 2x
+    assert s2.shock_engine.cfg.leg_lot == round(s1.shock_engine.cfg.leg_lot * 2.0, 2)
+    assert s2.shock_engine.cfg.dyn_max_leg_lot == round(s1.shock_engine.cfg.dyn_max_leg_lot * 2.0, 2)
+    assert s2.fast_shock_engine is not None and s1.fast_shock_engine is not None
+    assert s2.fast_shock_engine.cfg.leg_lot == round(s1.fast_shock_engine.cfg.leg_lot * 2.0, 2)
+    assert s2.macro_engine.cfg.leg_lot == round(s1.macro_engine.cfg.leg_lot * 2.0, 2)
+    assert s2.calm_engine.cfg.leg_lot == round(s1.calm_engine.cfg.leg_lot * 2.0, 2)
+    assert s2.calm_engine.cfg.max_lot == round(s1.calm_engine.cfg.max_lot * 2.0, 2)
+
+    for s in (s1, s2):
+        for ts, bid, ask, m1_ctx in ticks:
+            s.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_ctx)
+        s.close_all_open(ts=ticks[-1][0], bid=ticks[-1][1], ask=ticks[-1][2], reason="eof")
+
+    a1 = s1.account_summary(ticks[-1][1], ticks[-1][2])
+    a2 = s2.account_summary(ticks[-1][1], ticks[-1][2])
+    assert a1["trades_count"] == a2["trades_count"] > 0
+    assert a1["wins"] == a2["wins"]
+    assert a1["losses"] == a2["losses"]
+    assert a2["risk_multiplier"] == 2.0
+    ratio = a2["net_profit_usd"] / a1["net_profit_usd"]
+    assert 1.99 <= ratio <= 2.01
+
+    rc = aw_live.main(["--mock", "--risk-mult", "2.0"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "RiskMult: 2x" in out
+
+

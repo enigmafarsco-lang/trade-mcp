@@ -92,6 +92,8 @@ class CalmRegimeConfig:
     add_interval_sec: float = 30.0
     dyn_max_leg_lot: float = 0.08
     dyn_max_total_lot: float = 0.35
+    dyn_min_add_lot: float = 0.01
+    dyn_lot_step: float = 0.01
     dyn_min_lock_profit: float = 0.55
     dyn_profit_ratchet_arm: float = 4.50
     dyn_profit_ratchet_frac: float = 0.55
@@ -535,6 +537,8 @@ class CalmRegimeEngine:
                             dir_move_5m=s_sign * self._window_move(sec, mid, 300),
                             hold_sec=max(0.0, ts - float(b["opened_at"])),
                             min_lock_profit=self.cfg.dyn_min_lock_profit,
+                            min_add_lot=self.cfg.dyn_min_add_lot,
+                            lot_step=self.cfg.dyn_lot_step,
                         )
                         if add_vol >= 0.01:
                             new_v = round(old_v + add_vol, 2)
@@ -702,6 +706,8 @@ class CalmRegimeEngine:
                         dir_move_5m=s_sign * self._window_move(sec, mid, 300),
                         hold_sec=hold_sec,
                         min_lock_profit=self.cfg.dyn_min_lock_profit,
+                        min_add_lot=self.cfg.dyn_min_add_lot,
+                        lot_step=self.cfg.dyn_lot_step,
                     )
                     if proj_lot >= 0.01:
                         self.pending = {"kind": "add", "side": side, "fill_ts": ts + self.cfg.latency_sec}

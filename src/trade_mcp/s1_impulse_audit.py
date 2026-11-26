@@ -309,6 +309,8 @@ class PullbackDipConfig:
     dyn_max_l1_lot: float = 0.06
     dyn_max_leg_lot: float = 0.10
     dyn_max_total_lot: float = 0.50
+    dyn_min_add_lot: float = 0.01
+    dyn_lot_step: float = 0.01
     dyn_min_lock_profit: float = 0.45  # gap-proof locked SL cushion above avg_entry on dynamic adds/BE
     dyn_profit_ratchet_arm: float = 3.50  # arm % profit-lock ratchet once multi-leg avg_gain >= $X
     dyn_profit_ratchet_frac: float = 0.55  # lock this fraction of open avg_gain behind breathing room
@@ -539,6 +541,7 @@ class PullbackDipEngine:
                             abs_move_60s=m60,
                             abs_move_5m=m5,
                             abs_move_15m=m15,
+                            lot_step=self.cfg.dyn_lot_step,
                         )
                     else:
                         l1_vol = round(self.cfg.leg_lot, 2)
@@ -593,6 +596,8 @@ class PullbackDipEngine:
                                 dir_move_5m=s_sign * self._window_move(sec, mid, 300),
                                 hold_sec=max(0.0, ts - float(b["opened_at"])),
                                 min_lock_profit=self.cfg.dyn_min_lock_profit,
+                                min_add_lot=self.cfg.dyn_min_add_lot,
+                                lot_step=self.cfg.dyn_lot_step,
                             )
                             rf_ok = add_vol >= 0.01
                         else:
@@ -751,6 +756,8 @@ class PullbackDipEngine:
                             dir_move_5m=s_sign * self._window_move(sec, mid, 300),
                             hold_sec=hold_sec,
                             min_lock_profit=self.cfg.dyn_min_lock_profit,
+                            min_add_lot=self.cfg.dyn_min_add_lot,
+                            lot_step=self.cfg.dyn_lot_step,
                         )
                         >= 0.01
                     )

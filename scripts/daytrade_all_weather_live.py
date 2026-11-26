@@ -148,10 +148,11 @@ def _print_mt5_panel(
     opens = suite.open_positions(bid, ask)
     st = suite.live_status(now_ts)
     pf_s = f"{acct['pf']:.2f}" if acct["pf"] is not None else "-"
+    rm_s = f" | Risk={acct['risk_multiplier']:.2g}x" if abs(acct["risk_multiplier"] - 1.0) > 1e-6 else ""
     bar = "=" * 74
     print(f"\n{bar}", flush=True)
     print(
-        f"[{mode_tag} | ORDERS=0]  {symbol}   Bid={bid:.2f}  Ask={ask:.2f}  (sp={ask - bid:.2f})   SRV {srv_time}",
+        f"[{mode_tag} | ORDERS=0{rm_s}]  {symbol}   Bid={bid:.2f}  Ask={ask:.2f}  (sp={ask - bid:.2f})   SRV {srv_time}",
         flush=True,
     )
     print(
@@ -190,7 +191,7 @@ def _print_final_summary(suite: AllWeatherPaperSuite, *, title: str, bid: float,
     print(title)
     print(f"{'=' * 74}")
     print(
-        f"Balance:  ${acct['balance_usd']:,.2f}  (Start: ${acct['initial_capital_usd']:,.2f})\n"
+        f"Balance:  ${acct['balance_usd']:,.2f}  (Start: ${acct['initial_capital_usd']:,.2f}  |  RiskMult: {acct['risk_multiplier']:.2g}x)\n"
         f"PROFIT:   {_fmt_usd(acct['net_profit_usd'])}\n"
         f"MaxDD:   -${acct['max_dd_usd']:.2f}\n"
         f"Trades:   {acct['trades_count']} ({acct['wins']}W / {acct['losses']}L = {acct['win_rate_pct']:.1f}% WR)\n"
@@ -223,6 +224,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Use higher-lot VSNAP6_24H_VARLOT (+$44 night / +$82 total) instead of default safer VSNAP6_24H",
     )
+    parser.add_argument(
+        "--risk-mult",
+        type=float,
+        default=1.0,
+        help="Lot/risk multiplier across all 4 engines (default 1.0; e.g. 1.5 or 2.0, range 0.25..5.0)",
+    )
     parser.add_argument("--poll-seconds", type=float, default=0.30, help="Tick poll interval (default 0.30s)")
     parser.add_argument("--status-seconds", type=float, default=10.0, help="MT5 panel refresh interval (default 10s)")
     parser.add_argument("--minutes", type=float, default=0.0, help="Run duration in minutes (0 = until Ctrl+C)")
@@ -251,6 +258,7 @@ def main(argv: list[str] | None = None) -> int:
             initial_capital_usd=args.capital,
             calm_profile=args.calm_profile,
             fast_shock_varlot=args.fast_shock_varlot,
+            risk_multiplier=args.risk_mult,
         )
         ticks = make_synthetic_dual_session()
         last_ts, last_bid, last_ask = 0.0, 0.0, 0.0
@@ -289,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
             initial_capital_usd=args.capital,
             calm_profile=args.calm_profile,
             fast_shock_varlot=args.fast_shock_varlot,
+            risk_multiplier=args.risk_mult,
         )
         total_ticks = 0
         last_ts, last_bid, last_ask = 0.0, 0.0, 0.0
@@ -362,6 +371,7 @@ def main(argv: list[str] | None = None) -> int:
                 initial_capital_usd=args.capital,
                 calm_profile=args.calm_profile,
                 fast_shock_varlot=args.fast_shock_varlot,
+                risk_multiplier=args.risk_mult,
             )
             suite.set_multiplier(float(mult))
 
@@ -377,8 +387,8 @@ def main(argv: list[str] | None = None) -> int:
             started_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
             print(
                 f"[START | ALL-WEATHER PAPER MONITOR | ORDERS=0]  {args.symbol} | "
-                f"Calm={args.calm_profile} | Start Balance=${args.capital:,.2f} | SRV={srv_dt0.strftime('%H:%M:%S')} | "
-                f"M1 Warmup={seeded} bars READY"
+                f"Calm={args.calm_profile} | RiskMult={args.risk_mult:.2g}x | Start Balance=${args.capital:,.2f} | "
+                f"SRV={srv_dt0.strftime('%H:%M:%S')} | M1 Warmup={seeded} bars READY"
                 + (f" | REC=logs/{tick_path.name}" if tick_path is not None else "")
                 + (f" | REPORT={report_path.relative_to(ROOT)}" if report_path is not None else ""),
                 flush=True,

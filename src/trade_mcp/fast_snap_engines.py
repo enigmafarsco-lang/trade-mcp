@@ -42,6 +42,8 @@ class FastSnapConfig:
     dyn_max_l1_lot: float = 0.04
     dyn_max_leg_lot: float = 0.08
     dyn_max_total_lot: float = 0.30
+    dyn_min_add_lot: float = 0.01
+    dyn_lot_step: float = 0.01
     dyn_min_lock_profit: float = 0.45
 
     # Session filter (broker server hours; None = 24h)
@@ -473,6 +475,7 @@ class FastSnapEngine:
                         max_l1_lot=self.cfg.dyn_max_l1_lot,
                         max_total_lot=self.cfg.dyn_max_total_lot,
                         abs_move_60s=float(pend["speed"]),
+                        lot_step=self.cfg.dyn_lot_step,
                     )
                     if self.cfg.dynamic_sizing
                     else self.cfg.leg_lot
@@ -522,6 +525,8 @@ class FastSnapEngine:
                         dir_move_60s=dir_m60,
                         hold_sec=hold_sec,
                         min_lock_profit=self.cfg.dyn_min_lock_profit,
+                        min_add_lot=self.cfg.dyn_min_add_lot,
+                        lot_step=self.cfg.dyn_lot_step,
                     )
                 else:
                     add_lot = self.cfg.leg_lot if (cur_vol + self.cfg.leg_lot) <= self.cfg.dyn_max_total_lot else 0.0
@@ -656,6 +661,8 @@ class FastSnapEngine:
                     dir_move_60s=dir_m60,
                     hold_sec=max(0.0, ts - b["opened_at"]),
                     min_lock_profit=self.cfg.dyn_min_lock_profit,
+                    min_add_lot=self.cfg.dyn_min_add_lot,
+                    lot_step=self.cfg.dyn_lot_step,
                 )
                 if cand_lot >= 0.01:
                     self.pending = {"kind": "add", "side": side, "fill_ts": ts + self.cfg.latency_sec}

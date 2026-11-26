@@ -50,6 +50,7 @@ def compute_dynamic_l1_lot(
     abs_move_60s: float = 0.0,
     abs_move_5m: float = 0.0,
     abs_move_15m: float = 0.0,
+    lot_step: float = 0.01,
 ) -> float:
     """Scale initial Leg-1 lot causally with confirmed tape acceleration (strictly bounded)."""
     accel = 1.0
@@ -59,8 +60,9 @@ def compute_dynamic_l1_lot(
         accel += min(1.5, (abs_move_5m - 6.0) / 6.0)
     if abs_move_15m >= 15.0:
         accel += min(0.75, (abs_move_15m - 12.0) / 16.0)
-    raw = round(base_lot * accel, 2)
-    cap = min(max_l1_lot, max_total_lot, 0.10)
+    step = max(0.01, round(float(lot_step), 2))
+    raw = round(round((base_lot * accel) / step) * step, 2) if step > 0.01 else round(base_lot * accel, 2)
+    cap = min(max_l1_lot, max_total_lot, 1.00)
     return max(round(base_lot, 2), min(raw, round(cap, 2)))
 
 
@@ -80,10 +82,14 @@ def compute_dynamic_add_lot(
     dir_move_5m: float = 0.0,
     hold_sec: float = 0.0,
     min_lock_profit: float = 0.45,
+    min_add_lot: float = 0.01,
+    lot_step: float = 0.01,
 ) -> float:
     """Compute Acceleration x Duration scaled winner add lot, strictly capped by house-money risk-free SL cushion."""
+    min_add = max(0.01, round(float(min_add_lot), 2))
+    step = max(0.01, round(float(lot_step), 2))
     rem = round(max(0.0, max_total_lot - old_vol), 2)
-    if rem < 0.01:
+    if rem < min_add:
         return 0.0
 
     breath = max(0.0, breathing_room)
@@ -99,15 +105,19 @@ def compute_dynamic_add_lot(
     if cushion <= 0.0 or denom <= 1e-9:
         return 0.0
 
-    max_safe_add = math.floor((old_vol * (cushion / denom)) * 100.0) / 100.0
-    if max_safe_add < 0.01:
+    if step > 0.01:
+        max_safe_add = round(math.floor(((old_vol * (cushion / denom)) + 1e-12) / step) * step, 2)
+    else:
+        max_safe_add = math.floor((old_vol * (cushion / denom)) * 100.0) / 100.0
+    if max_safe_add < min_add:
         return 0.0
 
     accel_mult = 1.0 + min(1.2, max(0.0, dir_move_60s) / 6.0) + min(0.8, max(0.0, dir_move_5m) / 15.0)
     dur_mult = 1.0 + min(1.5, max(0.0, hold_sec) / 60.0)
-    target = round(base_lot * accel_mult * dur_mult, 2)
-    capped = min(target, max_leg_lot, 0.10, rem, max_safe_add)
-    return round(capped, 2) if capped >= 0.01 else 0.0
+    raw_t = base_lot * accel_mult * dur_mult
+    target = round(round(raw_t / step) * step, 2) if step > 0.01 else round(raw_t, 2)
+    capped = min(target, max_leg_lot, 1.00, rem, max_safe_add)
+    return round(capped, 2) if capped >= min_add else 0.0
 
 
 def analyze_m1_sr_context(
@@ -271,6 +281,8 @@ class S1SurferConfig:
     dyn_max_l1_lot: float = 0.06
     dyn_max_leg_lot: float = 0.10
     dyn_max_total_lot: float = 0.50
+    dyn_min_add_lot: float = 0.01
+    dyn_lot_step: float = 0.01
     dyn_min_lock_profit: float = 0.45  # gap-proof locked SL cushion above avg_entry on dynamic adds/BE
     dyn_profit_ratchet_arm: float = 3.50  # arm % profit-lock ratchet once multi-leg avg_gain >= $X
     dyn_profit_ratchet_frac: float = 0.55  # lock this fraction of open avg_gain behind breathing room
@@ -654,6 +666,7 @@ class S1VelocitySurferEngine:
                             max_l1_lot=self.cfg.dyn_max_l1_lot,
                             max_total_lot=self.cfg.dyn_max_total_lot,
                             abs_move_60s=abs(move_60s),
+                            lot_step=self.cfg.dyn_lot_step,
                         )
                         if self.cfg.dynamic_sizing
                         else round(self.cfg.leg_lot, 2)
@@ -718,6 +731,8 @@ class S1VelocitySurferEngine:
                                 dir_move_60s=dir_m60,
                                 hold_sec=max(0.0, ts - float(b["opened_at"])),
                                 min_lock_profit=self.cfg.dyn_min_lock_profit,
+                                min_add_lot=self.cfg.dyn_min_add_lot,
+                                lot_step=self.cfg.dyn_lot_step,
                             )
                             risk_free_ok = add_vol >= 0.01
                         else:
@@ -977,6 +992,8 @@ class S1VelocitySurferEngine:
                             dir_move_60s=dir_m60,
                             hold_sec=hold_sec,
                             min_lock_profit=self.cfg.dyn_min_lock_profit,
+                            min_add_lot=self.cfg.dyn_min_add_lot,
+                            lot_step=self.cfg.dyn_lot_step,
                         )
                         >= 0.01
                     )
