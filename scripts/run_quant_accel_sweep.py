@@ -81,7 +81,12 @@ def _run_file(path: Path) -> dict[str, Any]:
         return {"file": path.name, "ticks": 0, "end_ts": 0.0, "waves": {}}
 
     accel_cfgs, zscore_cfgs, box_cfgs = build_quant_sweep_candidates()
-    aw_v2 = AllWeatherPaperSuite(initial_capital_usd=1000.0, enable_fast_shock6=True)
+    aw_v2 = AllWeatherPaperSuite(
+        initial_capital_usd=1000.0,
+        calm_profile="CALM_M1_PRO_SESS",
+        enable_fast_shock6=True,
+        fast_shock_24h=False,
+    )
     accel_engs = {c.name: RapidBurstAccelEngine(cfg=c) for c in accel_cfgs}
     z_engs = {c.name: TickRobustZScoreEngine(cfg=c) for c in zscore_cfgs}
     box_engs = {c.name: QuietRangeBounceEngine(cfg=c) for c in box_cfgs}

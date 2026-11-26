@@ -47,7 +47,12 @@ def _run_file(path: Path) -> dict[str, Any]:
     if not ticks:
         return {"file": path.name, "ticks": 0, "aw_waves": [], "fs_waves": {}}
 
-    aw = AllWeatherPaperSuite(initial_capital_usd=1000.0, enable_fast_shock6=False)
+    aw = AllWeatherPaperSuite(
+        initial_capital_usd=1000.0,
+        calm_profile="CALM_M1_PRO_SESS",
+        enable_fast_shock6=False,
+        fast_shock_24h=False,
+    )
     fs_engines = {name: FastSnapEngine(cfg=cfg) for name, cfg in fast_snap_profiles()}
 
     for ts, bid, ask, m1_ctx in ticks:

@@ -79,6 +79,7 @@ def test_all_weather_cli_mock_replay_and_live_smoke(
     data1 = json.loads(rep_mock.read_text(encoding="utf-8"))
     assert data1["schema"] == "all_weather_pro_m1_paper_v1"
     assert data1["orders_submitted"] == 0
+    assert data1["account"]["portfolio"] == "COMBO_AW_V3_24H"
     assert data1["account"]["trades_count"] >= 1
 
     # 2) --replay on two JSONL files (verifies multi-file cumulative balance)
@@ -92,9 +93,9 @@ def test_all_weather_cli_mock_replay_and_live_smoke(
     out2 = capsys.readouterr().out
     assert "ALL-WEATHER PAPER REPLAY" in out2
     assert "SHOCK10_DYN_RUN" in out2
-    assert "VSNAP_SHOCK_6" in out2
+    assert "VSNAP6_24H" in out2
     assert "MACRO_WAVE_DYN" in out2
-    assert "CALM_M1_PRO_SESS" in out2
+    assert "ZSCORE_MR_24H" in out2
 
     # 3) Live stub smoke test with M1 warmup + MT5 panel + atomic report
     class _StubCfg:

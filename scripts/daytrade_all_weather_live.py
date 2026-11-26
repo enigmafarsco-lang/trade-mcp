@@ -208,15 +208,20 @@ def _print_final_summary(suite: AllWeatherPaperSuite, *, title: str, bid: float,
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="MetaTrader-style Live Paper Monitor for COMBO_AW_PRO_M1 (ORDERS=0)"
+        description="MetaTrader-style Live Paper Monitor for COMBO_AW_V3_24H (ORDERS=0)"
     )
     parser.add_argument("--symbol", default="XAUUSD_i", help="Symbol to watch (default XAUUSD_i)")
     parser.add_argument("--capital", type=float, default=1000.0, help="Starting paper balance USD (default 1000)")
     parser.add_argument(
         "--calm-profile",
-        default="CALM_M1_PRO_SESS",
-        choices=("CALM_M1_PRO_SESS", "CALM_M1_PRO_150"),
-        help="Calm-market engine profile (default CALM_M1_PRO_SESS)",
+        default="ZSCORE_MR_24H",
+        choices=("ZSCORE_MR_24H", "CALM_M1_PRO_SESS", "CALM_M1_PRO_150"),
+        help="Quiet/Range engine profile (default ZSCORE_MR_24H — 24h GitHub TickRobust Z-Score MR)",
+    )
+    parser.add_argument(
+        "--fast-shock-varlot",
+        action="store_true",
+        help="Use higher-lot VSNAP6_24H_VARLOT (+$44 night / +$82 total) instead of default safer VSNAP6_24H",
     )
     parser.add_argument("--poll-seconds", type=float, default=0.30, help="Tick poll interval (default 0.30s)")
     parser.add_argument("--status-seconds", type=float, default=10.0, help="MT5 panel refresh interval (default 10s)")
@@ -242,7 +247,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # 1) Offline synthetic smoke test
     if args.mock:
-        suite = AllWeatherPaperSuite(initial_capital_usd=args.capital, calm_profile=args.calm_profile)
+        suite = AllWeatherPaperSuite(
+            initial_capital_usd=args.capital,
+            calm_profile=args.calm_profile,
+            fast_shock_varlot=args.fast_shock_varlot,
+        )
         ticks = make_synthetic_dual_session()
         last_ts, last_bid, last_ask = 0.0, 0.0, 0.0
         for ts, bid, ask, m1_ctx in ticks:
@@ -276,7 +285,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # 2) Offline replay on recorded JSONL tick files
     if args.replay:
-        suite = AllWeatherPaperSuite(initial_capital_usd=args.capital, calm_profile=args.calm_profile)
+        suite = AllWeatherPaperSuite(
+            initial_capital_usd=args.capital,
+            calm_profile=args.calm_profile,
+            fast_shock_varlot=args.fast_shock_varlot,
+        )
         total_ticks = 0
         last_ts, last_bid, last_ask = 0.0, 0.0, 0.0
         for idx, raw_p in enumerate(args.replay):
@@ -345,7 +358,11 @@ def main(argv: list[str] | None = None) -> int:
             spec, quote = feed.connect()
             _, mult = resolve_pricing_basis(spec, "auto")
 
-            suite = AllWeatherPaperSuite(initial_capital_usd=args.capital, calm_profile=args.calm_profile)
+            suite = AllWeatherPaperSuite(
+                initial_capital_usd=args.capital,
+                calm_profile=args.calm_profile,
+                fast_shock_varlot=args.fast_shock_varlot,
+            )
             suite.set_multiplier(float(mult))
 
             srv_ts0, srv_dt0 = _server_now(feed)

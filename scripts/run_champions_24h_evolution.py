@@ -236,11 +236,20 @@ def _run_file(path: Path) -> dict[str, Any]:
     if not ticks:
         return {"file": path.name, "ticks": 0, "end_ts": 0.0, "waves": {}}
 
-    aw_v2 = AllWeatherPaperSuite(initial_capital_usd=1000.0, enable_fast_shock6=True)
+    aw_v2 = AllWeatherPaperSuite(
+        initial_capital_usd=1000.0,
+        calm_profile="CALM_M1_PRO_SESS",
+        enable_fast_shock6=True,
+        fast_shock_24h=False,
+    )
+    aw_v3 = AllWeatherPaperSuite(initial_capital_usd=1000.0)
+    aw_v3_varlot = AllWeatherPaperSuite(initial_capital_usd=1000.0, fast_shock_varlot=True)
     engs = build_evolution_engines()
 
     for ts, bid, ask, m1_ctx in ticks:
         aw_v2.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_ctx)
+        aw_v3.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_ctx)
+        aw_v3_varlot.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_ctx)
         for eng in engs.values():
             if isinstance(eng, (S1VelocitySurferEngine, PullbackDipEngine)):
                 eng.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_ctx)
@@ -249,13 +258,19 @@ def _run_file(path: Path) -> dict[str, Any]:
 
     lts, lbid, lask, _ = ticks[-1]
     aw_v2.close_all_open(ts=lts, bid=lbid, ask=lask, reason="eof_replay")
+    aw_v3.close_all_open(ts=lts, bid=lbid, ask=lask, reason="eof_replay")
+    aw_v3_varlot.close_all_open(ts=lts, bid=lbid, ask=lask, reason="eof_replay")
     for eng in engs.values():
         if hasattr(eng, "force_close_open"):
             eng.force_close_open(ts=lts, bid=lbid, ask=lask, reason="eof_replay")
         elif hasattr(eng, "close_open_wave"):
             eng.close_open_wave(ts=lts, bid=lbid, ask=lask, reason="eof_replay")
 
-    waves: dict[str, list[dict[str, Any]]] = {"AW_V2_CURRENT": list(aw_v2.trades_closed)}
+    waves: dict[str, list[dict[str, Any]]] = {
+        "AW_V2_CURRENT": list(aw_v2.trades_closed),
+        "AW_V3_24H_SHIPPED": list(aw_v3.trades_closed),
+        "AW_V3_24H_VARLOT_SHIPPED": list(aw_v3_varlot.trades_closed),
+    }
     for k, eng in engs.items():
         waves[k] = list(eng.waves_closed)
     return {"file": path.name, "ticks": len(ticks), "end_ts": lts, "waves": waves}
@@ -284,7 +299,7 @@ def main(argv: list[str] | None = None) -> int:
     by_end = sorted(per_file, key=lambda r: r["end_ts"], reverse=True)
     today_res = max(by_end[:5], key=lambda r: r["ticks"])
 
-    keys = ["AW_V2_CURRENT"] + list(build_evolution_engines().keys())
+    keys = ["AW_V2_CURRENT", "AW_V3_24H_SHIPPED", "AW_V3_24H_VARLOT_SHIPPED"] + list(build_evolution_engines().keys())
     merged: dict[str, list[dict[str, Any]]] = {
         k: [w for r in per_file for w in r["waves"].get(k, [])] for k in keys
     }
@@ -305,12 +320,11 @@ def main(argv: list[str] | None = None) -> int:
     # Head-to-head AW_V3 Portfolio Candidates (ALL replacing bleeding CALM_M1_PRO_SESS!)
     portfolios: list[tuple[str, list[str]]] = [
         ("AW_V2_CURRENT (with CALM)", ["AW_V2_CURRENT"]),
+        ("AW_V3_24H_SHIPPED (DEFAULT)", ["AW_V3_24H_SHIPPED"]),
+        ("AW_V3_24H_VARLOT_SHIPPED", ["AW_V3_24H_VARLOT_SHIPPED"]),
         ("AW_V3_CLEAN_SESS", ["SHOCK10_DYN_RUN", "VSNAP6_SESS", "MACRO_WAVE_SESS", "GH_Z_M1_Z22_24H"]),
         ("AW_V3_24H_UNLOCKED", ["SHOCK10_DYN_RUN", "VSNAP6_24H", "MACRO_WAVE_24H", "GH_Z_M1_Z22_24H"]),
         ("AW_V3_24H_PRO_VARLOT", ["SHOCK10_DYN_RUN", "VSNAP6_24H_VARLOT", "MACRO_WAVE_24H_VARL1", "GH_Z_M1_Z22_L03_24H"]),
-        ("AW_V3_24H_SHOCK8_PRO", ["SHOCK8_DYN_24H", "VSNAP6_24H_VARLOT", "MACRO_WAVE_24H_VARL1", "GH_Z_M1_Z22_L03_24H"]),
-        ("AW_V3_24H_MAX_NIGHT", ["SHOCK10_DYN_RUN", "VSNAP6_24H_VARLOT", "MACRO_WAVE_24H_M65", "GH_Z_M1_Z22_L03_24H"]),
-        ("AW_V3_24H_DEDICATED_NIGHT", ["SHOCK10_DYN_RUN", "VSNAP6_24H_VARLOT", "MACRO_WAVE_24H_VARL1", "MACRO_WAVE_NIGHT_55", "GH_Z_M1_Z22_L03_24H"]),
     ]
 
     print("\n=== PART 2: HEAD-TO-HEAD AW_V3 PORTFOLIOS (ALL / NIGHT / TODAY) ===")

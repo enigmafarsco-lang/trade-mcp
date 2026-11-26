@@ -1,22 +1,26 @@
-"""All-Weather Paper Trading Suite (COMBO_AW_V2, ORDERS=0).
+"""All-Weather Paper Trading Suite (COMBO_AW_V3_24H, ORDERS=0).
 
-Combines the 4 causally validated engines into ONE unified MetaTrader-style paper account:
-  1. SHOCK10_DYN_RUN  (News / >=$10 per 60s shock dynamic runner)
-  2. VSNAP_SHOCK_6    (Fast sharp $6-$10/60s burst & V-snap runner — 77.8% WR, PF 2.23 on 322k real ticks)
-  3. MACRO_WAVE_DYN   (London/NY macro pullback-continuation dynamic pyramid runner)
-  4. CALM_M1_PRO_SESS (London/NY calm-drift M1 EMA9/21 + HTF alignment + 1L 55% ratchet)
+Combines the 4 causally validated 24-hour engines into ONE unified MetaTrader-style paper account:
+  1. SHOCK10_DYN_RUN  (24H News / >=$10 per 60s shock dynamic runner — 100% WR, 0 DD on 363k ticks)
+  2. VSNAP6_24H       (24H Fast sharp $6+/60s burst & night breakout runner — +$67.42 total, +$23.33 night!)
+  3. MACRO_WAVE_DYN   (London/NY macro pullback-continuation dynamic pyramid — +$102.10, PF 3.95, 6.22x R/DD)
+  4. ZSCORE_MR_24H    (24H GitHub TickRobust Z-Score MR with adaptive night regime — 100% WR, 0 DD, +$7.97 today!)
+
+Legacy COMBO_AW_V2 (`calm_profile="CALM_M1_PRO_SESS"`, `fast_shock_24h=False`) remains supported
+for apples-to-apples historical A/B benchmarks.
 
 Strictly read-only / paper-only (`paper_only=True`, `orders_submitted=0`).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
 
 from trade_mcp.calm_regime_engines import CalmRegimeEngine, build_calm_regime_profile_config
 from trade_mcp.fast_snap_engines import FastSnapEngine, fast_snap_profiles
+from trade_mcp.quant_github_accel_lab import TickRobustZScoreConfig, TickRobustZScoreEngine
 from trade_mcp.s1_impulse_audit import PullbackDipEngine, pullback_dip_profiles
 from trade_mcp.s1_velocity_surfer import S1VelocitySurferEngine, build_s1_profile_config
 
@@ -30,15 +34,56 @@ def _build_macro_wave_cfg(*, leg_lot: float = 0.01, max_legs: int = 6) -> Any:
     return by_name["MACRO_WAVE_DYN"]
 
 
-def _build_fast_shock6_cfg(*, leg_lot: float = 0.02) -> Any:
+def _build_fast_shock6_cfg(*, leg_lot: float = 0.02, all_24h: bool = True, varlot: bool = False) -> Any:
     by_name = dict(fast_snap_profiles(base_lot=leg_lot))
-    return by_name["VSNAP_SHOCK_6"]
+    cfg = by_name["VSNAP_SHOCK_6"]
+    if all_24h and varlot:
+        return replace(
+            cfg,
+            name="VSNAP6_24H_VARLOT",
+            active_server_hours=None,
+            leg_lot=max(0.03, leg_lot),
+            max_legs=5,
+            add_step_price=1.60,
+            add_interval_sec=4.0,
+            dyn_max_l1_lot=0.06,
+            dyn_max_leg_lot=0.12,
+            dyn_max_total_lot=0.45,
+        )
+    if all_24h:
+        return replace(cfg, name="VSNAP6_24H", active_server_hours=None)
+    return cfg
+
+
+def _build_zscore_mr_24h_cfg(*, leg_lot: float = 0.03) -> TickRobustZScoreConfig:
+    return TickRobustZScoreConfig(
+        name="ZSCORE_MR_24H",
+        bar_sec=60,
+        entry_z=2.2,
+        adx_max=22.0,
+        min_sd_cost_mult=2.5,
+        min_tp_cost_mult=3.5,
+        min_sl_price=4.50,
+        max_sl_price=7.50,
+        leg_lot=leg_lot,
+        variable_lot_by_z=True,
+        max_lot=0.06,
+        night_adaptive=True,
+        night_entry_z=2.15,
+        night_adx_max=24.0,
+        night_sd_cost_mult=2.2,
+        night_tp_cost_mult=3.2,
+        active_server_hours=None,
+    )
 
 
 ENGINE_LABELS: dict[str, str] = {
     "SHOCK10_DYN_RUN": "NEWS_SHOCK",
     "VSNAP_SHOCK_6": "FAST_SHOCK6",
+    "VSNAP6_24H": "FAST_SHOCK6",
+    "VSNAP6_24H_VARLOT": "FAST_SHOCK6",
     "MACRO_WAVE_DYN": "MACRO_WAVE",
+    "ZSCORE_MR_24H": "ZSCORE_MR",
     "CALM_M1_PRO_SESS": "CALM_M1_PRO",
     "CALM_M1_PRO_150": "CALM_M1_150",
 }
@@ -46,19 +91,21 @@ ENGINE_LABELS: dict[str, str] = {
 
 @dataclass
 class AllWeatherPaperSuite:
-    """Unified MetaTrader-style paper account driving COMBO_AW_V2 (ORDERS=0)."""
+    """Unified MetaTrader-style paper account driving COMBO_AW_V3_24H (ORDERS=0)."""
 
     initial_capital_usd: float = 1000.0
     news_leg_lot: float = 0.01
     calm_leg_lot: float = 0.02
     max_legs: int = 6
-    calm_profile: str = "CALM_M1_PRO_SESS"
+    calm_profile: str = "ZSCORE_MR_24H"
     enable_fast_shock6: bool = True
+    fast_shock_24h: bool = True
+    fast_shock_varlot: bool = False
 
     shock_engine: S1VelocitySurferEngine = field(init=False)
     fast_shock_engine: FastSnapEngine | None = field(init=False)
     macro_engine: PullbackDipEngine = field(init=False)
-    calm_engine: CalmRegimeEngine = field(init=False)
+    calm_engine: Any = field(init=False)
     engines: dict[str, Any] = field(init=False)
     engine_order: list[str] = field(init=False)
 
@@ -74,9 +121,14 @@ class AllWeatherPaperSuite:
     def __post_init__(self) -> None:
         self.peak_balance_usd = float(self.initial_capital_usd)
         self.peak_equity_usd = float(self.initial_capital_usd)
+        self._fast_name = (
+            "VSNAP6_24H_VARLOT"
+            if (self.fast_shock_24h and self.fast_shock_varlot)
+            else ("VSNAP6_24H" if self.fast_shock_24h else "VSNAP_SHOCK_6")
+        )
         self.engine_order = ["SHOCK10_DYN_RUN"]
         if self.enable_fast_shock6:
-            self.engine_order.append("VSNAP_SHOCK_6")
+            self.engine_order.append(self._fast_name)
         self.engine_order.extend(["MACRO_WAVE_DYN", self.calm_profile])
         self._init_engines()
 
@@ -87,7 +139,11 @@ class AllWeatherPaperSuite:
         )
         self.fast_shock_engine = (
             FastSnapEngine(
-                cfg=_build_fast_shock6_cfg(leg_lot=self.calm_leg_lot),
+                cfg=_build_fast_shock6_cfg(
+                    leg_lot=self.calm_leg_lot,
+                    all_24h=self.fast_shock_24h,
+                    varlot=self.fast_shock_varlot,
+                ),
                 initial_capital_usd=self.initial_capital_usd,
             )
             if self.enable_fast_shock6
@@ -97,13 +153,23 @@ class AllWeatherPaperSuite:
             cfg=_build_macro_wave_cfg(leg_lot=self.news_leg_lot, max_legs=self.max_legs),
             initial_capital_usd=self.initial_capital_usd,
         )
-        self.calm_engine = CalmRegimeEngine(
-            cfg=build_calm_regime_profile_config(self.calm_profile, leg_lot=self.calm_leg_lot, max_legs=max(8, self.max_legs)),
-            initial_capital_usd=self.initial_capital_usd,
-        )
+        if self.calm_profile == "ZSCORE_MR_24H":
+            self.calm_engine = TickRobustZScoreEngine(
+                cfg=_build_zscore_mr_24h_cfg(leg_lot=max(0.03, self.calm_leg_lot)),
+                initial_capital_usd=self.initial_capital_usd,
+            )
+        else:
+            self.calm_engine = CalmRegimeEngine(
+                cfg=build_calm_regime_profile_config(
+                    self.calm_profile,
+                    leg_lot=self.calm_leg_lot,
+                    max_legs=max(8, self.max_legs),
+                ),
+                initial_capital_usd=self.initial_capital_usd,
+            )
         self.engines = {"SHOCK10_DYN_RUN": self.shock_engine}
         if self.fast_shock_engine is not None:
-            self.engines["VSNAP_SHOCK_6"] = self.fast_shock_engine
+            self.engines[self._fast_name] = self.fast_shock_engine
         self.engines["MACRO_WAVE_DYN"] = self.macro_engine
         self.engines[self.calm_profile] = self.calm_engine
         self.set_multiplier(self._multiplier)
@@ -185,7 +251,7 @@ class AllWeatherPaperSuite:
         out_events: list[dict[str, Any]] = []
         for eng_name in self.engine_order:
             eng = self.engines[eng_name]
-            if isinstance(eng, FastSnapEngine):
+            if isinstance(eng, (FastSnapEngine, TickRobustZScoreEngine)):
                 evs = eng.on_tick(ts=ts, bid=bid, ask=ask)
             else:
                 evs = eng.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_context)
@@ -209,7 +275,7 @@ class AllWeatherPaperSuite:
             ex_px = bid if eng.basket["side"] == "buy" else ask
             if isinstance(eng, S1VelocitySurferEngine):
                 wave = eng._close_basket(ex_px, ts, reason)
-            elif isinstance(eng, FastSnapEngine):
+            elif isinstance(eng, (FastSnapEngine, TickRobustZScoreEngine)):
                 wave = eng.force_close_open(ts=ts, bid=bid, ask=ask, reason=reason)
                 if wave is None:
                     continue
@@ -256,10 +322,16 @@ class AllWeatherPaperSuite:
         gw = sum(float(t["net_pnl_usd"]) for t in wins)
         gl = abs(sum(float(t["net_pnl_usd"]) for t in losses))
         pf = round(gw / gl, 2) if gl > 0 else (99.0 if gw > 0 else None)
+        if self.calm_profile == "ZSCORE_MR_24H" and self.enable_fast_shock6 and self.fast_shock_24h:
+            port_name = "COMBO_AW_V3_24H_VARLOT" if self.fast_shock_varlot else "COMBO_AW_V3_24H"
+        elif self.enable_fast_shock6:
+            port_name = "COMBO_AW_V2"
+        else:
+            port_name = "COMBO_AW_PRO_M1"
         return {
             "paper_only": True,
             "orders_submitted": 0,
-            "portfolio": "COMBO_AW_V2" if self.enable_fast_shock6 else "COMBO_AW_PRO_M1",
+            "portfolio": port_name,
             "initial_capital_usd": round(self.initial_capital_usd, 2),
             "balance_usd": bal,
             "equity_usd": eq,

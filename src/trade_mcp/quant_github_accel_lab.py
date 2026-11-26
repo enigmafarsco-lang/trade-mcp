@@ -789,6 +789,14 @@ class TickRobustZScoreConfig:
     min_tp_cost_mult: float = 3.5  # distance to SMA (TP) >= Y * spread
     max_spread_price: float = 0.55
 
+    # Optional adaptive Night-regime overrides (21:00-08:59 SRV)
+    night_adaptive: bool = False
+    night_hours: tuple[int, ...] = (21, 22, 23, 0, 1, 2, 3, 4, 5, 6, 7, 8)
+    night_entry_z: float = 2.15
+    night_adx_max: float = 24.0
+    night_sd_cost_mult: float = 2.2
+    night_tp_cost_mult: float = 3.2
+
     # Risk & limit-at-mean TP management
     leg_lot: float = 0.02
     variable_lot_by_z: bool = True  # larger Z stretch -> slightly larger lot (bounded)
@@ -1045,9 +1053,11 @@ class TickRobustZScoreEngine:
                 if side == "buy" and (bid - b["avg_entry"]) >= be_trig:
                     b["stop"] = max(b["stop"], round(b["avg_entry"] + spread + 0.05, 4))
                     b["be_armed"] = True
+                    b["stop_locked"] = True
                 elif side == "sell" and (b["avg_entry"] - ask) >= be_trig:
                     b["stop"] = min(b["stop"], round(b["avg_entry"] - spread - 0.05, 4))
                     b["be_armed"] = True
+                    b["stop_locked"] = True
             # Gravity TP retarget to fresh SMA (never below cost-covering floor)
             if self.cfg.gravity_tp_retarget:
                 if side == "buy":
@@ -1066,32 +1076,40 @@ class TickRobustZScoreEngine:
 
         # 4) Flat: evaluate closed-bar TickRobust Z-Score entry
         if self.cooldown_bars_left == 0 and spread <= self.cfg.max_spread_price and self._in_session(ts):
+            is_night = self.cfg.night_adaptive and (
+                datetime.fromtimestamp(ts, tz=timezone.utc).hour in self.cfg.night_hours
+            )
+            eff_entry_z = self.cfg.night_entry_z if is_night else self.cfg.entry_z
+            eff_adx_max = self.cfg.night_adx_max if is_night else self.cfg.adx_max
+            eff_sd_mult = self.cfg.night_sd_cost_mult if is_night else self.cfg.min_sd_cost_mult
+            eff_tp_mult = self.cfg.night_tp_cost_mult if is_night else self.cfg.min_tp_cost_mult
+
             z1 = ind["z1"]
             z2 = ind["z2"]
-            # Allow turn bar right after a >=entry_z extreme (still stretched >= 0.70*entry_z)
+            # Allow turn bar right after a >=eff_entry_z extreme (still stretched >= 0.70*eff_entry_z)
             sdir = 0
-            if z1 <= -self.cfg.entry_z or (z2 <= -self.cfg.entry_z and z1 <= -0.70 * self.cfg.entry_z):
+            if z1 <= -eff_entry_z or (z2 <= -eff_entry_z and z1 <= -0.70 * eff_entry_z):
                 sdir = 1
-            elif z1 >= self.cfg.entry_z or (z2 >= self.cfg.entry_z and z1 >= 0.70 * self.cfg.entry_z):
+            elif z1 >= eff_entry_z or (z2 >= eff_entry_z and z1 >= 0.70 * eff_entry_z):
                 sdir = -1
             if sdir != 0:
                 # Turn confirmation (NO falling knife!)
                 turn_ok = (not self.cfg.require_turn) or (
                     (sdir == 1 and ind["c1"] >= ind["c2"]) or (sdir == -1 and ind["c1"] <= ind["c2"])
                 )
-                adx_ok = (self.cfg.adx_max <= 0.0) or (ind["adx"] <= self.cfg.adx_max)
+                adx_ok = (eff_adx_max <= 0.0) or (ind["adx"] <= eff_adx_max)
                 vol_ok = self.cfg.atr_min_ratio <= ind["atr_ratio"] <= self.cfg.atr_max_ratio
-                sd_ok = ind["sd"] >= (self.cfg.min_sd_cost_mult * max(spread, 0.20))
+                sd_ok = ind["sd"] >= (eff_sd_mult * max(spread, 0.20))
 
                 entry_px = ask if sdir == 1 else bid
                 tp_dist = (ind["mean"] - entry_px) if sdir == 1 else (entry_px - ind["mean"])
-                tp_ok = tp_dist >= (self.cfg.min_tp_cost_mult * max(spread, 0.20))
+                tp_ok = tp_dist >= (eff_tp_mult * max(spread, 0.20))
 
                 if turn_ok and adx_ok and vol_ok and sd_ok and tp_ok:
                     sl_dist = min(self.cfg.max_sl_price, max(self.cfg.min_sl_price, self.cfg.sl_atr_mult * ind["atr"]))
                     lot = self.cfg.leg_lot
                     if self.cfg.variable_lot_by_z:
-                        z_mult = _clip(abs(z1) / self.cfg.entry_z, 1.0, 2.0)
+                        z_mult = _clip(abs(z1) / eff_entry_z, 1.0, 2.0)
                         lot = max(0.01, min(self.cfg.max_lot, round(self.cfg.leg_lot * z_mult, 2)))
                     stop = round(entry_px - sl_dist, 4) if sdir == 1 else round(entry_px + sl_dist, 4)
                     tp = round(ind["mean"], 4)
@@ -1108,6 +1126,7 @@ class TickRobustZScoreEngine:
                         "stop": stop,
                         "tp": tp,
                         "be_armed": False,
+                        "stop_locked": False,
                     }
                     events.append({
                         "type": "OPEN_L1",
@@ -1122,6 +1141,73 @@ class TickRobustZScoreEngine:
 
         self._update_dd(bid, ask)
         return events
+
+    def seed_closed_bars(self, bars: list[dict[str, float]]) -> int:
+        """Warm up M1 Z-Score / ADX / ATR history causally from closed historical M1 bars."""
+        count = 0
+        for b in bars:
+            self._push_closed_bar(
+                {
+                    "bar_id": float(b.get("bar_id", count)),
+                    "o": float(b["o"]),
+                    "h": float(b["h"]),
+                    "l": float(b["l"]),
+                    "c": float(b["c"]),
+                }
+            )
+            count += 1
+        return count
+
+    def live_status(self, ts: float | None = None) -> dict[str, Any]:
+        """Human-readable 24h market radar status for ZSCORE_MR."""
+        ind = self._indicators()
+        bars_n = len(self._bars)
+        need = max(self.cfg.mean_period, self.cfg.atr_period) + 2
+        in_sess = self._in_session(ts) if ts is not None else True
+        if ind is None:
+            return {
+                "in_session": in_sess,
+                "bars_ready": bars_n,
+                "atr": 0.0,
+                "adx": 0.0,
+                "z1": 0.0,
+                "move_60s": 0.0,
+                "htf_move": 0.0,
+                "eff": 0.0,
+                "ema_dir": "FLAT",
+                "reason": f"WARMING UP 24H RADAR ({bars_n}/{need} closed M1 bars)",
+            }
+        z1 = round(ind["z1"], 2)
+        adx = round(ind["adx"], 1)
+        atr = round(ind["atr"], 2)
+        is_night = self.cfg.night_adaptive and ts is not None and (
+            datetime.fromtimestamp(ts, tz=timezone.utc).hour in self.cfg.night_hours
+        )
+        mode_tag = "NIGHT-24H" if is_night else "DAY-24H"
+        eff_z = self.cfg.night_entry_z if is_night else self.cfg.entry_z
+        eff_adx = self.cfg.night_adx_max if is_night else self.cfg.adx_max
+        if self.cooldown_bars_left > 0:
+            reason = f"{mode_tag} COOLDOWN ({self.cooldown_bars_left}m left | Z={z1:+.2f} ADX={adx:.0f})"
+        elif adx > eff_adx:
+            reason = f"{mode_tag} TRENDING (ADX={adx:.0f}>{eff_adx:.0f} — FastShock6/MacroWave hunting | Z={z1:+.2f})"
+        elif abs(z1) >= eff_z * 0.85:
+            reason = f"{mode_tag} STRETCHED (Z={z1:+.2f} near ±{eff_z:.2f}, ADX={adx:.0f} — waiting turn bar)"
+        else:
+            reason = f"{mode_tag} HUNTING 24H (Z={z1:+.2f}/±{eff_z:.2f}, ADX={adx:.0f}, ATR=${atr:.2f})"
+        htf = round(self._bars[-1]["c"] - self._bars[-15]["c"], 2) if len(self._bars) >= 15 else 0.0
+        m60 = round(self._bars[-1]["c"] - self._bars[-2]["c"], 2) if len(self._bars) >= 2 else 0.0
+        return {
+            "in_session": True,
+            "bars_ready": bars_n,
+            "atr": atr,
+            "adx": adx,
+            "z1": z1,
+            "move_60s": m60,
+            "htf_move": htf,
+            "eff": 0.0,
+            "ema_dir": "UP" if htf > 0 else ("DOWN" if htf < 0 else "FLAT"),
+            "reason": reason,
+        }
 
     def force_close_open(self, *, ts: float, bid: float, ask: float, reason: str = "eof_replay") -> dict[str, Any] | None:
         if self.basket is None:
