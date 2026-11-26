@@ -164,6 +164,11 @@ class IncrementalTickPhysics:
         self.r5 = _TickRoll(5.0)
         self.r15 = _TickRoll(15.0)
         self.r60 = _TickRoll(60.0)
+        # 1-second sampled rolls for noise-free directional efficiency (removes sub-second bid/ask ping-pong)
+        self._s_v1 = _TickRoll(self.vel_win)
+        self._s_60 = _TickRoll(60.0)
+        self._last_sec: int | None = None
+        self._last_sec_mid: float = 0.0
         self.x30 = _MonotonicExt(30.0)
         self.x60 = _MonotonicExt(60.0)
         self.x180 = _MonotonicExt(180.0)
@@ -175,10 +180,12 @@ class IncrementalTickPhysics:
         self.n = 0
 
     def reset(self) -> None:
-        for r in (self.r_v1, self.r_v2, self.r5, self.r15, self.r60):
+        for r in (self.r_v1, self.r_v2, self.r5, self.r15, self.r60, self._s_v1, self._s_60):
             r.reset()
         for x in (self.x30, self.x60, self.x180):
             x.reset()
+        self._last_sec = None
+        self._last_sec_mid = 0.0
         self.last = None
         self.first_t = 0.0
         self.seq_run = 0
@@ -210,6 +217,21 @@ class IncrementalTickPhysics:
                 self.signs.append(s)
                 self.sign_sum += s
 
+        sec = int(t)
+        if self._last_sec is None:
+            self._last_sec = sec
+            self._last_sec_mid = mid
+            self._s_v1.push(float(sec), mid, 0.0, 0, 0)
+            self._s_60.push(float(sec), mid, 0.0, 0, 0)
+        elif sec > self._last_sec:
+            sd_1s = mid - self._last_sec_mid
+            self._s_v1.push(float(sec), mid, sd_1s, 0, 0)
+            self._s_60.push(float(sec), mid, sd_1s, 0, 0)
+            self._s_v1.expire(float(sec))
+            self._s_60.expire(float(sec))
+            self._last_sec = sec
+            self._last_sec_mid = mid
+
         self.last = (t, bid, ask, mid)
         self.n += 1
         for r in (self.r_v1, self.r_v2, self.r5, self.r15, self.r60):
@@ -230,8 +252,8 @@ class IncrementalTickPhysics:
         m5 = self.r5.net(mid)
         m15 = self.r15.net(mid)
         m60 = self.r60.net(mid)
-        eff_v1 = self.r_v1.eff(mid)
-        eff60 = self.r60.eff(mid)
+        eff_v1 = self._s_v1.eff(mid)
+        eff60 = self._s_60.eff(mid)
 
         ud_tot = self.r15.up + self.r15.dn
         imb = (self.r15.up - self.r15.dn) / ud_tot if ud_tot > 0 else 0.0
@@ -284,11 +306,11 @@ class RapidBurstAccelConfig:
     require_accel: bool = True  # TRUE 2nd-derivative filter: vel_now > vel_prev!
     min_accel_per_sec: float = 0.05  # acceleration >= $0.05/sec increase in speed!
     min_60s_move: float = 4.50  # 60s move aligned with burst (blocks 2s micro-noise)
-    min_eff_v1: float = 0.50
-    min_eff_60: float = 0.38
-    min_flow: float = 0.18  # tick-direction + bid/ask pressure proxy
-    max_chase_price: float = 9.50  # anti-chase ceiling from 3m swing (0 = off)
-    max_pb_30s: float = 0.70  # don't enter after already snapping back off 30s extreme
+    min_eff_v1: float = 0.42
+    min_eff_60: float = 0.35
+    min_flow: float = 0.08  # tick-direction + bid/ask pressure proxy
+    max_chase_price: float = 12.00  # anti-chase ceiling from 3m swing (0 = off)
+    max_pb_30s: float = 0.85  # don't enter after already snapping back off 30s extreme
     max_spread_price: float = 0.65
 
     # Variable lot size & slope-proportional multi-order stacking
@@ -808,6 +830,7 @@ class TickRobustZScoreEngine:
         c1 = self._bars[-1]["c"]
         c2 = self._bars[-2]["c"]
         z1 = (c1 - mean) / sd if sd > 1e-9 else 0.0
+        z2 = (c2 - mean) / sd if sd > 1e-9 else 0.0
         return {
             "mean": mean,
             "sd": sd,
@@ -817,6 +840,7 @@ class TickRobustZScoreEngine:
             "c1": c1,
             "c2": c2,
             "z1": z1,
+            "z2": z2,
         }
 
     def unrealized_pnl_usd(self, bid: float, ask: float) -> float:
@@ -986,7 +1010,13 @@ class TickRobustZScoreEngine:
         # 4) Flat: evaluate closed-bar TickRobust Z-Score entry
         if self.cooldown_bars_left == 0 and spread <= self.cfg.max_spread_price and self._in_session(ts):
             z1 = ind["z1"]
-            sdir = 1 if z1 <= -self.cfg.entry_z else (-1 if z1 >= self.cfg.entry_z else 0)
+            z2 = ind["z2"]
+            # Allow turn bar right after a >=entry_z extreme (still stretched >= 0.70*entry_z)
+            sdir = 0
+            if z1 <= -self.cfg.entry_z or (z2 <= -self.cfg.entry_z and z1 <= -0.70 * self.cfg.entry_z):
+                sdir = 1
+            elif z1 >= self.cfg.entry_z or (z2 >= self.cfg.entry_z and z1 >= 0.70 * self.cfg.entry_z):
+                sdir = -1
             if sdir != 0:
                 # Turn confirmation (NO falling knife!)
                 turn_ok = (not self.cfg.require_turn) or (

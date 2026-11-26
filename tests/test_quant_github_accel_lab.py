@@ -161,3 +161,32 @@ def test_run_quant_accel_sweep_cli_end_to_end(
     assert saved["orders_submitted"] == 0
     assert "RB_04_FULL_SLOPE_STACK" in saved["all_stats"]
     assert "GH_Z_M1_Z22_24H" in saved["all_stats"]
+
+
+def test_reverse_engineer_manual_edge_enriches_ticks() -> None:
+    import reverse_engineer_manual_edge as rev
+
+    ticks = _make_accel_wave_ticks()
+    times = [t for t, _, _ in ticks]
+    mids = [0.5 * (b + a) for _, b, a in ticks]
+    t_entry = times[75]
+    t_exit = times[95]
+    sample_trades = [
+        {
+            "side": "sell",
+            "volume": 0.05,
+            "entry_price": 3566.5,
+            "exit_price": 3560.0,
+            "opened_at": t_entry,
+            "closed_at": t_exit,
+            "hold_seconds": int(t_exit - t_entry),
+            "net_usd": 32.5,
+        }
+    ]
+    xray = rev.enrich_trades_with_tick_physics(sample_trades, times, mids)
+    assert xray["orders_submitted"] == 0
+    assert xray["all"]["trades"] == 1
+    assert xray["all"]["net_usd"] == 32.5
+    assert xray["all"]["matched_ticks"] == 1
+    assert xray["trades"][0]["phys"]["with_60s_trend"] is True
+
