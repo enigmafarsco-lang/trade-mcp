@@ -1,9 +1,10 @@
-"""All-Weather Paper Trading Suite (COMBO_AW_PRO_M1, ORDERS=0).
+"""All-Weather Paper Trading Suite (COMBO_AW_V2, ORDERS=0).
 
-Combines the 3 causally validated engines into ONE unified MetaTrader-style paper account:
+Combines the 4 causally validated engines into ONE unified MetaTrader-style paper account:
   1. SHOCK10_DYN_RUN  (News / >=$10 per 60s shock dynamic runner)
-  2. MACRO_WAVE_DYN   (London/NY macro pullback-continuation dynamic pyramid runner)
-  3. CALM_M1_PRO_SESS (London/NY calm-drift M1 EMA9/21 + HTF alignment + 1L 55% ratchet)
+  2. VSNAP_SHOCK_6    (Fast sharp $6-$10/60s burst & V-snap runner — 77.8% WR, PF 2.23 on 322k real ticks)
+  3. MACRO_WAVE_DYN   (London/NY macro pullback-continuation dynamic pyramid runner)
+  4. CALM_M1_PRO_SESS (London/NY calm-drift M1 EMA9/21 + HTF alignment + 1L 55% ratchet)
 
 Strictly read-only / paper-only (`paper_only=True`, `orders_submitted=0`).
 """
@@ -15,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from trade_mcp.calm_regime_engines import CalmRegimeEngine, build_calm_regime_profile_config
+from trade_mcp.fast_snap_engines import FastSnapEngine, fast_snap_profiles
 from trade_mcp.s1_impulse_audit import PullbackDipEngine, pullback_dip_profiles
 from trade_mcp.s1_velocity_surfer import S1VelocitySurferEngine, build_s1_profile_config
 
@@ -28,8 +30,14 @@ def _build_macro_wave_cfg(*, leg_lot: float = 0.01, max_legs: int = 6) -> Any:
     return by_name["MACRO_WAVE_DYN"]
 
 
+def _build_fast_shock6_cfg(*, leg_lot: float = 0.02) -> Any:
+    by_name = dict(fast_snap_profiles(base_lot=leg_lot))
+    return by_name["VSNAP_SHOCK_6"]
+
+
 ENGINE_LABELS: dict[str, str] = {
     "SHOCK10_DYN_RUN": "NEWS_SHOCK",
+    "VSNAP_SHOCK_6": "FAST_SHOCK6",
     "MACRO_WAVE_DYN": "MACRO_WAVE",
     "CALM_M1_PRO_SESS": "CALM_M1_PRO",
     "CALM_M1_PRO_150": "CALM_M1_150",
@@ -38,15 +46,17 @@ ENGINE_LABELS: dict[str, str] = {
 
 @dataclass
 class AllWeatherPaperSuite:
-    """Unified MetaTrader-style paper account driving COMBO_AW_PRO_M1 (ORDERS=0)."""
+    """Unified MetaTrader-style paper account driving COMBO_AW_V2 (ORDERS=0)."""
 
     initial_capital_usd: float = 1000.0
     news_leg_lot: float = 0.01
     calm_leg_lot: float = 0.02
     max_legs: int = 6
     calm_profile: str = "CALM_M1_PRO_SESS"
+    enable_fast_shock6: bool = True
 
     shock_engine: S1VelocitySurferEngine = field(init=False)
+    fast_shock_engine: FastSnapEngine | None = field(init=False)
     macro_engine: PullbackDipEngine = field(init=False)
     calm_engine: CalmRegimeEngine = field(init=False)
     engines: dict[str, Any] = field(init=False)
@@ -64,13 +74,24 @@ class AllWeatherPaperSuite:
     def __post_init__(self) -> None:
         self.peak_balance_usd = float(self.initial_capital_usd)
         self.peak_equity_usd = float(self.initial_capital_usd)
-        self.engine_order = ["SHOCK10_DYN_RUN", "MACRO_WAVE_DYN", self.calm_profile]
+        self.engine_order = ["SHOCK10_DYN_RUN"]
+        if self.enable_fast_shock6:
+            self.engine_order.append("VSNAP_SHOCK_6")
+        self.engine_order.extend(["MACRO_WAVE_DYN", self.calm_profile])
         self._init_engines()
 
     def _init_engines(self) -> None:
         self.shock_engine = S1VelocitySurferEngine(
             cfg=build_s1_profile_config("v2.6_SHOCK10_DYN", leg_lot=self.news_leg_lot, max_legs=self.max_legs),
             initial_capital_usd=self.initial_capital_usd,
+        )
+        self.fast_shock_engine = (
+            FastSnapEngine(
+                cfg=_build_fast_shock6_cfg(leg_lot=self.calm_leg_lot),
+                initial_capital_usd=self.initial_capital_usd,
+            )
+            if self.enable_fast_shock6
+            else None
         )
         self.macro_engine = PullbackDipEngine(
             cfg=_build_macro_wave_cfg(leg_lot=self.news_leg_lot, max_legs=self.max_legs),
@@ -80,11 +101,11 @@ class AllWeatherPaperSuite:
             cfg=build_calm_regime_profile_config(self.calm_profile, leg_lot=self.calm_leg_lot, max_legs=max(8, self.max_legs)),
             initial_capital_usd=self.initial_capital_usd,
         )
-        self.engines = {
-            "SHOCK10_DYN_RUN": self.shock_engine,
-            "MACRO_WAVE_DYN": self.macro_engine,
-            self.calm_profile: self.calm_engine,
-        }
+        self.engines = {"SHOCK10_DYN_RUN": self.shock_engine}
+        if self.fast_shock_engine is not None:
+            self.engines["VSNAP_SHOCK_6"] = self.fast_shock_engine
+        self.engines["MACRO_WAVE_DYN"] = self.macro_engine
+        self.engines[self.calm_profile] = self.calm_engine
         self.set_multiplier(self._multiplier)
 
     def reset_file_state(self) -> None:
@@ -164,7 +185,10 @@ class AllWeatherPaperSuite:
         out_events: list[dict[str, Any]] = []
         for eng_name in self.engine_order:
             eng = self.engines[eng_name]
-            evs = eng.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_context)
+            if isinstance(eng, FastSnapEngine):
+                evs = eng.on_tick(ts=ts, bid=bid, ask=ask)
+            else:
+                evs = eng.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_context)
             for ev in evs:
                 ev_copy = dict(ev)
                 ev_copy["engine"] = eng_name
@@ -185,6 +209,10 @@ class AllWeatherPaperSuite:
             ex_px = bid if eng.basket["side"] == "buy" else ask
             if isinstance(eng, S1VelocitySurferEngine):
                 wave = eng._close_basket(ex_px, ts, reason)
+            elif isinstance(eng, FastSnapEngine):
+                wave = eng.force_close_open(ts=ts, bid=bid, ask=ask, reason=reason)
+                if wave is None:
+                    continue
             else:
                 wave = eng._close(ex_px, ts, reason)
             rec = self._record_closed_wave(eng_name, wave)
@@ -231,7 +259,7 @@ class AllWeatherPaperSuite:
         return {
             "paper_only": True,
             "orders_submitted": 0,
-            "portfolio": "COMBO_AW_PRO_M1",
+            "portfolio": "COMBO_AW_V2" if self.enable_fast_shock6 else "COMBO_AW_PRO_M1",
             "initial_capital_usd": round(self.initial_capital_usd, 2),
             "balance_usd": bal,
             "equity_usd": eq,

@@ -92,6 +92,7 @@ def test_all_weather_cli_mock_replay_and_live_smoke(
     out2 = capsys.readouterr().out
     assert "ALL-WEATHER PAPER REPLAY" in out2
     assert "SHOCK10_DYN_RUN" in out2
+    assert "VSNAP_SHOCK_6" in out2
     assert "MACRO_WAVE_DYN" in out2
     assert "CALM_M1_PRO_SESS" in out2
 

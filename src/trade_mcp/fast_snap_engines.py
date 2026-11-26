@@ -492,7 +492,15 @@ class FastSnapEngine:
                     "stop": stop,
                     "stop_locked": False,
                 }
-                events.append({"type": "ENTRY", "wave_id": wid, "side": side, "price": fill_px, "lot": lot, "stop": stop})
+                events.append({
+                    "type": "OPEN_L1",
+                    "wave_id": wid,
+                    "side": side,
+                    "entry": fill_px,
+                    "leg_lot": lot,
+                    "total_volume": lot,
+                    "stop": stop,
+                })
             elif pend["kind"] == "add" and self.basket is not None:
                 b = self.basket
                 cur_vol = float(b["total_volume"])
@@ -535,7 +543,15 @@ class FastSnapEngine:
                         if lock_sl < b["stop"]:
                             b["stop"] = lock_sl
                             b["stop_locked"] = True
-                    events.append({"type": "ADD", "wave_id": b["wave_id"], "side": side, "price": fill_px, "lot": add_lot})
+                    events.append({
+                        "type": "FIRE_ADD",
+                        "wave_id": b["wave_id"],
+                        "side": side,
+                        "add_price": fill_px,
+                        "leg_lot": add_lot,
+                        "total_volume": new_vol,
+                        "stop": b["stop"],
+                    })
 
         # 2) Manage open basket
         if self.basket is not None:
