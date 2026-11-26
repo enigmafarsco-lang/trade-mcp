@@ -944,4 +944,72 @@ def test_calm_m5_rr_and_m1_sess_hour_gate() -> None:
     assert eng_london.summary()["orders_submitted"] == 0
 
 
+def test_calm_pro_1leg_ratchet_and_htf_chop_filter() -> None:
+    """PRO profiles protect 1L winners with 55% ratchet and filter counter-trend HTF chop."""
+    from trade_mcp.calm_regime_engines import CalmRegimeEngine, build_calm_regime_profile_config
+
+    # 1) Compare 1L winner giveback: CALM_M5_PRO_24H (ratchet_min_legs=1) vs CALM_M5_RR_24H (ratchet_min_legs=2)
+    def _run_m5_480_reversal(profile: str) -> CalmRegimeEngine:
+        cfg = build_calm_regime_profile_config(profile, leg_lot=0.02)
+        cfg.enable_adds = False  # isolate 1L ratchet behavior
+        eng = CalmRegimeEngine(cfg=cfg)
+        t0 = float(datetime(2026, 11, 26, 12, 0, 0, tzinfo=timezone.utc).timestamp())
+        bar_sec = 300
+        px = 3500.0
+        b_idx = 0
+        seed: list[dict[str, float]] = []
+        for _ in range(14):
+            seed.append({"bar_id": float(b_idx), "o": px, "h": px + 2.2, "l": px - 0.8, "c": px + 1.4})
+            px += 1.4
+            b_idx += 1
+        eng.seed_closed_bars(seed)
+        _emit_bar_ticks(eng, t_bar=t0 + b_idx * bar_sec, bar_sec=bar_sec, o=px, h=px + 0.4, low=px - 3.0, c=px - 2.0)
+        px -= 2.0
+        b_idx += 1
+        _emit_bar_ticks(eng, t_bar=t0 + b_idx * bar_sec, bar_sec=bar_sec, o=px, h=px + 3.0, low=px - 0.5, c=px + 2.4)
+        px += 2.4
+        b_idx += 1
+        # Drift +$5.40 above entry (~$10 unrealized on 0.02 lot), then reverse -$7.00
+        t_open = t0 + b_idx * bar_sec
+        for step in range(4 * 120):
+            sec = step * 0.25
+            mid = (px + 5.4 * (sec / 60.0)) if sec < 60.0 else (px + 5.4 - 7.0 * ((sec - 60.0) / 60.0))
+            eng.on_tick(ts=t_open + sec, bid=round(mid - 0.18, 4), ask=round(mid + 0.18, 4), m1_context={"bias": 1, "label": "BULL"})
+        return eng
+
+    eng_pro = _run_m5_480_reversal("CALM_M5_PRO_24H")
+    eng_rr = _run_m5_480_reversal("CALM_M5_RR_24H")
+    assert len(eng_pro.waves_closed) == 1
+    assert len(eng_rr.waves_closed) == 1
+    # PRO locks ~$5+ via 1L 55% ratchet, whereas legacy RR slides back down to ~$1 BE!
+    assert eng_pro.waves_closed[0]["net_pnl_usd"] > 4.5
+    assert eng_pro.waves_closed[0]["net_pnl_usd"] > eng_rr.waves_closed[0]["net_pnl_usd"] + 2.5
+
+    # 2) HTF alignment guard on CALM_M1_PRO_SESS blocks buying a micro-bounce after a 15m selloff
+    cfg_m1_pro = build_calm_regime_profile_config("CALM_M1_PRO_SESS", leg_lot=0.02)
+    eng_chop = CalmRegimeEngine(cfg=cfg_m1_pro)
+    t0 = float(datetime(2026, 11, 26, 14, 0, 0, tzinfo=timezone.utc).timestamp())
+    bar_sec = 60
+    px = 3560.0
+    b_idx = 0
+    # Drop -$14 over 16 bars, then bounce only +$4 over 8 bars (EMA9 barely crosses EMA21, but 15m move is still negative!)
+    for _ in range(16):
+        _emit_bar_ticks(eng_chop, t_bar=t0 + b_idx * bar_sec, bar_sec=bar_sec, o=px, h=px + 0.5, low=px - 2.0, c=px - 0.9)
+        px -= 0.9
+        b_idx += 1
+    for _ in range(7):
+        _emit_bar_ticks(eng_chop, t_bar=t0 + b_idx * bar_sec, bar_sec=bar_sec, o=px, h=px + 1.8, low=px - 0.5, c=px + 0.6)
+        px += 0.6
+        b_idx += 1
+    _emit_bar_ticks(eng_chop, t_bar=t0 + b_idx * bar_sec, bar_sec=bar_sec, o=px, h=px + 0.3, low=px - 1.5, c=px - 0.8)
+    px -= 0.8
+    b_idx += 1
+    _emit_bar_ticks(eng_chop, t_bar=t0 + b_idx * bar_sec, bar_sec=bar_sec, o=px, h=px + 2.2, low=px - 0.3, c=px + 1.8)
+    b_idx += 1
+    eng_chop.on_tick(ts=t0 + b_idx * bar_sec, bid=px + 1.6, ask=px + 1.96, m1_context={"bias": 0, "label": "CHOP"})
+    assert eng_chop.pending is None
+    assert eng_chop.basket is None
+
+
+
 

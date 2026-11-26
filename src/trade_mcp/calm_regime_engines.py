@@ -58,6 +58,8 @@ class CalmRegimeConfig:
     min_trend_eff: float = 0.24  # trend_reclaim: net move / path over last 8 bars
     min_body_frac: float = 0.30  # confirmation candle body >= 30% of bar range
     pullback_ema_atr_pad: float = 0.35  # low/high must retrace within fast_ema +/- pad*ATR
+    htf_window_sec: int = 900  # higher-timeframe alignment window (e.g. 900s=15m for M1, 1800s=30m for M5)
+    min_dir_htf_move: float = 0.0  # optional causal directional HTF move floor (0.0 = disabled)
 
     # Range mean-reversion guards (mode == "range_bb")
     range_max_sep_atr: float = 0.75  # block fading if |fast_ema - slow_ema| > 0.75 * ATR (trending!)
@@ -93,6 +95,8 @@ class CalmRegimeConfig:
     dyn_min_lock_profit: float = 0.55
     dyn_profit_ratchet_arm: float = 4.50
     dyn_profit_ratchet_frac: float = 0.55
+    ratchet_min_legs: int = 2  # 2 = multi-leg only (legacy), 1 = also protect 1-leg winners from giveback
+    ratchet_breathing_room: float | None = None  # None = max(sl_min_breathing_room, 2.40)
 
     # Cooldowns & optional session gate
     win_cooldown_sec: float = 60.0
@@ -246,6 +250,13 @@ class CalmRegimeEngine:
         path = sum(abs(recent[i]["c"] - recent[i - 1]["c"]) for i in range(1, len(recent)))
         return (net / path) if path > 1e-9 else 0.0
 
+    def _htf_bar_move(self, sec: int, mid: float, window_sec: int) -> float:
+        """Strictly causal net directional move over window_sec using closed bars (fallback to tick history)."""
+        n_bars = max(1, round(window_sec / max(1, self.cfg.bar_sec)))
+        if len(self._bars) >= n_bars + 1:
+            return float(self._bars[-1]["c"]) - float(self._bars[-(n_bars + 1)]["c"])
+        return self._window_move(sec, mid, window_sec)
+
     def _bb_stats(self) -> tuple[float, float, float] | None:
         p = self.cfg.bb_period
         if len(self._bars) < p:
@@ -298,11 +309,17 @@ class CalmRegimeEngine:
                 return None
 
             pad = self.cfg.pullback_ema_atr_pad * atr
+            htf_mv = (
+                self._htf_bar_move(sec, mid, self.cfg.htf_window_sec)
+                if self.cfg.min_dir_htf_move > 0.0
+                else 0.0
+            )
             # Bullish pullback-reclaim into EMA zone
             if ef > es and es >= self._prev_ema_slow and c > o and c > ef:
+                htf_ok = self.cfg.min_dir_htf_move <= 0.0 or htf_mv >= self.cfg.min_dir_htf_move
                 retrace_ok = (low <= ef + pad) or (prev_bar["l"] <= ef + pad) or (prev_bar["c"] < prev_bar["o"])
                 not_overextended = (c - ef) <= (1.6 * atr)
-                if retrace_ok and not_overextended:
+                if htf_ok and retrace_ok and not_overextended:
                     swing_lo = min(low, prev_bar["l"])
                     raw_sl_dist = max(c - swing_lo + 0.55 * atr, self.cfg.sl_atr_mult * atr)
                     sl_dist = min(max(raw_sl_dist, self.cfg.min_stop_price), self.cfg.max_stop_price)
@@ -312,15 +329,16 @@ class CalmRegimeEngine:
                         "sl_dist": round(sl_dist, 4),
                         "tp_px": None,
                         "atr": round(atr, 3),
-                        "detail": f"ema_sep={sep:.2f} eff={eff:.2f} atr={atr:.2f}",
+                        "detail": f"ema_sep={sep:.2f} eff={eff:.2f} atr={atr:.2f} htf={htf_mv:+.2f}",
                         "m1_label": str(m1_context.get("label", "CALM")),
                     }
 
             # Bearish pullback-reclaim into EMA zone
             if ef < es and es <= self._prev_ema_slow and c < o and c < ef:
+                htf_ok = self.cfg.min_dir_htf_move <= 0.0 or htf_mv <= -self.cfg.min_dir_htf_move
                 retrace_ok = (h >= ef - pad) or (prev_bar["h"] >= ef - pad) or (prev_bar["c"] > prev_bar["o"])
                 not_overextended = (ef - c) <= (1.6 * atr)
-                if retrace_ok and not_overextended:
+                if htf_ok and retrace_ok and not_overextended:
                     swing_hi = max(h, prev_bar["h"])
                     raw_sl_dist = max(swing_hi - c + 0.55 * atr, self.cfg.sl_atr_mult * atr)
                     sl_dist = min(max(raw_sl_dist, self.cfg.min_stop_price), self.cfg.max_stop_price)
@@ -330,7 +348,7 @@ class CalmRegimeEngine:
                         "sl_dist": round(sl_dist, 4),
                         "tp_px": None,
                         "atr": round(atr, 3),
-                        "detail": f"ema_sep={sep:.2f} eff={eff:.2f} atr={atr:.2f}",
+                        "detail": f"ema_sep={sep:.2f} eff={eff:.2f} atr={atr:.2f} htf={htf_mv:+.2f}",
                         "m1_label": str(m1_context.get("label", "CALM")),
                     }
             return None
@@ -597,13 +615,17 @@ class CalmRegimeEngine:
                         b["stop"] = round(p_sl, 4)
                         b["stop_locked"] = True
 
-            # Dynamic Multi-Leg 55% Profit-Lock Ratchet
+            # Dynamic Profit-Lock Ratchet (multi-leg default, or 1L+ when ratchet_min_legs == 1)
             if (
                 self.cfg.dyn_profit_ratchet_frac > 0.0
-                and len(b["legs"]) >= 2
+                and len(b["legs"]) >= self.cfg.ratchet_min_legs
                 and avg_gain >= self.cfg.dyn_profit_ratchet_arm
             ):
-                r_breath = max(self.cfg.sl_min_breathing_room, 2.40)
+                r_breath = (
+                    float(self.cfg.ratchet_breathing_room)
+                    if self.cfg.ratchet_breathing_room is not None
+                    else max(self.cfg.sl_min_breathing_room, 2.40)
+                )
                 if side == "buy":
                     r_sl = min(b["avg_entry"] + self.cfg.dyn_profit_ratchet_frac * avg_gain, bid - r_breath)
                     if r_sl > b["stop"]:
@@ -1009,6 +1031,103 @@ def calm_regime_profiles(
                 dyn_min_lock_profit=0.50,
                 dyn_profit_ratchet_arm=4.20,
                 dyn_profit_ratchet_frac=0.55,
+                win_cooldown_sec=60.0,
+                loss_cooldown_sec=180.0,
+                consec_loss_cooldown_sec=480.0,
+                active_server_hours=(9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19),
+            ),
+        ),
+        (
+            "CALM_M5_PRO_24H",
+            CalmRegimeConfig(
+                mode="trend_reclaim",
+                bar_sec=300,
+                leg_lot=base_lot,
+                max_legs=max(8, max_legs),
+                fast_ema=8,
+                slow_ema=18,
+                atr_period=10,
+                min_bars=12,
+                max_60s_shock_block=10.0,
+                min_atr_price=1.90,
+                min_trend_sep_atr=0.20,
+                min_trend_eff=0.24,
+                min_body_frac=0.28,
+                pullback_ema_atr_pad=0.40,
+                htf_window_sec=1800,
+                min_dir_htf_move=3.00,
+                sl_atr_mult=1.40,
+                min_stop_price=4.20,
+                max_stop_price=6.50,
+                sl_min_breathing_room=2.20,
+                be_arm_atr_mult=1.05,
+                be_arm_min_price=4.00,
+                profit_lock_arm_price=6.50,
+                profit_lock_floor_price=3.00,
+                trail_arm_price=6.50,
+                trail_atr_mult=1.45,
+                trail_min_pullback=4.20,
+                trail_max_pullback=9.00,
+                max_hold_sec=3600.0,
+                enable_adds=True,
+                add_step_atr_mult=0.90,
+                add_step_min_price=3.20,
+                add_interval_sec=45.0,
+                dyn_max_leg_lot=0.10,
+                dyn_max_total_lot=0.40,
+                dyn_min_lock_profit=0.50,
+                dyn_profit_ratchet_arm=4.20,
+                dyn_profit_ratchet_frac=0.55,
+                ratchet_min_legs=1,
+                ratchet_breathing_room=2.10,
+                win_cooldown_sec=120.0,
+                loss_cooldown_sec=300.0,
+                consec_loss_cooldown_sec=900.0,
+            ),
+        ),
+        (
+            "CALM_M1_PRO_SESS",
+            CalmRegimeConfig(
+                mode="trend_reclaim",
+                bar_sec=60,
+                leg_lot=base_lot,
+                max_legs=max(8, max_legs),
+                fast_ema=9,
+                slow_ema=21,
+                atr_period=14,
+                min_bars=22,
+                max_60s_shock_block=10.0,
+                min_atr_price=1.90,
+                min_trend_sep_atr=0.24,
+                min_trend_eff=0.28,
+                min_body_frac=0.35,
+                pullback_ema_atr_pad=0.30,
+                htf_window_sec=900,
+                min_dir_htf_move=3.00,
+                sl_atr_mult=1.45,
+                min_stop_price=2.80,
+                max_stop_price=4.60,
+                sl_min_breathing_room=1.75,
+                be_arm_atr_mult=1.05,
+                be_arm_min_price=2.80,
+                profit_lock_arm_price=4.80,
+                profit_lock_floor_price=2.20,
+                trail_arm_price=4.50,
+                trail_atr_mult=1.40,
+                trail_min_pullback=2.80,
+                trail_max_pullback=6.50,
+                max_hold_sec=2400.0,
+                enable_adds=True,
+                add_step_atr_mult=0.90,
+                add_step_min_price=2.60,
+                add_interval_sec=30.0,
+                dyn_max_leg_lot=0.08,
+                dyn_max_total_lot=0.30,
+                dyn_min_lock_profit=0.45,
+                dyn_profit_ratchet_arm=3.40,
+                dyn_profit_ratchet_frac=0.55,
+                ratchet_min_legs=1,
+                ratchet_breathing_room=1.65,
                 win_cooldown_sec=60.0,
                 loss_cooldown_sec=180.0,
                 consec_loss_cooldown_sec=480.0,

@@ -1206,7 +1206,7 @@ def run_structural_benchmark(
     leg_lot: float = 0.01,
     max_legs: int = 6,
 ) -> list[dict[str, Any]]:
-    """Evaluate 25 distinct causal architectures (fixed baselines, dynamic news runners, S10 hybrids, and calm M1/M3/M5)."""
+    """Evaluate 27 distinct causal architectures (fixed baselines, dynamic news runners, S10 hybrids, and calm M1/M3/M5)."""
     from trade_mcp.calm_regime_engines import CalmRegimeEngine, calm_regime_profiles
     from trade_mcp.s10_hybrid_engines import S10HybridEngine, s10_hybrid_profiles
 

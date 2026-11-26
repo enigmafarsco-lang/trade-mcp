@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline forensic tape audit & 25-architecture structural benchmark on real recorded tick JSONL files (ORDERS=0)."""
+"""Offline forensic tape audit & 27-architecture structural benchmark on real recorded tick JSONL files (ORDERS=0)."""
 
 from __future__ import annotations
 
@@ -122,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
         rows = run_structural_benchmark(ticks, leg_lot=args.leg_lot, max_legs=args.max_legs)
         per_file.append((p, rows))
 
-    print("\n=== PART 2: CAUSAL 25-ARCHITECTURE BENCHMARK PER FILE (ORDERS=0) ===")
+    print("\n=== PART 2: CAUSAL 27-ARCHITECTURE BENCHMARK PER FILE (ORDERS=0) ===")
     combo_specs: list[tuple[str, tuple[str, ...]]] = [
         ("COMBO_SHK10_PBV2", ("SHOCK_10_RUNNER", "PB_DIP_V2_SESS")),
         ("COMBO_DYN_SUITE", ("SHOCK10_DYN_RUN", "PB_V2_DYN_SESS")),
@@ -131,6 +131,9 @@ def main(argv: list[str] | None = None) -> int:
         ("COMBO_AW_M5", ("SHOCK10_DYN_RUN", "MACRO_WAVE_DYN", "CALM_M5_TREND_24H")),
         ("COMBO_AW_M5RR", ("SHOCK10_DYN_RUN", "MACRO_WAVE_DYN", "CALM_M5_RR_24H")),
         ("COMBO_AW_DUAL", ("SHOCK10_DYN_RUN", "MACRO_WAVE_DYN", "CALM_M5_RR_24H", "CALM_M1_EMA_SESS")),
+        ("COMBO_AW_PRO_M5", ("SHOCK10_DYN_RUN", "MACRO_WAVE_DYN", "CALM_M5_PRO_24H")),
+        ("COMBO_AW_PRO_M1", ("SHOCK10_DYN_RUN", "MACRO_WAVE_DYN", "CALM_M1_PRO_SESS")),
+        ("COMBO_AW_PRO_ALL", ("SHOCK10_DYN_RUN", "MACRO_WAVE_DYN", "CALM_M5_PRO_24H", "CALM_M1_PRO_SESS")),
         ("COMBO_AW_M5_RNG", ("SHOCK10_DYN_RUN", "MACRO_WAVE_DYN", "CALM_M5_TREND_24H", "CALM_M5_RANGE_24H")),
     ]
     for p, rows in per_file:
