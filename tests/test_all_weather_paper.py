@@ -160,3 +160,71 @@ def test_all_weather_cli_mock_replay_and_live_smoke(
     assert live_data["orders_submitted"] == 0
     assert live_data["account"]["seeded_m1_bars"] == 30
     assert live_data["live_state"]["ticks_processed"] >= 1
+
+
+def test_inspect_live_sessions_audits_windows_and_tick_chart(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """inspect_live_sessions summarizes reports, trade logs, and 15m tick chart timeline + --save."""
+    import inspect_live_sessions as insp
+
+    monkeypatch.setattr(insp, "ROOT", tmp_path)
+    (tmp_path / "logs").mkdir(parents=True)
+    (tmp_path / "reports" / "paper_live").mkdir(parents=True)
+
+    # Create sample live report JSON
+    (tmp_path / "reports" / "paper_live" / "dual_live.json").write_text(
+        json.dumps(
+            {
+                "schema": "s1_dual_radar_live_v1",
+                "status": "running",
+                "orders_submitted": 0,
+                "started_utc": "2026-11-26T09:00:00+00:00",
+                "updated_utc": "2026-11-26T12:00:00+00:00",
+                "elapsed_minutes": 180.0,
+                "live_state": {"ticks_processed": 36000, "reconnect_count": 0, "consecutive_errors": 0},
+                "engines": {"SHOCK10_DYN_RUN": {"waves_count": 0, "wins": 0, "losses": 0, "realized_pnl_usd": 0.0}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # Create sample trade log + tick JSONL
+    (tmp_path / "logs" / "all_weather_paper_trades.jsonl").write_text(
+        json.dumps(
+            {
+                "closed_utc": "2026-11-26T10:49:31+00:00",
+                "engine_label": "CALM_M1_PRO",
+                "side": "buy",
+                "total_volume": 0.03,
+                "avg_entry": 3571.44,
+                "exit_price": 3573.47,
+                "net_pnl_usd": 6.08,
+                "exit_reason": "profit_floor_hit",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    ticks = make_synthetic_dual_session()
+    tfile = tmp_path / "logs" / "s1_ticks_XAUUSD_i_20261126.jsonl"
+    with tfile.open("w", encoding="utf-8") as fh:
+        for ts, bid, ask, m1_ctx in ticks:
+            fh.write(json.dumps({"ts": ts, "bid": bid, "ask": ask, "m1": m1_ctx}) + "\n")
+
+    rc = insp.main(["--save"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "1) LIVE PAPER WINDOWS" in out
+    assert "2) RECORDED TRADE & ALERT LOGS" in out
+    assert "3) TICK-BY-SECOND CHART TIMELINE" in out
+    assert "SAVED_COMPACT_AUDIT=" in out
+    saved = json.loads((tmp_path / "reports" / "paper_live" / "live_audit_summary.json").read_text(encoding="utf-8"))
+    assert saved["schema"] == "live_audit_summary_v1"
+    assert saved["orders_submitted"] == 0
+    assert len(saved["live_reports"]) == 1
+    assert len(saved["tick_charts"]) == 1
+    assert len(saved["tick_charts"][0]["buckets_15m"]) >= 1
+
