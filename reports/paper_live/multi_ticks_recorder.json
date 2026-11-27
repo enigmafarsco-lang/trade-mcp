@@ -1,0 +1,90 @@
+{
+  "schema": "multi_ticks_recorder_v1",
+  "paper_only": true,
+  "orders_submitted": 0,
+  "status": "running",
+  "started_utc": "2026-11-26T17:52:43+00:00",
+  "updated_utc": "2026-11-27T07:00:24+00:00",
+  "elapsed_minutes": 787.7,
+  "reconnect_count": 4,
+  "consecutive_errors": 0,
+  "symbols": {
+    "NAS100_i": {
+      "file": "s1_ticks_NAS100_i_20261127.jsonl",
+      "ticks_total": 117987,
+      "last_bid": 26733.7,
+      "last_ask": 26737.6,
+      "avg_spread": 6.27445,
+      "session_range": 650.2,
+      "range_to_spread": 103.63,
+      "m1_label": "BEAR_PB_RESUME",
+      "m1_atr": 11.055
+    },
+    "US30_i": {
+      "file": "s1_ticks_US30_i_20261127.jsonl",
+      "ticks_total": 117987,
+      "last_bid": 50704.6,
+      "last_ask": 50713.5,
+      "avg_spread": 11.98344,
+      "session_range": 350.0,
+      "range_to_spread": 29.21,
+      "m1_label": "BEAR_PB_RESUME",
+      "m1_atr": 9.575
+    },
+    "GER40_i": {
+      "file": "s1_ticks_GER40_i_20261127.jsonl",
+      "ticks_total": 117987,
+      "last_bid": 25359.2,
+      "last_ask": 25366.2,
+      "avg_spread": 10.89188,
+      "session_range": 205.7,
+      "range_to_spread": 18.89,
+      "m1_label": "CHOP_NEUTRAL",
+      "m1_atr": 5.196
+    },
+    "WTI_i": {
+      "file": "s1_ticks_WTI_i_20261127.jsonl",
+      "ticks_total": 117987,
+      "last_bid": 85.4,
+      "last_ask": 85.47,
+      "avg_spread": 0.06831,
+      "session_range": 1.84,
+      "range_to_spread": 26.94,
+      "m1_label": "BEAR_PB_RESUME",
+      "m1_atr": 0.1
+    },
+    "XAGUSD_i": {
+      "file": "s1_ticks_XAGUSD_i_20261127.jsonl",
+      "ticks_total": 117987,
+      "last_bid": 44.152,
+      "last_ask": 44.185,
+      "avg_spread": 0.03767,
+      "session_range": 3.241,
+      "range_to_spread": 86.04,
+      "m1_label": "BULL_PB_RESUME",
+      "m1_atr": 0.1
+    },
+    "USDJPY_i": {
+      "file": "s1_ticks_USDJPY_i_20261127.jsonl",
+      "ticks_total": 117987,
+      "last_bid": 159.347,
+      "last_ask": 159.369,
+      "avg_spread": 0.03157,
+      "session_range": 0.236,
+      "range_to_spread": 7.48,
+      "m1_label": "BULL_AT_RESISTANCE_WAIT",
+      "m1_atr": 0.1
+    },
+    "BITCOIN_i": {
+      "file": "s1_ticks_BITCOIN_i_20261127.jsonl",
+      "ticks_total": 117987,
+      "last_bid": 61549.71,
+      "last_ask": 61621.3,
+      "avg_spread": 114.93328,
+      "session_range": 1582.51,
+      "range_to_spread": 13.77,
+      "m1_label": "CHOP_NEUTRAL",
+      "m1_atr": 42.239
+    }
+  }
+}

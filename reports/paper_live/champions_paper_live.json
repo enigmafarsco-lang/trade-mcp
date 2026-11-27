@@ -1,0 +1,136 @@
+{
+  "schema": "champions_paper_live_v1",
+  "paper_only": true,
+  "orders_submitted": 0,
+  "symbol": "XAUUSD_i",
+  "status": "running",
+  "started_utc": "2026-11-26T17:35:46+00:00",
+  "updated_utc": "2026-11-27T07:00:42+00:00",
+  "elapsed_minutes": 804.95,
+  "live_state": {
+    "bid": 3655.13,
+    "ask": 3655.56,
+    "spread": 0.43
+  },
+  "summary": {
+    "symbol": "XAUUSD_i",
+    "paper_only": true,
+    "orders_submitted": 0,
+    "enable_accel_engines": true,
+    "initial_capital_usd": 1000.0,
+    "realized_pnl_usd": -6.36,
+    "unrealized_pnl_usd": 12.98,
+    "equity_usd": 1006.62,
+    "peak_equity_usd": 1007.68,
+    "max_dd_usd": 9.54,
+    "max_dd_pct": 0.95,
+    "closed_trades_count": 1,
+    "wins": 0,
+    "losses": 1,
+    "pf": 0.0,
+    "by_engine": {
+      "M1_PRE15_PB5_PYRAMID3": {
+        "trades": 1,
+        "legs": 1,
+        "wins": 0,
+        "losses": 1,
+        "net_usd": -6.36
+      }
+    },
+    "open_positions": [
+      {
+        "trade_id": 2,
+        "engine": "H1_DONCHIAN50_LONDON",
+        "symbol": "XAUUSD_i",
+        "side": "buy",
+        "volume": 0.01,
+        "entry": 3642.15,
+        "stop": 3617.15,
+        "initial_stop_dist_price": 25.0,
+        "initial_risk_usd": 25.0,
+        "entry_spread_price": 0.44,
+        "opened_at": 1795766403.0,
+        "opened_utc": "2026-11-27T08:00:03Z",
+        "bars_held": 1,
+        "trailed": false,
+        "best_px": 3656.33,
+        "legs_count": 1,
+        "dc50_hi": 3637.87,
+        "dc50_lo": 3426.4
+      }
+    ],
+    "pending_m5_pullback": null,
+    "last_snapshot": {
+      "m5": {
+        "bar_ts": 1795769700,
+        "bar_utc": "2026-11-27T08:55:00Z",
+        "utc_hour": 9,
+        "in_session": true,
+        "atr_m5": 5.49,
+        "m15_adx": 63.58,
+        "h1_adx": 23.58,
+        "status": "flat_no_signal"
+      },
+      "h1": {
+        "bar_ts": 1795766400,
+        "bar_utc": "2026-11-27T08:00:00Z",
+        "utc_hour": 9,
+        "atr_h1": 19.765,
+        "dc50_hi": 3666.47,
+        "dc50_lo": 3426.4,
+        "close": 3654.43,
+        "status": "open_buy"
+      },
+      "m1_accel": {
+        "bar_ts": 1795769940,
+        "bar_utc": "2026-11-27T08:59:00Z",
+        "atr": 2.175,
+        "vol_ratio": 0.77,
+        "status": "watching"
+      },
+      "m5_accel": {
+        "bar_ts": 1795769700,
+        "bar_utc": "2026-11-27T08:55:00Z",
+        "atr": 5.722,
+        "vol_ratio": 1.1,
+        "status": "watching"
+      }
+    }
+  },
+  "open_positions": [
+    {
+      "engine": "H1_DONCHIAN50_LONDON",
+      "side": "buy",
+      "lot": null,
+      "entry": 3642.15,
+      "stop": 3617.15
+    }
+  ],
+  "recent_trades": [
+    {
+      "trade_id": 1,
+      "engine": "M1_PRE15_PB5_PYRAMID3",
+      "symbol": "XAUUSD_i",
+      "side": "buy",
+      "volume": 0.01,
+      "legs_count": 1,
+      "entry": 3658.1,
+      "exit": 3651.74,
+      "stop_final": 3652.8334,
+      "initial_stop_dist_price": 5.2666,
+      "initial_risk_usd": 5.2666,
+      "entry_spread_price": 0.44,
+      "opened_at": 1795764962.0,
+      "opened_utc": "2026-11-27T07:36:02Z",
+      "closed_at": 1795764997.0,
+      "closed_utc": "2026-11-27T07:36:37Z",
+      "hold_seconds": 35.0,
+      "bars_held": 0,
+      "net_pnl_usd": -6.36,
+      "exit_reason": "stop_loss",
+      "equity_after_usd": 993.64,
+      "paper_only": true,
+      "orders_submitted": 0
+    }
+  ]
+}
