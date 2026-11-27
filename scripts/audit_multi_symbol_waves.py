@@ -191,7 +191,7 @@ def load_deduplicated_symbol_segments(
     *,
     dedupe_sec: float = 0.22,
     gap_split_sec: float = 120.0,
-    freeze_split_sec: float = 90.0,
+    freeze_split_sec: float = 300.0,
 ) -> tuple[list[list[tuple[float, float, float, dict[str, Any]]]], dict[str, Any]]:
     """Merge, chronologically sort, deduplicate, strip frozen market-closed spans, gap-split, and rebuild M1."""
     raw: list[tuple[float, float, float]] = []
@@ -517,6 +517,56 @@ def _stats(waves: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _scan_single_tick_teleports(
+    segments: list[list[tuple[float, float, float, dict[str, Any]]]],
+    *,
+    price_scale: float,
+    min_norm_jump: float = 3.5,
+) -> list[dict[str, Any]]:
+    """Find every single-tick flash jump >= min_norm_jump * S and measure its +30s reversion."""
+    hits: list[dict[str, Any]] = []
+    s = max(price_scale, 1e-9)
+    for seg_idx, seg in enumerate(segments):
+        for i in range(1, len(seg)):
+            ts0, b0, a0, _ = seg[i - 1]
+            ts1, b1, a1, _ = seg[i]
+            m0 = 0.5 * (b0 + a0)
+            m1 = 0.5 * (b1 + a1)
+            jump = m1 - m0
+            j_norm = abs(jump) / s
+            if j_norm < min_norm_jump:
+                continue
+            # Measure +30s price to check whether this was a reverting bad-tick/flash-spike
+            m30 = m1
+            for k in range(i + 1, min(len(seg), i + 250)):
+                if seg[k][0] >= ts1 + 30.0:
+                    m30 = 0.5 * (seg[k][1] + seg[k][2])
+                    break
+            rev_pct = (100.0 * (m1 - m30) / jump) if abs(jump) > 1e-9 else 0.0
+            window = []
+            for k in range(max(0, i - 3), min(len(seg), i + 5)):
+                tk, bk, ak, _ = seg[k]
+                window.append((tk, bk, ak, 0.5 * (bk + ak)))
+            hits.append(
+                {
+                    "seg": seg_idx,
+                    "ts": ts1,
+                    "dt": round(ts1 - ts0, 2),
+                    "mid_prev": m0,
+                    "mid_now": m1,
+                    "jump": jump,
+                    "jump_norm": round(j_norm, 2),
+                    "sp_prev": a0 - b0,
+                    "sp_now": a1 - b1,
+                    "mid_30s": m30,
+                    "rev_30s_pct": round(rev_pct, 1),
+                    "window": window,
+                }
+            )
+    hits.sort(key=lambda h: -h["jump_norm"])
+    return hits
+
+
 def _run_variant(
     symbol: str,
     spec: AlpariSymbolSpec,
@@ -525,7 +575,8 @@ def _run_variant(
     *,
     price_scale: float,
     active_hours: tuple[int, ...] | None,
-) -> tuple[list[dict[str, Any]], float, float, bool]:
+    max_single_tick_jump_norm: float = 0.0,
+) -> tuple[list[dict[str, Any]], float, float, bool, int]:
     lot_scale, real_lot, real_sl_usd, clamped = compute_risk_parity_lot_scale(
         price_scale=price_scale,
         usd_per_price_unit=micro["usd_per_unit"],
@@ -541,6 +592,9 @@ def _run_variant(
         digits=spec.digits,
         active_hours_srv=active_hours,
         allow_partial_split=True,
+        stale_freeze_sec=300.0,
+        max_single_tick_jump_norm=max_single_tick_jump_norm,
+        teleport_cooldown_sec=90.0,
     )
     for idx, seg in enumerate(segments):
         if idx > 0:
@@ -549,7 +603,7 @@ def _run_variant(
             eng.on_tick(ts, bid, ask, m1_ctx)
         if seg:
             eng.close_open(seg[-1][0], seg[-1][1], seg[-1][2], reason="eof_seg")
-    return eng.waves_closed, real_lot, real_sl_usd, clamped
+    return eng.waves_closed, real_lot, real_sl_usd, clamped, eng.teleport_blocks
 
 
 def _make_mock_symbol_streams() -> dict[str, list[list[tuple[float, float, float, dict[str, Any]]]]]:
@@ -764,6 +818,38 @@ def main(argv: list[str] | None = None) -> int:
         )
     print("  (LIVE/FRZ = active moving hours / frozen closed-market hours stripped; * = broker 0.02-lot min > $5.60 SL target)")
 
+    # FLASH-SPIKE / SINGLE-TICK TELEPORT FORENSICS (exposes events like 05:16:34 across ALL symbols!)
+    print("\nSECTION 1B — SINGLE-TICK TELEPORT / FLASH-SPIKE FORENSICS (JUMPS >= 3.5 * S_SPREAD):")
+    tp_found = False
+    microscope_done: set[str] = set()
+    for sym in ordered_syms:
+        m = micro_map[sym]
+        s_ref = 1.0 if sym.startswith("XAUUSD") else m["s_spread"]
+        hits = _scan_single_tick_teleports(sym_segments[sym], price_scale=s_ref, min_norm_jump=3.5)
+        if not hits:
+            continue
+        tp_found = True
+        d = max(1, min(4, int(m["digits"])))
+        for h in hits[:3]:
+            print(
+                f"  {sym:11s} {_iso_hms(h['ts']):14s} dt={h['dt']:5.2f}s | "
+                f"{h['mid_prev']:.{d}f} -> {h['mid_now']:.{d}f} (jump={h['jump']:+.{d}f} = {h['jump_norm']:5.2f}x S) | "
+                f"sp={h['sp_prev']:.{d}f}->{h['sp_now']:.{d}f} | +30s={h['mid_30s']:.{d}f} (rev={h['rev_30s_pct']:+5.1f}%)"
+            )
+        if (not sym.startswith("XAUUSD")) and sym not in microscope_done and hits[0]["jump_norm"] >= 4.5:
+            microscope_done.add(sym)
+            h0 = hits[0]
+            print(f"    [TICK MICROSCOPE — {sym} biggest jump at {_iso_hms(h0['ts'])}]:")
+            prev_m = None
+            for tk, bk, ak, mk in h0["window"]:
+                dm = 0.0 if prev_m is None else (mk - prev_m)
+                prev_m = mk
+                print(
+                    f"      {_iso_hms(tk)} | bid={bk:.{d}f} ask={ak:.{d}f} sp={ak - bk:.{d}f} mid={mk:.{d}f} (d_mid={dm:+.{d}f})"
+                )
+    if not tp_found:
+        print("  (No single-tick jumps >= 3.5 * S_spread detected in active segments)")
+
     # Discover chronological buckets across all symbols
     all_buckets: list[str] = []
     for sym in ordered_syms:
@@ -775,14 +861,14 @@ def main(argv: list[str] | None = None) -> int:
     if not all_buckets:
         all_buckets = ["ALL"]
 
-    print("\nSECTION 2 — SPREAD-SCALED COMBO_AW_V4_24H BACKTEST (REAL BID/ASK TICKS, EXACT DAY/SESSION BREAKDOWN):")
+    print("\nSECTION 2 — SPREAD-SCALED COMBO_AW_V4_24H BACKTEST (BASELINE vs ANTI-TELEPORT GUARD 4.5xS):")
     bhdr = " | ".join(f"{b:>15s}" for b in all_buckets)
-    print("-" * (104 + 18 * len(all_buckets)))
+    print("-" * (110 + 18 * len(all_buckets)))
     print(
-        f"{'SYMBOL':11s} {'VARIANT':16s} {'S':>6s} {'LOT':>5s} {'SL$':>5s} | "
+        f"{'SYMBOL':11s} {'VARIANT':16s} {'S':>6s} {'LOT':>5s} {'SL$':>5s} {'TPB':>3s} | "
         f"{'ALL_NET':>9s} {'ALL_DD':>8s} {'R/DD':>5s} {'W/L':>7s} {'PF':>5s} | {bhdr}"
     )
-    print("-" * (104 + 18 * len(all_buckets)))
+    print("-" * (110 + 18 * len(all_buckets)))
 
     best_by_sym: dict[str, dict[str, Any]] = {}
     audit_rows: list[dict[str, Any]] = []
@@ -795,19 +881,30 @@ def main(argv: list[str] | None = None) -> int:
         # Bound s_vol within [0.75 * s_sp, 1.80 * s_sp] so spread can never exceed stop/target geometry
         s_vol = max(0.75 * s_sp, min(1.80 * s_sp, m["s_vol"]))
 
-        variants: list[tuple[str, float, tuple[int, ...] | None]] = []
+        # Tuple: (variant_name, scale, active_hours, max_single_tick_jump_norm)
+        variants: list[tuple[str, float, tuple[int, ...] | None, float]] = []
         if sym.startswith("XAUUSD"):
-            variants.append(("V4_SHIPPED_1.0", 1.0, None))
-        variants.append(("V4_SPREAD_24H", s_sp, None))
+            variants.append(("V4_SHIPPED_1.0", 1.0, None, 0.0))
+            variants.append(("V4_GUARD_1.0", 1.0, None, 4.50))
+        variants.append(("V4_SPREAD_24H", s_sp, None, 0.0))
+        variants.append(("V4_GUARD_24H", s_sp, None, 4.50))
         if spec.active_hours_srv is not None:
-            variants.append(("V4_SPREAD_SESS", s_sp, spec.active_hours_srv))
+            variants.append(("V4_GUARD_SESS", s_sp, spec.active_hours_srv, 4.50))
         if abs(s_vol - s_sp) / max(s_sp, 1e-9) >= 0.08:
-            variants.append(("V4_VOL_24H", s_vol, None))
-        variants.append(("V4_WIDE13_24H", s_sp * 1.30, None))
+            variants.append(("V4_GUARD_VOL", s_vol, None, 4.50))
+        variants.append(("V4_GUARD_W13", s_sp * 1.30, None, 4.50))
 
         sym_best: dict[str, Any] | None = None
-        for vname, s_val, hrs in variants:
-            waves, rlot, rsl, clamped = _run_variant(sym, spec, m, segs, price_scale=s_val, active_hours=hrs)
+        for vname, s_val, hrs, tp_guard in variants:
+            waves, rlot, rsl, clamped, tp_blks = _run_variant(
+                sym,
+                spec,
+                m,
+                segs,
+                price_scale=s_val,
+                active_hours=hrs,
+                max_single_tick_jump_norm=tp_guard,
+            )
             sa = _stats(waves)
             by_b: dict[str, dict[str, Any]] = {}
             for b in all_buckets:
@@ -819,7 +916,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             bcells_fmt = " | ".join(f"{c:>15s}" for c in bcells.split(" | "))
             print(
-                f"{sym:11s} {vname:16s} {_fmt_scale(s_val)} {rlot:5.2f} ${rsl:4.1f} | "
+                f"{sym:11s} {vname:16s} {_fmt_scale(s_val)} {rlot:5.2f} ${rsl:4.1f} {tp_blks:3d} | "
                 f"{_fmt_usd(sa['net']):>9s} -${sa['dd']:6.2f} {sa['rdd']:5.2f} {sa['w']:2d}W/{sa['l']:<2d}L {sa['pf']:5.2f} | {bcells_fmt}"
             )
             rec = {
@@ -827,6 +924,8 @@ def main(argv: list[str] | None = None) -> int:
                 "variant": vname,
                 "price_scale": round(s_val, 4),
                 "active_hours": list(hrs) if hrs is not None else None,
+                "max_single_tick_jump_norm": tp_guard,
+                "teleport_blocks": tp_blks,
                 "real_vsnap_lot": rlot,
                 "real_sl_usd": rsl,
                 "min_lot_clamped": clamped,

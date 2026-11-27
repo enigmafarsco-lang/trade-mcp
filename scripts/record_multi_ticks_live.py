@@ -322,7 +322,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--scan", action="store_true", help="Scan live Alpari MT5 symbols, spreads & M1 ATR/Spread wave score")
     parser.add_argument("--auto-wave", action="store_true", help="Auto-pick top wave-surfing Alpari symbols and record ticks")
-    parser.add_argument("--symbols", nargs="*", default=[], help="Exact Alpari symbols to record (e.g. USTEC_i GER40_i GBPJPY_i)")
+    parser.add_argument(
+        "--wave-top3",
+        action="store_true",
+        help="Record ONLY the 3 spread-viable non-Gold Alpari wave candidates (NAS100_i XAGUSD_i GER40_i)",
+    )
+    parser.add_argument("--symbols", nargs="*", default=[], help="Exact Alpari symbols to record (e.g. NAS100_i XAGUSD_i GER40_i)")
     parser.add_argument("--include-gold", action="store_true", help="Include XAUUSD_i in auto-discovery (off by default if Gold already runs)")
     parser.add_argument("--max-symbols", type=int, default=6, help="Max auto-discovered wave symbols to record (default 6)")
     parser.add_argument("--poll-seconds", type=float, default=0.40, help="Batch quote poll interval seconds (default 0.40)")
@@ -445,6 +450,10 @@ def main(argv: list[str] | None = None) -> int:
             # 2) MULTI-SYMBOL RECORDING MODE
             if args.symbols:
                 target_symbols = [s.strip() for s in args.symbols if s.strip()]
+            elif args.wave_top3:
+                target_symbols = ["NAS100_i", "XAGUSD_i", "GER40_i"]
+                if args.include_gold:
+                    target_symbols.insert(0, "XAUUSD_i")
             else:
                 all_rows = _fetch_all_symbols_rows(feed, include_hidden=True, limit=1500)
                 found = discover_wave_symbols(

@@ -197,6 +197,61 @@ def test_load_deduplicated_symbol_segments_strips_frozen_market_hours(tmp_path: 
     assert meta["active_ticks"] == 81
 
 
+def test_anti_teleport_guard_blocks_single_tick_flash_spike() -> None:
+    """Reproduces the 05:16:34 -> 05:17:03 single-tick +147 pt NAS100 flash-spike & V-collapse."""
+    m1_bull = {
+        "bias": 1,
+        "label": "BULL_TREND",
+        "support": 26550.0,
+        "resistance": 26650.0,
+        "atr_m1": 15.0,
+        "pullback_resume": False,
+        "last_close": 26602.0,
+    }
+    ts = 1_795_756_500.0
+    ticks: list[tuple[float, float, float]] = []
+    # 70s of calm normal ticks around 26602
+    for i in range(70):
+        b = 26600.0 + (i % 4) * 0.5
+        ticks.append((ts + i, b, b + 4.0))
+    # Single-tick +147 pt teleport! Holds ~25s then collapses straight back -147 pts
+    for j in range(25):
+        b = 26746.0 + (j % 2) * 0.5
+        ticks.append((ts + 70 + j, b, b + 4.0))
+    for k in range(20):
+        b = 26600.0 - k * 0.2
+        ticks.append((ts + 95 + k, b, b + 4.0))
+
+    unguarded = NormalizedAllWeatherV4(
+        symbol="NAS100_i",
+        price_scale=9.75,
+        usd_per_price_unit=1.0,
+        lot_scale=10.0,
+        digits=1,
+        max_single_tick_jump_norm=0.0,
+    )
+    guarded = NormalizedAllWeatherV4(
+        symbol="NAS100_i",
+        price_scale=9.75,
+        usd_per_price_unit=1.0,
+        lot_scale=10.0,
+        digits=1,
+        max_single_tick_jump_norm=4.50,
+        teleport_cooldown_sec=90.0,
+    )
+
+    for t, b, a in ticks:
+        unguarded.on_tick(t, b, a, m1_bull)
+        guarded.on_tick(t, b, a, m1_bull)
+
+    # Without guard, VSNAP6 fires into the +147 pt spike and suffers a huge stop loss; WITH guard -> ZERO trades!
+    assert len(unguarded.waves_closed) >= 1
+    assert sum(float(w["net_pnl_usd"]) for w in unguarded.waves_closed) < -20.0
+    assert guarded.teleport_blocks >= 1
+    assert len(guarded.waves_closed) == 0
+    assert guarded._has_open_position() is False
+
+
 def test_audit_multi_symbol_waves_mock_cli_runs_cleanly(capsys) -> None:
     prev_allow = os.environ.get("TRADE_MCP_ALLOW_TRADING")
     prev_paper = os.environ.get("TRADE_MCP_PAPER_TRADING")
@@ -207,7 +262,10 @@ def test_audit_multi_symbol_waves_mock_cli_runs_cleanly(capsys) -> None:
     out = capsys.readouterr().out
     assert rc == 0
     assert "SECTION 1 — ACTIVE-MARKET SPREAD ANATOMY" in out
+    assert "SECTION 1B — SINGLE-TICK TELEPORT / FLASH-SPIKE FORENSICS" in out
     assert "V4_SHIPPED_1.0" in out
+    assert "V4_GUARD_1.0" in out
+    assert "V4_GUARD_24H" in out
     assert "NAS100_i" in out
     assert "XAGUSD_i" in out
     assert "USDJPY_i" in out

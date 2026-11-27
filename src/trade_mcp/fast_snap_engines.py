@@ -115,6 +115,8 @@ class FastSnapConfig:
     partial_arm_price: float = 0.0
     partial_take_frac: float = 0.50
     partial_runner_sl_offset: float = 0.60
+    max_single_tick_jump_price: float = 0.0
+    teleport_cooldown_sec: float = 90.0
 
 
 @dataclass
@@ -128,6 +130,9 @@ class FastSnapEngine:
     _sec_hist: deque[tuple[int, float, float, float]] = field(default_factory=lambda: deque(maxlen=2800))
     _cur_sec: list[Any] | None = None  # [sec, mid, high_mid, low_mid]
     _prev_ts: float | None = None
+    _prev_mid: float = 0.0
+    _teleport_block_until: float = 0.0
+    teleport_blocks: int = 0
     _htf_seed: list[tuple[int, float]] = field(default_factory=list)
 
     # Micro-pullback state machine
@@ -147,6 +152,9 @@ class FastSnapEngine:
         self._sec_hist.clear()
         self._cur_sec = None
         self._prev_ts = None
+        self._prev_mid = 0.0
+        self._teleport_block_until = 0.0
+        self.teleport_blocks = 0
         self._htf_seed.clear()
         self._pb_arm = None
         self.pending = None
@@ -508,6 +516,17 @@ class FastSnapEngine:
 
         mid = 0.5 * (bid + ask)
         spread = ask - bid
+        if (
+            self.cfg.max_single_tick_jump_price > 0.0
+            and self._prev_mid > 0.0
+            and abs(mid - self._prev_mid) >= self.cfg.max_single_tick_jump_price
+        ):
+            self._teleport_block_until = max(self._teleport_block_until, ts + self.cfg.teleport_cooldown_sec)
+            self.teleport_blocks += 1
+            if self.pending is not None and self.pending.get("kind") == "entry":
+                self.pending = None
+        self._prev_mid = mid
+
         self._update_sec_hist(ts, mid)
         sec = int(ts)
         has_60, m60, _, _, _ = self._window_stats(sec, mid, 60)
@@ -761,7 +780,7 @@ class FastSnapEngine:
             return events
 
         # 3) Flat: check causal signal
-        if self.pending is None and ts >= self.cooldown_until:
+        if self.pending is None and ts >= self.cooldown_until and ts >= self._teleport_block_until:
             side, sl_dist, speed = self._detect_signal(ts, mid, spread)
             if side is not None and (self.cfg.block_counter_15m > 0.0 or self.cfg.block_counter_30m > 0.0):
                 m15 = self._htf_net_move(sec, mid, 900) if self.cfg.block_counter_15m > 0.0 else 0.0

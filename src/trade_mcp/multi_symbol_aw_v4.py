@@ -192,15 +192,20 @@ class NormalizedAllWeatherV4:
     allow_partial_split: bool = True
     stale_freeze_sec: float = 90.0
     reopen_warmup_sec: float = 120.0
+    max_single_tick_jump_norm: float = 0.0
+    teleport_cooldown_sec: float = 90.0
 
     suite: AllWeatherPaperSuite = field(init=False)
     waves_closed: list[dict[str, Any]] = field(default_factory=list)
     _last_quote: tuple[float, float] | None = field(default=None, init=False, repr=False)
     _last_change_ts: float = field(default=0.0, init=False, repr=False)
+    _prev_mid_norm: float = field(default=0.0, init=False, repr=False)
     _is_frozen: bool = field(default=False, init=False, repr=False)
     _reopen_block_until: float = field(default=0.0, init=False, repr=False)
+    _teleport_block_until: float = field(default=0.0, init=False, repr=False)
     frozen_ticks_skipped: int = field(default=0, init=False)
     reopen_resets: int = field(default=0, init=False)
+    teleport_blocks: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
         if self.price_scale <= 0.0 or not math.isfinite(self.price_scale):
@@ -209,6 +214,21 @@ class NormalizedAllWeatherV4:
             raise ValueError(f"usd_per_price_unit must be > 0, got {self.usd_per_price_unit!r}")
         self._init_suite()
 
+    def _apply_engine_overrides(self) -> None:
+        eff_mult = float(self.usd_per_price_unit) * float(self.price_scale) * float(self.lot_scale)
+        self.suite.set_multiplier(eff_mult)
+        if self.suite.fast_shock_engine is not None:
+            if not self.allow_partial_split:
+                self.suite.fast_shock_engine.cfg.partial_arm_price = 0.0
+            if self.active_hours_srv is not None:
+                self.suite.fast_shock_engine.cfg.active_server_hours = self.active_hours_srv
+            if self.max_single_tick_jump_norm > 0.0:
+                self.suite.fast_shock_engine.cfg.max_single_tick_jump_price = float(self.max_single_tick_jump_norm)
+                self.suite.fast_shock_engine.cfg.teleport_cooldown_sec = float(self.teleport_cooldown_sec)
+        if self.active_hours_srv is not None:
+            self.suite.calm_engine.cfg.active_server_hours = self.active_hours_srv
+            self.suite.macro_engine.cfg.active_server_hours = self.active_hours_srv
+
     def _init_suite(self) -> None:
         self.suite = AllWeatherPaperSuite(
             initial_capital_usd=self.initial_capital_usd,
@@ -216,32 +236,15 @@ class NormalizedAllWeatherV4:
             risk_multiplier=1.0,
         )
         # Exact USD PnL isomorphism: diff_norm * vol_norm * (usd_per_unit * S * lot_scale) == diff_real * vol_real * usd_per_unit
-        eff_mult = float(self.usd_per_price_unit) * float(self.price_scale) * float(self.lot_scale)
-        self.suite.set_multiplier(eff_mult)
-        if self.suite.fast_shock_engine is not None:
-            if not self.allow_partial_split:
-                self.suite.fast_shock_engine.cfg.partial_arm_price = 0.0
-            if self.active_hours_srv is not None:
-                self.suite.fast_shock_engine.cfg.active_server_hours = self.active_hours_srv
-        if self.active_hours_srv is not None:
-            self.suite.calm_engine.cfg.active_server_hours = self.active_hours_srv
-            self.suite.macro_engine.cfg.active_server_hours = self.active_hours_srv
+        self._apply_engine_overrides()
 
     def reset_segment(self) -> None:
         """Reset per-engine rolling buffers across >120s gaps while preserving closed trade history."""
         self.suite.reset_file_state()
-        eff_mult = float(self.usd_per_price_unit) * float(self.price_scale) * float(self.lot_scale)
-        self.suite.set_multiplier(eff_mult)
-        if self.suite.fast_shock_engine is not None:
-            if not self.allow_partial_split:
-                self.suite.fast_shock_engine.cfg.partial_arm_price = 0.0
-            if self.active_hours_srv is not None:
-                self.suite.fast_shock_engine.cfg.active_server_hours = self.active_hours_srv
-        if self.active_hours_srv is not None:
-            self.suite.calm_engine.cfg.active_server_hours = self.active_hours_srv
-            self.suite.macro_engine.cfg.active_server_hours = self.active_hours_srv
+        self._apply_engine_overrides()
         self._last_quote = None
         self._last_change_ts = 0.0
+        self._prev_mid_norm = 0.0
         self._is_frozen = False
 
     def _denormalize_wave(self, raw_wave: dict[str, Any]) -> dict[str, Any]:
@@ -308,11 +311,34 @@ class NormalizedAllWeatherV4:
                     eng.cooldown_until = max(float(eng.cooldown_until), self._reopen_block_until)
 
         s = self.price_scale
+        nbid = bid / s
+        nask = ask / s
+        mid_norm = 0.5 * (nbid + nask)
+
+        # Single-tick teleport / bad-tick flash-jump guard across all engines
+        if (
+            self.max_single_tick_jump_norm > 0.0
+            and self._prev_mid_norm > 0.0
+            and abs(mid_norm - self._prev_mid_norm) >= self.max_single_tick_jump_norm
+        ):
+            self.teleport_blocks += 1
+            self._teleport_block_until = max(self._teleport_block_until, ts + self.teleport_cooldown_sec)
+            for eng in (self.suite.fast_shock_engine, self.suite.shock_engine, self.suite.macro_engine, self.suite.calm_engine):
+                if eng is None:
+                    continue
+                if hasattr(eng, "cooldown_until"):
+                    eng.cooldown_until = max(float(eng.cooldown_until), self._teleport_block_until)
+                if getattr(eng, "pending", None) is not None and eng.pending.get("kind") == "entry":
+                    eng.pending = None
+                if getattr(eng, "pending_order", None) is not None and eng.pending_order.get("kind") == "entry":
+                    eng.pending_order = None
+        self._prev_mid_norm = mid_norm
+
         prev = len(self.suite.trades_closed)
         evs = self.suite.on_tick(
             ts=ts,
-            bid=bid / s,
-            ask=ask / s,
+            bid=nbid,
+            ask=nask,
             m1_context=_scale_m1_context(m1_context, s),
         )
         if len(self.suite.trades_closed) > prev:
