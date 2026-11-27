@@ -263,6 +263,104 @@ class GuardedZScoreMR:
             self.waves_closed.append(w)
 
 
+class GuardedCalmTrend:
+    """CalmRegimeEngine with optional causal 30m macro trend alignment filter (blocks chop fakeouts!)."""
+
+    def __init__(self, cfg: Any, *, min_30m_align: float = 0.0) -> None:
+        self.eng = CalmRegimeEngine(cfg=cfg)
+        self.min_30m_align = float(min_30m_align)
+        self.macro = CausalMacroTrendTracker()
+        self.waves_closed: list[dict[str, Any]] = []
+
+    def reset_segment(self) -> None:
+        self.eng = CalmRegimeEngine(cfg=self.eng.cfg)
+        self.macro = CausalMacroTrendTracker()
+
+    def on_tick(self, ts: float, bid: float, ask: float, m1: dict[str, Any]) -> None:
+        _, m30, _ = self.macro.update(ts, 0.5 * (bid + ask))
+        had_pending = self.eng.pending is not None
+        evs = self.eng.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1)
+        if (
+            self.min_30m_align > 0.0
+            and (not had_pending)
+            and self.eng.pending is not None
+            and self.eng.pending.get("kind") == "open"
+        ):
+            side = self.eng.pending["side"]
+            if (side == "buy" and m30 < self.min_30m_align) or (side == "sell" and m30 > -self.min_30m_align):
+                self.eng.pending = None
+        for ev in evs:
+            if ev.get("type") == "CLOSE_ALL":
+                self.waves_closed.append(ev["wave"])
+
+    def close_open(self, ts: float, bid: float, ask: float) -> None:
+        if self.eng.basket is not None:
+            ex_px = bid if self.eng.basket["side"] == "buy" else ask
+            w = self.eng._close(ex_px, ts, "eof_seg")
+            if w is not None:
+                self.waves_closed.append(w)
+
+
+class CoordinatedAWV4:
+    """AW_V4 portfolio with Bug #3 Fix: blocks SHOCK10 duplicate entry when VSNAP6 is already open."""
+
+    def __init__(
+        self,
+        *,
+        shock_factory: Any,
+        vsnap_factory: Any,
+        macro_factory: Any,
+        zscore_factory: Any,
+        trend_factory: Any | None = None,
+    ) -> None:
+        self._factories = (shock_factory, vsnap_factory, macro_factory, zscore_factory, trend_factory)
+        self.waves_closed: list[dict[str, Any]] = []
+        self._init_subs()
+
+    def _init_subs(self) -> None:
+        sf, vf, mf, zf, tf = self._factories
+        self.shock = sf()
+        self.vsnap = vf()
+        self.macro = mf()
+        self.zscore = zf()
+        self.trend = tf() if tf is not None else None
+
+    def reset_segment(self) -> None:
+        self._init_subs()
+
+    def on_tick(self, ts: float, bid: float, ask: float, m1: dict[str, Any]) -> None:
+        # 1) Run VSNAP6 first so coordination lock sees live VSNAP basket state
+        for sub in (self.vsnap, self.macro, self.zscore, *([self.trend] if self.trend is not None else [])):
+            prev = len(sub.waves_closed)
+            sub.on_tick(ts, bid, ask, m1)
+            if len(sub.waves_closed) > prev:
+                self.waves_closed.extend(sub.waves_closed[prev:])
+
+        # 2) Run SHOCK10 with Bug #3 coordination lock (cancel fresh pending open if VSNAP6 is already in a spike!)
+        had_pend = self.shock.eng.pending_order is not None
+        prev_s = len(self.shock.waves_closed)
+        self.shock.on_tick(ts, bid, ask, m1)
+        if (
+            (not had_pend)
+            and self.shock.eng.pending_order is not None
+            and self.shock.eng.pending_order.get("kind") == "open"
+            and self.vsnap.eng.basket is not None
+        ):
+            self.shock.eng.pending_order = None
+        if len(self.shock.waves_closed) > prev_s:
+            self.waves_closed.extend(self.shock.waves_closed[prev_s:])
+
+    def close_open(self, ts: float, bid: float, ask: float) -> None:
+        subs = [self.shock, self.vsnap, self.macro, self.zscore]
+        if self.trend is not None:
+            subs.append(self.trend)
+        for sub in subs:
+            prev = len(sub.waves_closed)
+            sub.close_open(ts, bid, ask)
+            if len(sub.waves_closed) > prev:
+                self.waves_closed.extend(sub.waves_closed[prev:])
+
+
 class PortfolioWrapper:
     """Combines multiple causal sub-engines cleanly into one account."""
 
@@ -333,6 +431,11 @@ class SimpleAdapter:
                 self.waves_closed.append(w)
         elif hasattr(self.eng, "force_close_open"):
             w = self.eng.force_close_open(ts=ts, bid=bid, ask=ask, reason="eof_seg")
+            if w is not None:
+                self.waves_closed.append(w)
+        elif getattr(self.eng, "basket", None) is not None and hasattr(self.eng, "_close"):
+            ex_px = bid if self.eng.basket["side"] == "buy" else ask
+            w = self.eng._close(ex_px, ts, "eof_seg")
             if w is not None:
                 self.waves_closed.append(w)
 
@@ -480,9 +583,125 @@ def build_candidates() -> list[tuple[str, Any]]:
     ]
 
 
+def build_phase2_candidates() -> list[tuple[str, Any]]:
+    vsnap_base = replace(dict(fast_snap_profiles(base_lot=0.02))["VSNAP_SHOCK_6"], name="VSNAP6_24H", active_server_hours=None)
+    vsnap_wide = replace(
+        vsnap_base,
+        name="VSNAP6_WIDE",
+        be_arm_price=2.80,
+        be_lock_profit=0.30,
+        ratchet_arm_price=4.80,
+        ratchet_frac=0.50,
+        ratchet_breathing_room=2.50,
+        trail_arm_price=6.50,
+        trail_pullback_price=3.20,
+        max_hold_sec=600.0,
+    )
+    # Parameter-stability neighbors around VSNAP6_WIDE (confirm smooth plateau, NOT an isolated lucky point!)
+    vsnap_wide_nb1 = replace(
+        vsnap_wide,
+        name="VSNAP6_WIDE_NB1",
+        be_arm_price=2.60,
+        ratchet_arm_price=4.50,
+        ratchet_breathing_room=2.30,
+        trail_arm_price=6.00,
+        trail_pullback_price=3.00,
+    )
+    vsnap_wide_nb2 = replace(
+        vsnap_wide,
+        name="VSNAP6_WIDE_NB2",
+        be_arm_price=3.00,
+        ratchet_arm_price=5.20,
+        ratchet_breathing_room=2.70,
+        trail_arm_price=7.00,
+        trail_pullback_price=3.40,
+    )
+
+    z_tight = TickRobustZScoreConfig(
+        name="ZSCORE_MR_SAFE",
+        bar_sec=60,
+        entry_z=2.2,
+        adx_max=22.0,
+        min_sd_cost_mult=2.5,
+        min_tp_cost_mult=3.5,
+        min_sl_price=3.20,
+        max_sl_price=4.80,
+        leg_lot=0.03,
+        variable_lot_by_z=True,
+        max_lot=0.06,
+        night_adaptive=True,
+        night_entry_z=2.15,
+        night_adx_max=24.0,
+        night_sd_cost_mult=2.2,
+        night_tp_cost_mult=3.2,
+        active_server_hours=None,
+    )
+    macro_cfg = dict(pullback_dip_profiles(leg_lot=0.01, max_legs=4))["MACRO_WAVE_DYN"]
+    shock_cfg = build_s1_profile_config("v2.6_SHOCK10_DYN", leg_lot=0.01, max_legs=6)
+    m5_rr_base = build_calm_regime_profile_config("CALM_M5_RR_24H", leg_lot=0.02, max_legs=8)
+
+    m5_e35_cfg = replace(
+        m5_rr_base,
+        leg_lot=0.01,
+        dyn_max_leg_lot=0.06,
+        dyn_max_total_lot=0.25,
+        min_atr_price=2.20,
+        min_trend_sep_atr=0.35,
+        min_trend_eff=0.35,
+    )
+    m5_e42_cfg = replace(
+        m5_rr_base,
+        leg_lot=0.01,
+        dyn_max_leg_lot=0.06,
+        dyn_max_total_lot=0.25,
+        min_atr_price=2.50,
+        min_trend_sep_atr=0.42,
+        min_trend_eff=0.42,
+    )
+
+    def _aw_v3() -> Any:
+        return SimpleAdapter(lambda: AllWeatherPaperSuite(), "suite")
+
+    def _shock10() -> Any:
+        return SimpleAdapter(lambda: S1VelocitySurferEngine(cfg=shock_cfg), "m1")
+
+    def _macro_sess() -> Any:
+        return SimpleAdapter(lambda: PullbackDipEngine(cfg=macro_cfg), "m1")
+
+    def _z_safe() -> Any:
+        return GuardedZScoreMR(z_tight, block_counter_30m=9.0, block_counter_60m=12.0)
+
+    def _v_wide() -> Any:
+        return GuardedFastSnap(vsnap_wide, block_counter_15m=5.0, block_counter_30m=8.0)
+
+    def _v_nb1() -> Any:
+        return GuardedFastSnap(vsnap_wide_nb1, block_counter_15m=5.0, block_counter_30m=8.0)
+
+    def _v_nb2() -> Any:
+        return GuardedFastSnap(vsnap_wide_nb2, block_counter_15m=5.0, block_counter_30m=8.0)
+
+    return [
+        ("AW_V3_SHIPPED_BASE", _aw_v3()),
+        ("VSNAP6_WIDE_BASE", _v_wide()),
+        ("VSNAP6_WIDE_NB1", _v_nb1()),
+        ("VSNAP6_WIDE_NB2", _v_nb2()),
+        ("M5_RR_GATED_E35", GuardedCalmTrend(m5_e35_cfg, min_30m_align=0.0)),
+        ("M5_RR_GATED_E42", GuardedCalmTrend(m5_e42_cfg, min_30m_align=0.0)),
+        ("M5_RR_GATED_M30_8", GuardedCalmTrend(m5_e35_cfg, min_30m_align=8.0)),
+        ("M5_RR_GATED_M30_12", GuardedCalmTrend(m5_e35_cfg, min_30m_align=12.0)),
+        ("AW_V4_FIX124_WIDE", PortfolioWrapper([_shock10, _v_wide, _macro_sess, _z_safe])),
+        ("AW_V4_FIX1234_COORD", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_wide, macro_factory=_macro_sess, zscore_factory=_z_safe)),
+        ("AW_V4_COORD_M5_E35", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_wide, macro_factory=_macro_sess, zscore_factory=_z_safe, trend_factory=lambda: GuardedCalmTrend(m5_e35_cfg, min_30m_align=0.0))),
+        ("AW_V4_COORD_M5_E42", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_wide, macro_factory=_macro_sess, zscore_factory=_z_safe, trend_factory=lambda: GuardedCalmTrend(m5_e42_cfg, min_30m_align=0.0))),
+        ("AW_V4_COORD_M5_M30_8", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_wide, macro_factory=_macro_sess, zscore_factory=_z_safe, trend_factory=lambda: GuardedCalmTrend(m5_e35_cfg, min_30m_align=8.0))),
+        ("AW_V4_COORD_M5_M30_12", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_wide, macro_factory=_macro_sess, zscore_factory=_z_safe, trend_factory=lambda: GuardedCalmTrend(m5_e35_cfg, min_30m_align=12.0))),
+    ]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Deduplicated Full-History Gold Bug-Fix Audit (ORDERS=0)")
     parser.add_argument("--logs-dir", default="logs")
+    parser.add_argument("--phase2", action="store_true", help="Run Phase-2 stability, Bug #3 coordination lock & gated M5 trend rider")
     parser.add_argument("--mock", action="store_true", help="Run fast synthetic smoke test")
     args = parser.parse_args(argv)
 
@@ -513,7 +732,7 @@ def main(argv: list[str] | None = None) -> int:
         mids = [0.5 * (b + a) for _, b, a, _ in s]
         print(f"  Seg#{idx:02d}: {_iso_dt(s[0][0])} -> {_iso_dt(s[-1][0])} | {len(s):6d}t | {min(mids):.2f}..{max(mids):.2f} (rng=${max(mids) - min(mids):.2f})")
 
-    cands = build_candidates()
+    cands = build_phase2_candidates() if args.phase2 else build_candidates()
     print("-" * 124)
     print(
         f"{'MODEL':22s} | {'ALL_NET':>8s} {'ALL_DD':>7s} {'R/DD':>5s} {'W/L':>7s} {'PF':>5s} {'AvgW/AvgL':>12s} "
