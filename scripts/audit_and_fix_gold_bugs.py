@@ -80,6 +80,8 @@ def _norm_engine_label(raw: str) -> str:
         return "MACRO_WAVE"
     if "ZSCORE" in up:
         return "ZSCORE_MR"
+    if "DONCHIAN" in up or "DC_TREND" in up:
+        return "DC_TREND"
     if "CALM" in up or "M5" in up or "M1_" in up or "M3_" in up or "TREND" in up:
         return "M5_TREND"
     return up or "OTHER"
@@ -398,6 +400,313 @@ class GuardedCalmTrend:
             w = self.eng._close(ex_px, ts, "eof_seg")
             if w is not None:
                 self.waves_closed.append(_tag_wave(w, "M5_TREND"))
+
+
+@dataclass
+class DonchianTrendConfig:
+    """Classic institutional Donchian box-breakout + Chandelier ATR trailing trend-rider (strictly causal, ORDERS=0)."""
+
+    bar_sec: int = 300  # M5 bars
+    donchian_bars: int = 12  # 12 x M5 = 60-minute structural High/Low breakout
+    fast_ema: int = 8
+    slow_ema: int = 21
+    atr_period: int = 12
+    leg_lot: float = 0.02
+    max_legs: int = 3
+    multiplier: float = 100.0
+    latency_sec: float = 0.25
+    max_spread_price: float = 0.85
+    min_atr_price: float = 2.00
+    max_atr_price: float = 12.00
+    min_trend_eff: float = 0.35
+    min_body_frac: float = 0.35
+    sl_atr_mult: float = 2.20
+    min_stop_price: float = 5.00
+    max_stop_price: float = 11.00
+    be_arm_min_price: float = 6.00
+    be_arm_atr_mult: float = 2.00
+    trail_arm_min_price: float = 8.00
+    trail_arm_atr_mult: float = 2.50
+    trail_atr_mult: float = 2.40
+    trail_min_dist: float = 6.00
+    trail_max_dist: float = 13.00
+    enable_adds: bool = True
+    add_step_min_price: float = 8.00
+    add_step_atr_mult: float = 2.50
+    add_interval_sec: float = 300.0
+    add_breathing_room: float = 4.50
+    max_hold_sec: float = 14400.0
+    win_cooldown_sec: float = 300.0
+    loss_cooldown_sec: float = 900.0
+    consec_loss_cooldown_sec: float = 1800.0
+
+
+class DonchianTrendRider:
+    """Strictly causal tick-fed M5 Donchian breakout + Chandelier ATR trend-rider (zero lookahead)."""
+
+    def __init__(self, cfg: DonchianTrendConfig | None = None) -> None:
+        self.cfg = cfg or DonchianTrendConfig()
+        self.waves_closed: list[dict[str, Any]] = []
+        self._init_state()
+
+    def _init_state(self) -> None:
+        self._bars: deque[dict[str, float]] = deque(maxlen=120)
+        self._cur_bar: dict[str, float] | None = None
+        self._prev_ts: float | None = None
+        self._ema_fast: float | None = None
+        self._ema_slow: float | None = None
+        self._atr: float | None = None
+        self.pending: dict[str, Any] | None = None
+        self.basket: dict[str, Any] | None = None
+        self.cooldown_until: float = 0.0
+        self.consecutive_losses: int = 0
+        self.next_wave_id: int = 1
+
+    def reset_segment(self) -> None:
+        self._init_state()
+
+    def _push_bar(self, bar: dict[str, float]) -> None:
+        prev_c = self._bars[-1]["c"] if self._bars else bar["o"]
+        self._bars.append(bar)
+        c = bar["c"]
+        tr = max(bar["h"] - bar["l"], abs(bar["h"] - prev_c), abs(bar["l"] - prev_c))
+        kf = 2.0 / (self.cfg.fast_ema + 1.0)
+        ks = 2.0 / (self.cfg.slow_ema + 1.0)
+        if self._ema_fast is None:
+            self._ema_fast = c
+            self._ema_slow = c
+            self._atr = max(tr, 0.5)
+        else:
+            assert self._ema_slow is not None and self._atr is not None
+            self._ema_fast = kf * c + (1.0 - kf) * self._ema_fast
+            self._ema_slow = ks * c + (1.0 - ks) * self._ema_slow
+            a = 1.0 / max(1, self.cfg.atr_period)
+            self._atr = (1.0 - a) * self._atr + a * tr
+
+    def _trend_eff(self, n_bars: int = 8) -> float:
+        if len(self._bars) < n_bars + 1:
+            return 0.0
+        rec = list(self._bars)[-(n_bars + 1) :]
+        net = abs(rec[-1]["c"] - rec[0]["c"])
+        path = sum(abs(rec[i]["c"] - rec[i - 1]["c"]) for i in range(1, len(rec)))
+        return (net / path) if path > 1e-9 else 0.0
+
+    def _close(self, ex_px: float, ts: float, reason: str) -> None:
+        assert self.basket is not None
+        b = self.basket
+        self.basket = None
+        self.pending = None
+        diff = (ex_px - b["avg_entry"]) if b["side"] == "buy" else (b["avg_entry"] - ex_px)
+        pnl = round(diff * b["total_volume"] * self.cfg.multiplier, 4)
+        w = {
+            "wave_id": b["wave_id"],
+            "side": b["side"],
+            "legs_count": len(b["legs"]),
+            "total_volume": b["total_volume"],
+            "avg_entry": b["avg_entry"],
+            "exit_price": round(ex_px, 4),
+            "stop_final": b["stop"],
+            "opened_at": b["opened_at"],
+            "closed_at": float(ts),
+            "hold_seconds": round(max(0.0, ts - b["opened_at"]), 2),
+            "net_pnl_usd": pnl,
+            "exit_reason": reason,
+        }
+        self.waves_closed.append(_tag_wave(w, "DC_TREND"))
+        if pnl > 0:
+            self.consecutive_losses = 0
+            self.cooldown_until = ts + self.cfg.win_cooldown_sec
+        else:
+            self.consecutive_losses += 1
+            cd = self.cfg.consec_loss_cooldown_sec if self.consecutive_losses >= 2 else self.cfg.loss_cooldown_sec
+            self.cooldown_until = ts + cd
+
+    def on_tick(self, ts: float, bid: float, ask: float, _m1: dict[str, Any]) -> None:
+        if bid <= 0.0 or ask <= 0.0 or ask < bid:
+            return
+        mid = 0.5 * (bid + ask)
+        spread = ask - bid
+
+        max_gap = max(180.0, float(self.cfg.bar_sec) * 3.0)
+        if self._prev_ts is not None and (ts - self._prev_ts) > max_gap:
+            self._bars.clear()
+            self._cur_bar = None
+            self._ema_fast = None
+            self._ema_slow = None
+            self._atr = None
+            self.pending = None
+        self._prev_ts = ts
+
+        bar_id = int(ts // self.cfg.bar_sec)
+        just_closed: dict[str, float] | None = None
+        if self._cur_bar is None:
+            self._cur_bar = {"bar_id": float(bar_id), "o": mid, "h": mid, "l": mid, "c": mid}
+        elif bar_id > int(self._cur_bar["bar_id"]):
+            just_closed = dict(self._cur_bar)
+            self._push_bar(just_closed)
+            self._cur_bar = {"bar_id": float(bar_id), "o": mid, "h": mid, "l": mid, "c": mid}
+        else:
+            self._cur_bar["h"] = max(self._cur_bar["h"], mid)
+            self._cur_bar["l"] = min(self._cur_bar["l"], mid)
+            self._cur_bar["c"] = mid
+
+        # 1) Execute causal pending fill
+        if self.pending is not None and ts >= self.pending["fill_ts"]:
+            po = self.pending
+            self.pending = None
+            if spread <= self.cfg.max_spread_price:
+                side = po["side"]
+                fill_px = ask if side == "buy" else bid
+                if po["kind"] == "open" and self.basket is None:
+                    sl_dist = float(po["sl_dist"])
+                    stop = round((fill_px - sl_dist) if side == "buy" else (fill_px + sl_dist), 4)
+                    lot = round(self.cfg.leg_lot, 2)
+                    self.basket = {
+                        "wave_id": self.next_wave_id,
+                        "side": side,
+                        "legs": [{"entry": round(fill_px, 4), "vol": lot, "ts": ts}],
+                        "total_volume": lot,
+                        "avg_entry": round(fill_px, 4),
+                        "stop": stop,
+                        "stop_locked": False,
+                        "opened_at": ts,
+                        "last_add_ts": ts,
+                        "best_px": bid if side == "buy" else ask,
+                    }
+                    self.next_wave_id += 1
+                elif po["kind"] == "add" and self.basket is not None and len(self.basket["legs"]) < self.cfg.max_legs:
+                    b = self.basket
+                    old_v = float(b["total_volume"])
+                    add_v = round(self.cfg.leg_lot, 2)
+                    new_v = round(old_v + add_v, 2)
+                    new_avg = round((b["avg_entry"] * old_v + fill_px * add_v) / new_v, 4)
+                    # Verify risk-free lock with wide breathing room before committing add
+                    if (side == "buy" and (bid - self.cfg.add_breathing_room) >= (new_avg + 0.60)) or (
+                        side == "sell" and (ask + self.cfg.add_breathing_room) <= (new_avg - 0.60)
+                    ):
+                        b["legs"].append({"entry": round(fill_px, 4), "vol": add_v, "ts": ts})
+                        b["total_volume"] = new_v
+                        b["avg_entry"] = new_avg
+                        b["last_add_ts"] = ts
+                        if side == "buy":
+                            lock_sl = round(min(new_avg + 0.60, bid - self.cfg.add_breathing_room), 4)
+                            if lock_sl > b["stop"]:
+                                b["stop"] = lock_sl
+                                b["stop_locked"] = True
+                        else:
+                            lock_sl = round(max(new_avg - 0.60, ask + self.cfg.add_breathing_room), 4)
+                            if lock_sl < b["stop"]:
+                                b["stop"] = lock_sl
+                                b["stop_locked"] = True
+
+        # 2) Manage open basket
+        if self.basket is not None:
+            b = self.basket
+            side = b["side"]
+            ex_px = bid if side == "buy" else ask
+            cur_atr = float(self._atr) if self._atr is not None else 3.0
+            if side == "buy":
+                b["best_px"] = max(b["best_px"], bid)
+                avg_gain = bid - b["avg_entry"]
+                last_net = bid - b["legs"][-1]["entry"]
+            else:
+                b["best_px"] = min(b["best_px"], ask)
+                avg_gain = b["avg_entry"] - ask
+                last_net = b["legs"][-1]["entry"] - ask
+
+            # Hard/locked SL first (gap-aware)
+            if (side == "buy" and bid <= b["stop"]) or (side == "sell" and ask >= b["stop"]):
+                rsn = ("chandelier_trail" if avg_gain >= 0 else "locked_sl_slip") if b["stop_locked"] else "hard_stop_loss"
+                self._close(ex_px, ts, rsn)
+                return
+
+            # Wide Break-Even arm
+            be_arm = max(self.cfg.be_arm_min_price, self.cfg.be_arm_atr_mult * cur_atr)
+            if (not b["stop_locked"]) and avg_gain >= be_arm:
+                if side == "buy":
+                    be_sl = round(min(b["avg_entry"] + 0.50, bid - 2.50), 4)
+                    if be_sl > b["stop"]:
+                        b["stop"] = be_sl
+                        b["stop_locked"] = True
+                else:
+                    be_sl = round(max(b["avg_entry"] - 0.50, ask + 2.50), 4)
+                    if be_sl < b["stop"]:
+                        b["stop"] = be_sl
+                        b["stop_locked"] = True
+
+            # Chandelier ATR trailing stop
+            tr_arm = max(self.cfg.trail_arm_min_price, self.cfg.trail_arm_atr_mult * cur_atr)
+            if avg_gain >= tr_arm:
+                tr_dist = min(max(self.cfg.trail_atr_mult * cur_atr, self.cfg.trail_min_dist), self.cfg.trail_max_dist)
+                if side == "buy":
+                    c_sl = round(b["best_px"] - tr_dist, 4)
+                    if c_sl > b["stop"]:
+                        b["stop"] = c_sl
+                        b["stop_locked"] = True
+                else:
+                    c_sl = round(b["best_px"] + tr_dist, 4)
+                    if c_sl < b["stop"]:
+                        b["stop"] = c_sl
+                        b["stop_locked"] = True
+
+            # Max hold
+            if (ts - b["opened_at"]) >= self.cfg.max_hold_sec:
+                self._close(ex_px, ts, "max_hold_exit")
+                return
+
+            # Risk-free pyramid add on strong continuation
+            add_step = max(self.cfg.add_step_min_price, self.cfg.add_step_atr_mult * cur_atr)
+            if (
+                self.cfg.enable_adds
+                and self.pending is None
+                and len(b["legs"]) < self.cfg.max_legs
+                and (ts - b["last_add_ts"]) >= self.cfg.add_interval_sec
+                and spread <= self.cfg.max_spread_price
+                and last_net >= add_step
+            ):
+                est_fill = ask if side == "buy" else bid
+                old_v = float(b["total_volume"])
+                new_v = round(old_v + self.cfg.leg_lot, 2)
+                est_avg = (b["avg_entry"] * old_v + est_fill * self.cfg.leg_lot) / new_v
+                rf_ok = (side == "buy" and (bid - self.cfg.add_breathing_room) >= (est_avg + 0.60)) or (
+                    side == "sell" and (ask + self.cfg.add_breathing_room) <= (est_avg - 0.60)
+                )
+                if rf_ok:
+                    self.pending = {"kind": "add", "side": side, "fill_ts": ts + self.cfg.latency_sec}
+            return
+
+        # 3) Flat: evaluate strictly causal Donchian breakout on closed M5 bar
+        if just_closed is None or self.pending is not None or ts < self.cooldown_until:
+            return
+        n_dc = self.cfg.donchian_bars
+        if len(self._bars) < max(n_dc + 2, 14) or self._ema_fast is None or self._ema_slow is None or self._atr is None:
+            return
+        if spread > self.cfg.max_spread_price:
+            return
+        atr = float(self._atr)
+        if atr < self.cfg.min_atr_price or atr > self.cfg.max_atr_price:
+            return
+        if self._trend_eff(8) < self.cfg.min_trend_eff:
+            return
+
+        prior_bars = list(self._bars)[-(n_dc + 1) : -1]
+        dc_hi = max(b["h"] for b in prior_bars)
+        dc_lo = min(b["l"] for b in prior_bars)
+        o, h, lo, c = just_closed["o"], just_closed["h"], just_closed["l"], just_closed["c"]
+        rng = max(h - lo, 1e-9)
+        if (abs(c - o) / rng) < self.cfg.min_body_frac:
+            return
+
+        sl_dist = min(max(self.cfg.sl_atr_mult * atr, self.cfg.min_stop_price), self.cfg.max_stop_price)
+        if c > dc_hi and c > o and self._ema_fast > self._ema_slow:
+            self.pending = {"kind": "open", "side": "buy", "fill_ts": ts + self.cfg.latency_sec, "sl_dist": sl_dist}
+        elif c < dc_lo and c < o and self._ema_fast < self._ema_slow:
+            self.pending = {"kind": "open", "side": "sell", "fill_ts": ts + self.cfg.latency_sec, "sl_dist": sl_dist}
+
+    def close_open(self, ts: float, bid: float, ask: float) -> None:
+        if self.basket is not None:
+            ex_px = bid if self.basket["side"] == "buy" else ask
+            self._close(ex_px, ts, "eof_seg")
 
 
 class CoordinatedAWV4:
@@ -866,6 +1175,112 @@ def build_phase2_candidates() -> list[tuple[str, Any]]:
     ]
 
 
+def build_phase3_candidates() -> list[tuple[str, Any]]:
+    """Clean Final Selection: Proven AW_V4 Core (Bugs #1-#4, MACRO_SESS intact) + 24h Trend-Rider Shootout."""
+    vsnap_base = replace(dict(fast_snap_profiles(base_lot=0.02))["VSNAP_SHOCK_6"], name="VSNAP6_24H", active_server_hours=None)
+    vsnap_wide = replace(
+        vsnap_base,
+        name="VSNAP6_WIDE",
+        be_arm_price=2.80,
+        be_lock_profit=0.30,
+        ratchet_arm_price=4.80,
+        ratchet_frac=0.50,
+        ratchet_breathing_room=2.50,
+        trail_arm_price=6.50,
+        trail_pullback_price=3.20,
+        max_hold_sec=600.0,
+    )
+    vsnap_nb1 = replace(
+        vsnap_wide,
+        name="VSNAP6_WIDE_NB1",
+        be_arm_price=2.60,
+        ratchet_arm_price=4.50,
+        ratchet_breathing_room=2.30,
+        trail_arm_price=6.00,
+        trail_pullback_price=3.00,
+    )
+    z_tight = TickRobustZScoreConfig(
+        name="ZSCORE_MR_SAFE",
+        bar_sec=60,
+        entry_z=2.2,
+        adx_max=22.0,
+        min_sd_cost_mult=2.5,
+        min_tp_cost_mult=3.5,
+        min_sl_price=3.20,
+        max_sl_price=4.80,
+        leg_lot=0.03,
+        variable_lot_by_z=True,
+        max_lot=0.06,
+        night_adaptive=True,
+        night_entry_z=2.15,
+        night_adx_max=24.0,
+        night_sd_cost_mult=2.2,
+        night_tp_cost_mult=3.2,
+        active_server_hours=None,
+    )
+    macro_cfg = dict(pullback_dip_profiles(leg_lot=0.01, max_legs=4))["MACRO_WAVE_DYN"]
+    shock_cfg = build_s1_profile_config("v2.6_SHOCK10_DYN", leg_lot=0.01, max_legs=6)
+    m5_rr_base = build_calm_regime_profile_config("CALM_M5_RR_24H", leg_lot=0.02, max_legs=8)
+    m5_pro_base = build_calm_regime_profile_config("CALM_M5_PRO_24H", leg_lot=0.02, max_legs=8)
+
+    # Stability plateau around M5_RR_E42 (which made +$43.60 LAST_NIGHT at 0.01 lot!)
+    m5_e38_01 = replace(m5_rr_base, leg_lot=0.01, dyn_max_leg_lot=0.06, dyn_max_total_lot=0.25, min_atr_price=2.30, min_trend_sep_atr=0.38, min_trend_eff=0.38)
+    m5_e42_01 = replace(m5_rr_base, leg_lot=0.01, dyn_max_leg_lot=0.06, dyn_max_total_lot=0.25, min_atr_price=2.50, min_trend_sep_atr=0.42, min_trend_eff=0.42)
+    m5_e45_01 = replace(m5_rr_base, leg_lot=0.01, dyn_max_leg_lot=0.06, dyn_max_total_lot=0.25, min_atr_price=2.60, min_trend_sep_atr=0.45, min_trend_eff=0.45)
+    m5_e42_02 = replace(m5_rr_base, leg_lot=0.02, dyn_max_leg_lot=0.08, dyn_max_total_lot=0.35, min_atr_price=2.50, min_trend_sep_atr=0.42, min_trend_eff=0.42)
+    m5_e42_2h = replace(m5_e42_02, max_hold_sec=7200.0)
+    m5_pro_e42 = replace(m5_pro_base, leg_lot=0.02, dyn_max_leg_lot=0.08, dyn_max_total_lot=0.35, min_atr_price=2.50, min_trend_sep_atr=0.42, min_trend_eff=0.42)
+
+    # Institutional M5 Donchian Box-Breakout + Chandelier ATR Trailing Trend-Riders (zero curve-fitting!)
+    dc12_cfg = DonchianTrendConfig(bar_sec=300, donchian_bars=12, leg_lot=0.02, max_legs=3, min_atr_price=2.00, min_trend_eff=0.35)
+    dc16_cfg = DonchianTrendConfig(bar_sec=300, donchian_bars=16, leg_lot=0.02, max_legs=3, min_atr_price=2.00, min_trend_eff=0.35)
+    dc12_e42_cfg = DonchianTrendConfig(bar_sec=300, donchian_bars=12, leg_lot=0.02, max_legs=3, min_atr_price=2.20, min_trend_eff=0.42)
+
+    def _aw_v3() -> Any:
+        return SimpleAdapter(lambda: AllWeatherPaperSuite(), "suite", "SUITE")
+
+    def _shock10() -> Any:
+        return SimpleAdapter(lambda: S1VelocitySurferEngine(cfg=shock_cfg), "m1", "SHOCK10")
+
+    def _macro_sess() -> Any:
+        return SimpleAdapter(lambda: PullbackDipEngine(cfg=macro_cfg), "m1", "MACRO_WAVE")
+
+    def _z_safe() -> Any:
+        return GuardedZScoreMR(z_tight, block_counter_30m=9.0, block_counter_60m=12.0)
+
+    def _v_wide() -> Any:
+        return GuardedFastSnap(vsnap_wide, block_counter_15m=5.0, block_counter_30m=8.0)
+
+    def _v_nb1() -> Any:
+        return GuardedFastSnap(vsnap_nb1, block_counter_15m=5.0, block_counter_30m=8.0)
+
+    return [
+        # 1) Baseline shipped AW_V3 vs Proven 4-Engine AW_V4 Core
+        ("AW_V3_SHIPPED_BASE", _aw_v3()),
+        ("AW_V4_COORD_BASE", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_wide, macro_factory=_macro_sess, zscore_factory=_z_safe)),
+        ("AW_V4_COORD_NB1", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_nb1, macro_factory=_macro_sess, zscore_factory=_z_safe)),
+        # 2) Solo 24h Trend-Riders (Day-by-Day transparency on 11-25, 11-26_DAY, LAST_NIGHT!)
+        ("M5_RR_E38_L01", GuardedCalmTrend(m5_e38_01)),
+        ("M5_RR_E42_L01", GuardedCalmTrend(m5_e42_01)),
+        ("M5_RR_E45_L01", GuardedCalmTrend(m5_e45_01)),
+        ("M5_RR_E42_L02", GuardedCalmTrend(m5_e42_02)),
+        ("M5_RR_E42_2H_L02", GuardedCalmTrend(m5_e42_2h)),
+        ("M5_PRO_E42_L02", GuardedCalmTrend(m5_pro_e42)),
+        ("M5_DONCHIAN12_L02", DonchianTrendRider(dc12_cfg)),
+        ("M5_DONCHIAN16_L02", DonchianTrendRider(dc16_cfg)),
+        ("M5_DONCH12_E42_02", DonchianTrendRider(dc12_e42_cfg)),
+        # 3) Full 5-Engine AW_V4 Portfolios (Proven 4-Engine Core + Clean 24h Trend-Rider!)
+        ("AW_V4_BASE_E42_01", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_wide, macro_factory=_macro_sess, zscore_factory=_z_safe, trend_factory=lambda: GuardedCalmTrend(m5_e42_01))),
+        ("AW_V4_BASE_E42_02", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_wide, macro_factory=_macro_sess, zscore_factory=_z_safe, trend_factory=lambda: GuardedCalmTrend(m5_e42_02))),
+        ("AW_V4_BASE_E42_2H", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_wide, macro_factory=_macro_sess, zscore_factory=_z_safe, trend_factory=lambda: GuardedCalmTrend(m5_e42_2h))),
+        ("AW_V4_BASE_M5PRO", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_wide, macro_factory=_macro_sess, zscore_factory=_z_safe, trend_factory=lambda: GuardedCalmTrend(m5_pro_e42))),
+        ("AW_V4_BASE_DC12", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_wide, macro_factory=_macro_sess, zscore_factory=_z_safe, trend_factory=lambda: DonchianTrendRider(dc12_cfg))),
+        ("AW_V4_BASE_DC12E42", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_wide, macro_factory=_macro_sess, zscore_factory=_z_safe, trend_factory=lambda: DonchianTrendRider(dc12_e42_cfg))),
+        ("AW_V4_NB1_E42_02", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_nb1, macro_factory=_macro_sess, zscore_factory=_z_safe, trend_factory=lambda: GuardedCalmTrend(m5_e42_02))),
+        ("AW_V4_NB1_DC12", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_nb1, macro_factory=_macro_sess, zscore_factory=_z_safe, trend_factory=lambda: DonchianTrendRider(dc12_cfg))),
+    ]
+
+
 def _print_engine_day_matrix(
     model_name: str,
     waves: list[dict[str, Any]],
@@ -874,7 +1289,7 @@ def _print_engine_day_matrix(
     *,
     is_mock: bool,
 ) -> None:
-    engines_order = ["VSNAP6", "SHOCK10", "MACRO_WAVE", "ZSCORE_MR", "M5_TREND"]
+    engines_order = ["VSNAP6", "SHOCK10", "MACRO_WAVE", "ZSCORE_MR", "M5_TREND", "DC_TREND"]
     present_engs = [e for e in engines_order if any(w.get("_engine") == e for w in waves)]
     extra = sorted({str(w.get("_engine", "OTHER")) for w in waves} - set(present_engs))
     present_engs.extend(extra)
@@ -956,6 +1371,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Day-by-Day Deduplicated Gold Bug-Fix Audit (ORDERS=0)")
     parser.add_argument("--logs-dir", default="logs")
     parser.add_argument("--phase2", action="store_true", help="Run Phase-2 stability, Bug #2B/#3/#5 fixes & day-by-day report")
+    parser.add_argument("--phase3", action="store_true", help="Run Phase-3 Clean Final Selection (Proven AW_V4 Core + 24h Trend-Rider Shootout)")
     parser.add_argument("--trades", default="", help="Optional model name to print full LAST_NIGHT trade log for")
     parser.add_argument("--mock", action="store_true", help="Run fast synthetic smoke test")
     args = parser.parse_args(argv)
@@ -1020,7 +1436,12 @@ def main(argv: list[str] | None = None) -> int:
             f"{m['open']:.2f}->{m['close']:.2f} (net {chg:+7.2f}, lo..hi {m['lo']:.2f}..{m['hi']:.2f}, rng=${rng:.2f})"
         )
 
-    cands = build_phase2_candidates() if args.phase2 else build_candidates()
+    if args.phase3:
+        cands = build_phase3_candidates()
+    elif args.phase2:
+        cands = build_phase2_candidates()
+    else:
+        cands = build_candidates()
 
     day_hdr = " | ".join(f"{_short_bucket_hdr(b):>14s}" for b in prior_buckets)
     sep_len = 82 + 17 * len(prior_buckets) + 27

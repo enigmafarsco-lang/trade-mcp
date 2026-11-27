@@ -338,6 +338,13 @@ def test_audit_and_fix_gold_bugs_mock(capsys: pytest.CaptureFixture[str]) -> Non
     assert "PER-ENGINE x PER-DAY BREAKDOWN" in out2
     assert "COMPLETE LAST-NIGHT TRADE-BY-TRADE AUDIT" in out2
 
+    rc3 = ab.main(["--mock", "--phase3"])
+    assert rc3 == 0
+    out3 = capsys.readouterr().out
+    assert "M5_DONCHIAN12_L02" in out3
+    assert "AW_V4_BASE_E42_02" in out3
+    assert "AW_V4_BASE_DC12" in out3
+
 
 
 
