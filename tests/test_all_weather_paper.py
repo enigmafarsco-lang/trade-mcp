@@ -345,6 +345,13 @@ def test_audit_and_fix_gold_bugs_mock(capsys: pytest.CaptureFixture[str]) -> Non
     assert "AW_V4_BASE_E42_02" in out3
     assert "AW_V4_BASE_DC12" in out3
 
+    rc4 = ab.main(["--mock", "--phase4"])
+    assert rc4 == 0
+    out4 = capsys.readouterr().out
+    assert "VSNAP6_PARTIAL_26" in out4
+    assert "DC_SAFE_16_M60" in out4
+    assert "AW_V4_PARTIAL_26" in out4
+
 
 
 

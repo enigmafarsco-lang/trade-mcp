@@ -263,6 +263,119 @@ class GuardedFastSnap:
             self.waves_closed.append(_tag_wave(w, "VSNAP6"))
 
 
+class SmartExitFastSnap(GuardedFastSnap):
+    """GuardedFastSnap with strictly causal Two-Stage Risk-Reduction BE OR 50% Partial-Bank + Wide Runner."""
+
+    def __init__(
+        self,
+        cfg: FastSnapConfig,
+        *,
+        block_counter_15m: float = 5.0,
+        block_counter_30m: float = 8.0,
+        stage1_arm: float = 0.0,
+        stage1_sl_offset: float = 0.90,
+        partial_arm: float = 0.0,
+        partial_runner_sl_offset: float = 0.60,
+    ) -> None:
+        super().__init__(cfg, block_counter_15m=block_counter_15m, block_counter_30m=block_counter_30m)
+        self.stage1_arm = float(stage1_arm)
+        self.stage1_sl_offset = float(stage1_sl_offset)
+        self.partial_arm = float(partial_arm)
+        self.partial_runner_sl_offset = float(partial_runner_sl_offset)
+
+    def _finalize_wave(self, w: dict[str, Any], banked_usd: float, orig_vol: float, had_partial: bool) -> dict[str, Any]:
+        out = _tag_wave(w, "VSNAP6")
+        if had_partial:
+            out["net_pnl_usd"] = round(float(out.get("net_pnl_usd", 0.0)) + banked_usd, 4)
+            if orig_vol > 0.0:
+                out["total_volume"] = round(max(orig_vol, float(out.get("total_volume", 0.0))), 2)
+            out["exit_reason"] = f"p50+{out.get('exit_reason', '')}"
+        return out
+
+    def on_tick(self, ts: float, bid: float, ask: float, _m1: dict[str, Any]) -> None:
+        m15, m30, _ = self.macro.update(ts, 0.5 * (bid + ask))
+        had_pending = self.eng.pending is not None
+        b_pre = self.eng.basket
+        banked_pre = float(b_pre.get("_banked_usd", 0.0)) if b_pre is not None else 0.0
+        orig_vol_pre = float(b_pre.get("_orig_vol", 0.0)) if b_pre is not None else 0.0
+        had_part_pre = bool(b_pre.get("_partial_taken", False)) if b_pre is not None else False
+
+        evs = self.eng.on_tick(ts=ts, bid=bid, ask=ask)
+
+        # Causal HTF counter-trend guard on freshly queued entries
+        if (not had_pending) and self.eng.pending is not None and self.eng.pending.get("kind") == "entry":
+            side = self.eng.pending["side"]
+            blocked = (
+                self.block_counter_15m > 0.0
+                and (
+                    (side == "sell" and m15 >= self.block_counter_15m)
+                    or (side == "buy" and m15 <= -self.block_counter_15m)
+                )
+            ) or (
+                self.block_counter_30m > 0.0
+                and (
+                    (side == "sell" and m30 >= self.block_counter_30m)
+                    or (side == "buy" and m30 <= -self.block_counter_30m)
+                )
+            )
+            if blocked:
+                self.eng.pending = None
+
+        for ev in evs:
+            if ev.get("type") == "CLOSE_ALL":
+                self.waves_closed.append(self._finalize_wave(ev["wave"], banked_pre, orig_vol_pre, had_part_pre))
+
+        # Manage surviving open basket: Two-Stage Cushion OR 50% Partial Bank + Wide Runner
+        b = self.eng.basket
+        if b is None:
+            return
+        side = b["side"]
+        avg_gain = (bid - b["avg_entry"]) if side == "buy" else (b["avg_entry"] - ask)
+
+        # Mode 1: Two-Stage Risk Reduction (cut hard-SL risk by ~68% while surviving breakout retests!)
+        if self.stage1_arm > 0.0 and (not b["stop_locked"]) and avg_gain >= self.stage1_arm:
+            if side == "buy":
+                s1_sl = round(b["avg_entry"] - self.stage1_sl_offset, 4)
+                if s1_sl > b["stop"]:
+                    b["stop"] = s1_sl
+            else:
+                s1_sl = round(b["avg_entry"] + self.stage1_sl_offset, 4)
+                if s1_sl < b["stop"]:
+                    b["stop"] = s1_sl
+
+        # Mode 2: 50% Partial Profit Bank + Free Runner (guarantees green trade AND survives entry retest!)
+        if self.partial_arm > 0.0 and (not b.get("_partial_taken")) and avg_gain >= self.partial_arm:
+            tot_v = float(b["total_volume"])
+            if tot_v >= 0.02:
+                half_v = round(max(0.01, int((tot_v * 0.5 + 1e-9) * 100) / 100.0), 2)
+                rem_v = round(tot_v - half_v, 2)
+                if rem_v >= 0.01:
+                    banked = round(avg_gain * half_v * self.eng.cfg.multiplier, 4)
+                    b["_banked_usd"] = float(b.get("_banked_usd", 0.0)) + banked
+                    b["_orig_vol"] = tot_v
+                    b["_partial_taken"] = True
+                    b["total_volume"] = rem_v
+                    # Move SL to small cushion behind avg_entry so total trade is GUARANTEED net-positive
+                    # while surviving breakout retests back to entry!
+                    if side == "buy":
+                        p_sl = round(b["avg_entry"] - self.partial_runner_sl_offset, 4)
+                        if p_sl > b["stop"]:
+                            b["stop"] = p_sl
+                    else:
+                        p_sl = round(b["avg_entry"] + self.partial_runner_sl_offset, 4)
+                        if p_sl < b["stop"]:
+                            b["stop"] = p_sl
+
+    def close_open(self, ts: float, bid: float, ask: float) -> None:
+        b = self.eng.basket
+        banked = float(b.get("_banked_usd", 0.0)) if b is not None else 0.0
+        orig_vol = float(b.get("_orig_vol", 0.0)) if b is not None else 0.0
+        had_part = bool(b.get("_partial_taken", False)) if b is not None else False
+        w = self.eng.force_close_open(ts=ts, bid=bid, ask=ask, reason="eof_seg")
+        if w is not None:
+            self.waves_closed.append(self._finalize_wave(w, banked, orig_vol, had_part))
+
+
 class GuardedZScoreMR:
     """TickRobustZScoreEngine with causal 30m/60m macro breakout guard (Bug #4)."""
 
@@ -420,6 +533,7 @@ class DonchianTrendConfig:
     max_atr_price: float = 12.00
     min_trend_eff: float = 0.35
     min_body_frac: float = 0.35
+    min_60m_align: float = 0.0
     sl_atr_mult: float = 2.20
     min_stop_price: float = 5.00
     max_stop_price: float = 11.00
@@ -456,6 +570,7 @@ class DonchianTrendRider:
         self._ema_fast: float | None = None
         self._ema_slow: float | None = None
         self._atr: float | None = None
+        self._macro = CausalMacroTrendTracker()
         self.pending: dict[str, Any] | None = None
         self.basket: dict[str, Any] | None = None
         self.cooldown_until: float = 0.0
@@ -534,8 +649,10 @@ class DonchianTrendRider:
             self._ema_fast = None
             self._ema_slow = None
             self._atr = None
+            self._macro = CausalMacroTrendTracker()
             self.pending = None
         self._prev_ts = ts
+        _, _, m60 = self._macro.update(ts, mid)
 
         bar_id = int(ts // self.cfg.bar_sec)
         just_closed: dict[str, float] | None = None
@@ -698,9 +815,19 @@ class DonchianTrendRider:
             return
 
         sl_dist = min(max(self.cfg.sl_atr_mult * atr, self.cfg.min_stop_price), self.cfg.max_stop_price)
-        if c > dc_hi and c > o and self._ema_fast > self._ema_slow:
+        if (
+            c > dc_hi
+            and c > o
+            and self._ema_fast > self._ema_slow
+            and (self.cfg.min_60m_align <= 0.0 or m60 >= self.cfg.min_60m_align)
+        ):
             self.pending = {"kind": "open", "side": "buy", "fill_ts": ts + self.cfg.latency_sec, "sl_dist": sl_dist}
-        elif c < dc_lo and c < o and self._ema_fast < self._ema_slow:
+        elif (
+            c < dc_lo
+            and c < o
+            and self._ema_fast < self._ema_slow
+            and (self.cfg.min_60m_align <= 0.0 or m60 <= -self.cfg.min_60m_align)
+        ):
             self.pending = {"kind": "open", "side": "sell", "fill_ts": ts + self.cfg.latency_sec, "sl_dist": sl_dist}
 
     def close_open(self, ts: float, bid: float, ask: float) -> None:
@@ -1281,6 +1408,189 @@ def build_phase3_candidates() -> list[tuple[str, Any]]:
     ]
 
 
+def build_phase4_candidates() -> list[tuple[str, Any]]:
+    """Phase 4 — Zero-Overfit Convexity Fix: VSNAP6 50%-Partial/2-Stage-BE Exit + Tight-SL 60m-Aligned Donchian Plateau."""
+    vsnap_base = replace(dict(fast_snap_profiles(base_lot=0.02))["VSNAP_SHOCK_6"], name="VSNAP6_24H", active_server_hours=None)
+    vsnap_nb1 = replace(
+        vsnap_base,
+        name="VSNAP6_NB1",
+        be_arm_price=2.60,
+        be_lock_profit=0.30,
+        ratchet_arm_price=4.50,
+        ratchet_frac=0.50,
+        ratchet_breathing_room=2.30,
+        trail_arm_price=6.00,
+        trail_pullback_price=3.00,
+        max_hold_sec=600.0,
+    )
+    # Fix A1: Two-Stage Risk Reduction (cut SL -$2.80 -> -$0.90 at +$2.20..2.40, true BE only at +$4.00..4.40!)
+    vsnap_2s_a = replace(
+        vsnap_nb1,
+        name="VSNAP6_2STAGE_A",
+        be_arm_price=4.00,
+        ratchet_arm_price=5.20,
+        ratchet_breathing_room=2.60,
+        trail_arm_price=7.00,
+        trail_pullback_price=3.50,
+        max_hold_sec=900.0,
+    )
+    vsnap_2s_b = replace(
+        vsnap_nb1,
+        name="VSNAP6_2STAGE_B",
+        be_arm_price=4.40,
+        ratchet_arm_price=5.60,
+        ratchet_breathing_room=2.80,
+        trail_arm_price=7.50,
+        trail_pullback_price=3.80,
+        max_hold_sec=1200.0,
+    )
+    # Fix A2: 50% Partial Profit Bank @ +$2.40/2.60/3.00 + Free Runner (survives breakout retest back to entry!)
+    vsnap_p24 = replace(
+        vsnap_nb1,
+        name="VSNAP6_PART24",
+        be_arm_price=4.20,
+        ratchet_arm_price=5.50,
+        ratchet_breathing_room=2.80,
+        trail_arm_price=7.50,
+        trail_pullback_price=4.00,
+        max_hold_sec=1800.0,
+        runner_max_hold_sec=2400.0,
+    )
+    vsnap_p26 = replace(
+        vsnap_nb1,
+        name="VSNAP6_PART26",
+        be_arm_price=4.50,
+        ratchet_arm_price=6.00,
+        ratchet_breathing_room=3.00,
+        trail_arm_price=8.00,
+        trail_pullback_price=4.20,
+        max_hold_sec=1800.0,
+        runner_max_hold_sec=2400.0,
+    )
+    vsnap_p30 = replace(
+        vsnap_nb1,
+        name="VSNAP6_PART30",
+        be_arm_price=4.80,
+        ratchet_arm_price=6.50,
+        ratchet_breathing_room=3.20,
+        trail_arm_price=8.50,
+        trail_pullback_price=4.50,
+        max_hold_sec=1800.0,
+        runner_max_hold_sec=2400.0,
+    )
+    vsnap_p26_noadd = replace(vsnap_p26, name="VSNAP6_P26_NOADD", enable_adds=False)
+
+    z_tight = TickRobustZScoreConfig(
+        name="ZSCORE_MR_SAFE",
+        bar_sec=60,
+        entry_z=2.2,
+        adx_max=22.0,
+        min_sd_cost_mult=2.5,
+        min_tp_cost_mult=3.5,
+        min_sl_price=3.20,
+        max_sl_price=4.80,
+        leg_lot=0.03,
+        variable_lot_by_z=True,
+        max_lot=0.06,
+        night_adaptive=True,
+        night_entry_z=2.15,
+        night_adx_max=24.0,
+        night_sd_cost_mult=2.2,
+        night_tp_cost_mult=3.2,
+        active_server_hours=None,
+    )
+    macro_cfg = dict(pullback_dip_profiles(leg_lot=0.01, max_legs=4))["MACRO_WAVE_DYN"]
+    shock_cfg = build_s1_profile_config("v2.6_SHOCK10_DYN", leg_lot=0.01, max_legs=6)
+
+    # Fix B: Safe Tight-SL ($3.80..$5.50) + Causal 60m-Aligned Donchian Trend-Rider (3-point smooth plateau check!)
+    def _dc_safe_cfg(n_bars: int) -> DonchianTrendConfig:
+        return DonchianTrendConfig(
+            bar_sec=300,
+            donchian_bars=n_bars,
+            leg_lot=0.02,
+            max_legs=3,
+            min_atr_price=2.00,
+            min_trend_eff=0.35,
+            min_60m_align=8.0,
+            sl_atr_mult=1.45,
+            min_stop_price=3.80,
+            max_stop_price=5.50,
+            be_arm_min_price=4.50,
+            be_arm_atr_mult=1.50,
+            trail_arm_min_price=6.00,
+            trail_arm_atr_mult=2.00,
+            trail_atr_mult=2.00,
+            trail_min_dist=4.50,
+            trail_max_dist=9.00,
+            add_step_min_price=6.50,
+            add_step_atr_mult=2.00,
+            add_breathing_room=3.50,
+        )
+
+    dc12_safe = _dc_safe_cfg(12)
+    dc16_safe = _dc_safe_cfg(16)
+    dc20_safe = _dc_safe_cfg(20)
+
+    def _aw_v3() -> Any:
+        return SimpleAdapter(lambda: AllWeatherPaperSuite(), "suite", "SUITE")
+
+    def _shock10() -> Any:
+        return SimpleAdapter(lambda: S1VelocitySurferEngine(cfg=shock_cfg), "m1", "SHOCK10")
+
+    def _macro_sess() -> Any:
+        return SimpleAdapter(lambda: PullbackDipEngine(cfg=macro_cfg), "m1", "MACRO_WAVE")
+
+    def _z_safe() -> Any:
+        return GuardedZScoreMR(z_tight, block_counter_30m=9.0, block_counter_60m=12.0)
+
+    def _v_nb1() -> Any:
+        return GuardedFastSnap(vsnap_nb1, block_counter_15m=5.0, block_counter_30m=8.0)
+
+    def _v_2sa() -> Any:
+        return SmartExitFastSnap(vsnap_2s_a, stage1_arm=2.20, stage1_sl_offset=0.90)
+
+    def _v_2sb() -> Any:
+        return SmartExitFastSnap(vsnap_2s_b, stage1_arm=2.40, stage1_sl_offset=0.80)
+
+    def _v_p24() -> Any:
+        return SmartExitFastSnap(vsnap_p24, partial_arm=2.40, partial_runner_sl_offset=0.60)
+
+    def _v_p26() -> Any:
+        return SmartExitFastSnap(vsnap_p26, partial_arm=2.60, partial_runner_sl_offset=0.60)
+
+    def _v_p30() -> Any:
+        return SmartExitFastSnap(vsnap_p30, partial_arm=3.00, partial_runner_sl_offset=0.60)
+
+    def _v_p26_na() -> Any:
+        return SmartExitFastSnap(vsnap_p26_noadd, partial_arm=2.60, partial_runner_sl_offset=0.60)
+
+    return [
+        # 1) Baseline vs Proven AW_V4_COORD_NB1 Control
+        ("AW_V3_SHIPPED_BASE", _aw_v3()),
+        ("AW_V4_COORD_NB1", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_nb1, macro_factory=_macro_sess, zscore_factory=_z_safe)),
+        # 2) Fix A Solo — VSNAP6 Exit Convexity (2-Stage BE & 50% Partial + Wide Runner Plateau!)
+        ("VSNAP6_NB1_CTRL", _v_nb1()),
+        ("VSNAP6_2STAGE_A", _v_2sa()),
+        ("VSNAP6_2STAGE_B", _v_2sb()),
+        ("VSNAP6_PARTIAL_24", _v_p24()),
+        ("VSNAP6_PARTIAL_26", _v_p26()),
+        ("VSNAP6_PARTIAL_30", _v_p30()),
+        ("VSNAP6_P26_NOADD", _v_p26_na()),
+        # 3) Fix B Solo — Tight-SL 60m-Aligned Donchian Trend-Rider (3-point plateau: 12/16/20 bars!)
+        ("DC_SAFE_12_M60", DonchianTrendRider(dc12_safe)),
+        ("DC_SAFE_16_M60", DonchianTrendRider(dc16_safe)),
+        ("DC_SAFE_20_M60", DonchianTrendRider(dc20_safe)),
+        # 4) Full Coordinated AW_V4 Portfolios
+        ("AW_V4_2STAGE_A", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_2sa, macro_factory=_macro_sess, zscore_factory=_z_safe)),
+        ("AW_V4_PARTIAL_26", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_p26, macro_factory=_macro_sess, zscore_factory=_z_safe)),
+        ("AW_V4_P26_NOADD", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_p26_na, macro_factory=_macro_sess, zscore_factory=_z_safe)),
+        ("AW_V4_NB1_DC12", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_nb1, macro_factory=_macro_sess, zscore_factory=_z_safe, trend_factory=lambda: DonchianTrendRider(dc12_safe))),
+        ("AW_V4_NB1_DC16", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_nb1, macro_factory=_macro_sess, zscore_factory=_z_safe, trend_factory=lambda: DonchianTrendRider(dc16_safe))),
+        ("AW_V4_PART26_DC12", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_p26, macro_factory=_macro_sess, zscore_factory=_z_safe, trend_factory=lambda: DonchianTrendRider(dc12_safe))),
+        ("AW_V4_PART26_DC16", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_p26, macro_factory=_macro_sess, zscore_factory=_z_safe, trend_factory=lambda: DonchianTrendRider(dc16_safe))),
+    ]
+
+
 def _print_engine_day_matrix(
     model_name: str,
     waves: list[dict[str, Any]],
@@ -1372,6 +1682,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--logs-dir", default="logs")
     parser.add_argument("--phase2", action="store_true", help="Run Phase-2 stability, Bug #2B/#3/#5 fixes & day-by-day report")
     parser.add_argument("--phase3", action="store_true", help="Run Phase-3 Clean Final Selection (Proven AW_V4 Core + 24h Trend-Rider Shootout)")
+    parser.add_argument("--phase4", action="store_true", help="Run Phase-4 Zero-Overfit Convexity Fix (50%-Partial/2-Stage BE + Tight-SL 60m Donchian Plateau)")
     parser.add_argument("--trades", default="", help="Optional model name to print full LAST_NIGHT trade log for")
     parser.add_argument("--mock", action="store_true", help="Run fast synthetic smoke test")
     args = parser.parse_args(argv)
@@ -1436,7 +1747,9 @@ def main(argv: list[str] | None = None) -> int:
             f"{m['open']:.2f}->{m['close']:.2f} (net {chg:+7.2f}, lo..hi {m['lo']:.2f}..{m['hi']:.2f}, rng=${rng:.2f})"
         )
 
-    if args.phase3:
+    if args.phase4:
+        cands = build_phase4_candidates()
+    elif args.phase3:
         cands = build_phase3_candidates()
     elif args.phase2:
         cands = build_phase2_candidates()
