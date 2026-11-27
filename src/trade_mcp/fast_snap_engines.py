@@ -110,6 +110,8 @@ class FastSnapConfig:
     # Causal HTF counter-trend guard (0.0 = disabled)
     block_counter_15m: float = 0.0
     block_counter_30m: float = 0.0
+    block_counter_60m: float = 0.0
+    block_counter_120m: float = 0.0
 
     # Causal 50% partial profit banking + wide free runner (0.0 = disabled)
     partial_arm_price: float = 0.0
@@ -126,13 +128,16 @@ class FastSnapEngine:
     cfg: FastSnapConfig = field(default_factory=FastSnapConfig)
     initial_capital_usd: float = 1000.0
 
-    # 1-second causal history (up to 45 minutes = 2700s)
+    # 1-second causal history (up to 45 minutes = 2700s) + 1-minute downsampled history (up to 150m = 2.5h)
     _sec_hist: deque[tuple[int, float, float, float]] = field(default_factory=lambda: deque(maxlen=2800))
     _cur_sec: list[Any] | None = None  # [sec, mid, high_mid, low_mid]
+    _min_hist: deque[tuple[int, float]] = field(default_factory=lambda: deque(maxlen=150))
+    _cur_min: list[Any] | None = None  # [bar_min, sec, mid]
     _prev_ts: float | None = None
     _prev_mid: float = 0.0
     _teleport_block_until: float = 0.0
     teleport_blocks: int = 0
+    signals_blocked_htf: int = 0
     _htf_seed: list[tuple[int, float]] = field(default_factory=list)
 
     # Micro-pullback state machine
@@ -151,10 +156,13 @@ class FastSnapEngine:
     def reset(self) -> None:
         self._sec_hist.clear()
         self._cur_sec = None
+        self._min_hist.clear()
+        self._cur_min = None
         self._prev_ts = None
         self._prev_mid = 0.0
         self._teleport_block_until = 0.0
         self.teleport_blocks = 0
+        self.signals_blocked_htf = 0
         self._htf_seed.clear()
         self._pb_arm = None
         self.pending = None
@@ -175,11 +183,14 @@ class FastSnapEngine:
 
     def _update_sec_hist(self, ts: float, mid: float) -> None:
         sec = int(ts)
+        bar_min = sec // 60
         if self._prev_ts is not None and (ts - self._prev_ts) > 120.0:
             # Discontinuous file gap: reset rolling buffers so cross-gap ghosts cannot fire
             self._sec_hist.clear()
+            self._min_hist.clear()
             self._htf_seed.clear()
             self._cur_sec = [sec, mid, mid, mid]
+            self._cur_min = [bar_min, sec, mid]
             self._pb_arm = None
             self._prev_ts = ts
             return
@@ -195,20 +206,41 @@ class FastSnapEngine:
                 self._cur_sec[2] = mid
             if mid < self._cur_sec[3]:
                 self._cur_sec[3] = mid
+        if self._cur_min is None:
+            self._cur_min = [bar_min, sec, mid]
+        elif bar_min > int(self._cur_min[0]):
+            self._min_hist.append((int(self._cur_min[1]), float(self._cur_min[2])))
+            self._cur_min = [bar_min, sec, mid]
+        else:
+            self._cur_min[1] = sec
+            self._cur_min[2] = mid
 
     def seed_htf_bars(self, bars: list[dict[str, float]]) -> int:
-        """Warm up causal 15m/30m HTF macro context from closed M1 bars without altering 1s fast windows."""
+        """Warm up causal 15m/30m/60m/120m HTF macro context from closed M1 bars without altering 1s fast windows."""
         pts: list[tuple[int, float]] = []
         for b in bars:
             bar_id = int(float(b.get("bar_id", 0.0)))
             pts.append((bar_id * 60 + 59, float(b["c"])))
         pts.sort(key=lambda x: x[0])
-        self._htf_seed = pts[-60:]
+        self._htf_seed = pts[-125:]
         return len(self._htf_seed)
 
     def _htf_net_move(self, sec: int, mid: float, win_sec: int) -> float:
-        """Causal net mid move over [sec - win_sec, sec] using 1s history (falling back to M1 seed at live start)."""
+        """Causal net mid move over [sec - win_sec, sec] using 1s/1m history (falling back to M1 seed at live start)."""
         cut = sec - win_sec
+        if win_sec > 2400:
+            if self._min_hist and (not self._htf_seed or self._min_hist[0][0] <= cut):
+                for s_ts, px in self._min_hist:
+                    if s_ts >= cut:
+                        return mid - px
+                return 0.0
+            for s_ts, px in self._htf_seed:
+                if s_ts >= cut:
+                    return mid - px
+            for s_ts, px in self._min_hist:
+                if s_ts >= cut:
+                    return mid - px
+            return 0.0
         if self._sec_hist and (not self._htf_seed or self._sec_hist[0][0] <= cut):
             for row in self._sec_hist:
                 if row[0] >= cut:
@@ -782,23 +814,48 @@ class FastSnapEngine:
         # 3) Flat: check causal signal
         if self.pending is None and ts >= self.cooldown_until and ts >= self._teleport_block_until:
             side, sl_dist, speed = self._detect_signal(ts, mid, spread)
-            if side is not None and (self.cfg.block_counter_15m > 0.0 or self.cfg.block_counter_30m > 0.0):
+            if side is not None and (
+                self.cfg.block_counter_15m > 0.0
+                or self.cfg.block_counter_30m > 0.0
+                or self.cfg.block_counter_60m > 0.0
+                or self.cfg.block_counter_120m > 0.0
+            ):
                 m15 = self._htf_net_move(sec, mid, 900) if self.cfg.block_counter_15m > 0.0 else 0.0
                 m30 = self._htf_net_move(sec, mid, 1800) if self.cfg.block_counter_30m > 0.0 else 0.0
+                m60 = self._htf_net_move(sec, mid, 3600) if self.cfg.block_counter_60m > 0.0 else 0.0
+                m120 = self._htf_net_move(sec, mid, 7200) if self.cfg.block_counter_120m > 0.0 else 0.0
                 blocked = (
-                    self.cfg.block_counter_15m > 0.0
-                    and (
-                        (side == "sell" and m15 >= self.cfg.block_counter_15m)
-                        or (side == "buy" and m15 <= -self.cfg.block_counter_15m)
+                    (
+                        self.cfg.block_counter_15m > 0.0
+                        and (
+                            (side == "sell" and m15 >= self.cfg.block_counter_15m)
+                            or (side == "buy" and m15 <= -self.cfg.block_counter_15m)
+                        )
                     )
-                ) or (
-                    self.cfg.block_counter_30m > 0.0
-                    and (
-                        (side == "sell" and m30 >= self.cfg.block_counter_30m)
-                        or (side == "buy" and m30 <= -self.cfg.block_counter_30m)
+                    or (
+                        self.cfg.block_counter_30m > 0.0
+                        and (
+                            (side == "sell" and m30 >= self.cfg.block_counter_30m)
+                            or (side == "buy" and m30 <= -self.cfg.block_counter_30m)
+                        )
+                    )
+                    or (
+                        self.cfg.block_counter_60m > 0.0
+                        and (
+                            (side == "sell" and m60 >= self.cfg.block_counter_60m)
+                            or (side == "buy" and m60 <= -self.cfg.block_counter_60m)
+                        )
+                    )
+                    or (
+                        self.cfg.block_counter_120m > 0.0
+                        and (
+                            (side == "sell" and m120 >= self.cfg.block_counter_120m)
+                            or (side == "buy" and m120 <= -self.cfg.block_counter_120m)
+                        )
                     )
                 )
                 if blocked:
+                    self.signals_blocked_htf += 1
                     side = None
             if side is not None:
                 self.pending = {

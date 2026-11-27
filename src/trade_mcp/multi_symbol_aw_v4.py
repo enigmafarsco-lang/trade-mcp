@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -194,6 +195,7 @@ class NormalizedAllWeatherV4:
     reopen_warmup_sec: float = 120.0
     max_single_tick_jump_norm: float = 0.0
     teleport_cooldown_sec: float = 90.0
+    suite_mutator: Callable[[AllWeatherPaperSuite], None] | None = None
 
     suite: AllWeatherPaperSuite = field(init=False)
     waves_closed: list[dict[str, Any]] = field(default_factory=list)
@@ -227,6 +229,8 @@ class NormalizedAllWeatherV4:
         if self.active_hours_srv is not None:
             self.suite.calm_engine.cfg.active_server_hours = self.active_hours_srv
             self.suite.macro_engine.cfg.active_server_hours = self.active_hours_srv
+        if self.suite_mutator is not None:
+            self.suite_mutator(self.suite)
 
     def _init_suite(self) -> None:
         self.suite = AllWeatherPaperSuite(

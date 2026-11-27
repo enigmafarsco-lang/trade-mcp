@@ -299,3 +299,86 @@ def test_audit_multi_symbol_waves_mock_cli_runs_cleanly(capsys) -> None:
     assert "XAGUSD_i" in out
     assert "USDJPY_i" in out
     assert "REJECT (SPREAD_HEAVY / DEAD RANGE)" in out
+
+
+def test_fast_snap_and_macro_htf_60m_counter_trend_guards() -> None:
+    """Verify causal 60m HTF guards block dead-cat counter-trend bounces even after 15m/30m decay."""
+    from trade_mcp.all_weather_paper import AllWeatherPaperSuite
+
+    # Build a synthetic 52m timeline:
+    # - Minutes 0..15: steady selloff from 3662 -> 3642 (-$20)
+    # - Minutes 15..51: sideways consolidation around 3642.5 (so 15m & 30m net move ~ 0!)
+    # - Minute 51: sharp +$6.8 bounce in 25s (3642.5 -> 3649.3) -> triggers VSNAP6 BUY if only 15m/30m active,
+    #              but 60m move is still ~3649.3 - 3660.8 = -$11.5 <= -10.0, so block_counter_60m=10 blocks it!
+    base_ts = 1795788000.0  # 14:00:00
+    ticks: list[tuple[float, float, float]] = []
+    px = 3662.0
+    for sec in range(0, 900, 5):  # 0..15m drop -$20
+        px = 3662.0 - 20.0 * (sec / 900.0)
+        ticks.append((base_ts + sec, round(px - 0.15, 2), round(px + 0.15, 2)))
+    for sec in range(900, 3060, 5):  # 15m..51m flat around 3642.5
+        px = 3642.5 + 0.3 * ((sec // 30) % 2)
+        ticks.append((base_ts + sec, round(px - 0.15, 2), round(px + 0.15, 2)))
+    # Sharp +$6.80 bounce in 25s (3642.5 -> 3649.3); 60m net move is still <= -$11.0!
+    for i in range(1, 26):
+        px = 3642.5 + 6.8 * (i / 25.0)
+        ticks.append((base_ts + 3060 + i, round(px - 0.15, 2), round(px + 0.15, 2)))
+
+    s_ctrl = AllWeatherPaperSuite(engine_version="v4", risk_multiplier=2.0)
+    s_guard = AllWeatherPaperSuite(engine_version="v4", risk_multiplier=2.0)
+    assert s_ctrl.fast_shock_engine is not None and s_guard.fast_shock_engine is not None
+    s_guard.fast_shock_engine.cfg.block_counter_60m = 10.0
+
+    for ts, b, a in ticks:
+        s_ctrl.fast_shock_engine.on_tick(ts=ts, bid=b, ask=a)
+        s_guard.fast_shock_engine.on_tick(ts=ts, bid=b, ask=a)
+
+    assert s_ctrl.fast_shock_engine.basket is not None or s_ctrl.fast_shock_engine.pending is not None
+    assert s_guard.fast_shock_engine.basket is None and s_guard.fast_shock_engine.pending is None
+    assert s_guard.fast_shock_engine.signals_blocked_htf >= 1
+
+    # Also verify PullbackDipEngine (MACRO_WAVE) seed_htf_bars + 60m counter-trend guard
+    s_macro = AllWeatherPaperSuite(engine_version="v4", risk_multiplier=1.0)
+    bars = [{"bar_id": float(int((base_ts - (60 - k) * 60) // 60)), "c": 3665.0 - 0.30 * k} for k in range(60)]
+    seeded = s_macro.macro_engine.seed_htf_bars(bars)
+    assert seeded == 60
+    assert s_macro.macro_engine._htf_net_move(int(base_ts), 3645.0, 3600) <= -18.0
+
+
+def test_ab_structural_risk_variants_and_mock_cli(capsys) -> None:
+    """Verify structural variant mutator preserves Leg 2+ adds and ab_test_structural_risk --mock succeeds."""
+    scripts_dir = Path(__file__).resolve().parents[1] / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    import ab_test_structural_risk as ab_sr
+
+    from trade_mcp.all_weather_paper import AllWeatherPaperSuite
+
+    # Check Fix-L1 caps Leg 1 to base leg_lot at 2x risk while keeping Leg 2+ pyramid caps intact
+    suite = AllWeatherPaperSuite(engine_version="v4", risk_multiplier=2.0)
+    assert suite.fast_shock_engine is not None
+    orig_max_leg = suite.fast_shock_engine.cfg.dyn_max_leg_lot
+    orig_max_tot = suite.fast_shock_engine.cfg.dyn_max_total_lot
+    b3 = next(v for v in ab_sr.VARIANTS if v.name == "B3_FIX_L1+HTF60")
+    ab_sr.apply_structural_variant(suite, b3)
+    assert suite.fast_shock_engine.cfg.dyn_max_l1_lot == suite.fast_shock_engine.cfg.leg_lot == 0.04
+    assert suite.fast_shock_engine.cfg.dyn_max_leg_lot == orig_max_leg
+    assert suite.fast_shock_engine.cfg.dyn_max_total_lot == orig_max_tot
+    assert suite.fast_shock_engine.cfg.block_counter_60m == 10.0
+    assert suite.macro_engine.cfg.dyn_max_l1_lot == suite.macro_engine.cfg.leg_lot
+    assert suite.macro_engine.cfg.block_counter_30m == 8.0
+    assert suite.macro_engine.cfg.block_counter_60m == 10.0
+
+    # End-to-end --mock CLI run
+    prev_allow = os.environ.get("TRADE_MCP_ALLOW_TRADING")
+    prev_paper = os.environ.get("TRADE_MCP_PAPER_TRADING")
+    try:
+        rc = ab_sr.main(["--mock", "--risk-mult", "2.0"])
+    finally:
+        _restore_trade_mcp_env(prev_allow, prev_paper)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "A0_PROD_V4" in out
+    assert "B3_FIX_L1+HTF60" in out
+    assert "SCIENTIFIC ANTI-OVERFIT VERDICT" in out
+

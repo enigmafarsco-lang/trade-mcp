@@ -314,6 +314,11 @@ class PullbackDipConfig:
     dyn_min_lock_profit: float = 0.45  # gap-proof locked SL cushion above avg_entry on dynamic adds/BE
     dyn_profit_ratchet_arm: float = 3.50  # arm % profit-lock ratchet once multi-leg avg_gain >= $X
     dyn_profit_ratchet_frac: float = 0.55  # lock this fraction of open avg_gain behind breathing room
+    # Causal HTF counter-trend guard (0.0 = disabled)
+    block_counter_15m: float = 0.0
+    block_counter_30m: float = 0.0
+    block_counter_60m: float = 0.0
+    block_counter_120m: float = 0.0
 
 
 @dataclass
@@ -323,10 +328,13 @@ class PullbackDipEngine:
     cfg: PullbackDipConfig = field(default_factory=PullbackDipConfig)
     initial_capital_usd: float = 1000.0
 
-    # O(1) rolling histories (1-second downsampled for 5m/10m trend + raw ticks for 3s bounce)
+    # O(1) rolling histories (1-second downsampled for 5m/10m trend + 1m downsampled up to 150m + raw ticks for 3s bounce)
     _ticks_3s: deque[tuple[float, float]] = field(default_factory=deque)
     _sec_hist: deque[tuple[int, float, float, float]] = field(default_factory=deque)  # (sec, hi, lo, close)
     _cur_sec: list[float] | None = None
+    _min_hist: deque[tuple[int, float]] = field(default_factory=lambda: deque(maxlen=150))
+    _cur_min: list[Any] | None = None  # [bar_min, sec, mid]
+    _htf_seed: list[tuple[int, float]] = field(default_factory=list)
     _last_tick_ts: float = 0.0
 
     pending: dict[str, Any] | None = None
@@ -342,6 +350,7 @@ class PullbackDipEngine:
     signals_blocked_session: int = 0
     signals_blocked_efficiency: int = 0
     signals_blocked_spread: int = 0
+    signals_blocked_htf: int = 0
     last_metrics: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -427,6 +436,37 @@ class PullbackDipEngine:
                 return mid - row[3]
         return 0.0
 
+    def seed_htf_bars(self, bars: list[dict[str, float]]) -> int:
+        """Warm up causal 15m/30m/60m/120m HTF context from closed M1 bars without altering fast windows."""
+        pts: list[tuple[int, float]] = []
+        for b in bars:
+            bar_id = int(float(b.get("bar_id", 0.0)))
+            pts.append((bar_id * 60 + 59, float(b["c"])))
+        pts.sort(key=lambda x: x[0])
+        self._htf_seed = pts[-125:]
+        return len(self._htf_seed)
+
+    def _htf_net_move(self, sec: int, mid: float, win_sec: int) -> float:
+        """Causal net mid move over [sec - win_sec, sec] using 1m history (falling back to M1 seed at live start)."""
+        cut = sec - win_sec
+        if win_sec <= 900 and self._sec_hist and self._sec_hist[0][0] <= cut:
+            for row in self._sec_hist:
+                if row[0] >= cut:
+                    return mid - row[3]
+            return 0.0
+        if self._min_hist and (not self._htf_seed or self._min_hist[0][0] <= cut):
+            for s_ts, px in self._min_hist:
+                if s_ts >= cut:
+                    return mid - px
+            return 0.0
+        for s_ts, px in self._htf_seed:
+            if s_ts >= cut:
+                return mid - px
+        for s_ts, px in self._min_hist:
+            if s_ts >= cut:
+                return mid - px
+        return 0.0
+
     def _trend_efficiency_15s(self, t_cut: int, ref_trend: float, mid: float) -> float:
         """Causal 15-second bar straight-line efficiency in [0, 1] over trend_window_sec."""
         path = 0.0
@@ -484,6 +524,9 @@ class PullbackDipEngine:
             self._ticks_3s.clear()
             self._sec_hist.clear()
             self._cur_sec = None
+            self._min_hist.clear()
+            self._cur_min = None
+            self._htf_seed.clear()
             self.pending = None
         self._last_tick_ts = ts
 
@@ -509,6 +552,16 @@ class PullbackDipEngine:
             if mid < self._cur_sec[2]:
                 self._cur_sec[2] = mid
             self._cur_sec[3] = mid
+
+        bar_min = sec // 60
+        if self._cur_min is None:
+            self._cur_min = [bar_min, sec, mid]
+        elif bar_min > int(self._cur_min[0]):
+            self._min_hist.append((int(self._cur_min[1]), float(self._cur_min[2])))
+            self._cur_min = [bar_min, sec, mid]
+        else:
+            self._cur_min[1] = sec
+            self._cur_min[2] = mid
 
         self.last_metrics = {
             "ts": ts,
@@ -842,16 +895,61 @@ class PullbackDipEngine:
                 if self.cfg.min_trend_efficiency > 0.0 and trend_eff < self.cfg.min_trend_efficiency:
                     self.signals_blocked_efficiency += 1
                 else:
-                    self.pending = {
-                        "kind": "open",
-                        "side": "buy" if tdir == 1 else "sell",
-                        "fill_ts": ts + self.cfg.latency_sec,
-                        "m1_label": str(m1_context.get("label", "UNKNOWN")),
-                        "trend_move": trend_move,
-                        "trend_eff": trend_eff,
-                        "pullback_depth": pullback_depth,
-                        "bounce_3s": bounce_3s,
-                    }
+                    side_cand = "buy" if tdir == 1 else "sell"
+                    htf_blocked = False
+                    if (
+                        self.cfg.block_counter_15m > 0.0
+                        or self.cfg.block_counter_30m > 0.0
+                        or self.cfg.block_counter_60m > 0.0
+                        or self.cfg.block_counter_120m > 0.0
+                    ):
+                        m15 = self._htf_net_move(sec, mid, 900) if self.cfg.block_counter_15m > 0.0 else 0.0
+                        m30 = self._htf_net_move(sec, mid, 1800) if self.cfg.block_counter_30m > 0.0 else 0.0
+                        m60 = self._htf_net_move(sec, mid, 3600) if self.cfg.block_counter_60m > 0.0 else 0.0
+                        m120 = self._htf_net_move(sec, mid, 7200) if self.cfg.block_counter_120m > 0.0 else 0.0
+                        htf_blocked = (
+                            (
+                                self.cfg.block_counter_15m > 0.0
+                                and (
+                                    (side_cand == "sell" and m15 >= self.cfg.block_counter_15m)
+                                    or (side_cand == "buy" and m15 <= -self.cfg.block_counter_15m)
+                                )
+                            )
+                            or (
+                                self.cfg.block_counter_30m > 0.0
+                                and (
+                                    (side_cand == "sell" and m30 >= self.cfg.block_counter_30m)
+                                    or (side_cand == "buy" and m30 <= -self.cfg.block_counter_30m)
+                                )
+                            )
+                            or (
+                                self.cfg.block_counter_60m > 0.0
+                                and (
+                                    (side_cand == "sell" and m60 >= self.cfg.block_counter_60m)
+                                    or (side_cand == "buy" and m60 <= -self.cfg.block_counter_60m)
+                                )
+                            )
+                            or (
+                                self.cfg.block_counter_120m > 0.0
+                                and (
+                                    (side_cand == "sell" and m120 >= self.cfg.block_counter_120m)
+                                    or (side_cand == "buy" and m120 <= -self.cfg.block_counter_120m)
+                                )
+                            )
+                        )
+                    if htf_blocked:
+                        self.signals_blocked_htf += 1
+                    else:
+                        self.pending = {
+                            "kind": "open",
+                            "side": side_cand,
+                            "fill_ts": ts + self.cfg.latency_sec,
+                            "m1_label": str(m1_context.get("label", "UNKNOWN")),
+                            "trend_move": trend_move,
+                            "trend_eff": trend_eff,
+                            "pullback_depth": pullback_depth,
+                            "bounce_3s": bounce_3s,
+                        }
 
         self._update_dd(bid, ask)
         return events

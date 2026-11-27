@@ -306,7 +306,8 @@ class AllWeatherPaperSuite:
         if closed:
             self.calm_engine.seed_closed_bars(closed[-120:])
             if self.fast_shock_engine is not None:
-                self.fast_shock_engine.seed_htf_bars(closed[-60:])
+                self.fast_shock_engine.seed_htf_bars(closed[-125:])
+            self.macro_engine.seed_htf_bars(closed[-125:])
             self.seeded_m1_bars = len(closed[-120:])
         return self.seeded_m1_bars
 
