@@ -90,7 +90,7 @@ def _write_live_report(
             {
                 "engine": k,
                 "side": p.get("side"),
-                "lot": p.get("lot"),
+                "lot": p.get("volume", p.get("lot")),
                 "entry": p.get("entry"),
                 "stop": p.get("stop"),
             }

@@ -313,4 +313,18 @@ def test_multi_symbol_wave_scanner_and_recorder_mock(capsys: pytest.CaptureFixtu
     assert "USTEC_i" in out
 
 
+def test_audit_and_fix_gold_bugs_mock(capsys: pytest.CaptureFixture[str]) -> None:
+    """Verify deduplicated Gold bug-fix audit lab runs cleanly in --mock mode (ORDERS=0)."""
+    import audit_and_fix_gold_bugs as ab
+
+    rc = ab.main(["--mock"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "GOLD FULL DEDUPLICATED BUG-FIX AUDIT" in out
+    assert "AW_V3_SHIPPED_BASE" in out
+    assert "VSNAP6_FIX12_BREATHE" in out
+    assert "CALM_M5_TREND_24H" in out
+
+
+
 
