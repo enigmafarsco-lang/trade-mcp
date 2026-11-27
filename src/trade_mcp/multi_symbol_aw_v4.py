@@ -222,9 +222,8 @@ class NormalizedAllWeatherV4:
                 self.suite.fast_shock_engine.cfg.partial_arm_price = 0.0
             if self.active_hours_srv is not None:
                 self.suite.fast_shock_engine.cfg.active_server_hours = self.active_hours_srv
-            if self.max_single_tick_jump_norm > 0.0:
-                self.suite.fast_shock_engine.cfg.max_single_tick_jump_price = float(self.max_single_tick_jump_norm)
-                self.suite.fast_shock_engine.cfg.teleport_cooldown_sec = float(self.teleport_cooldown_sec)
+            self.suite.fast_shock_engine.cfg.max_single_tick_jump_price = float(self.max_single_tick_jump_norm)
+            self.suite.fast_shock_engine.cfg.teleport_cooldown_sec = float(self.teleport_cooldown_sec)
         if self.active_hours_srv is not None:
             self.suite.calm_engine.cfg.active_server_hours = self.active_hours_srv
             self.suite.macro_engine.cfg.active_server_hours = self.active_hours_srv

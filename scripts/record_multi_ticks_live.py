@@ -325,7 +325,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--wave-top3",
         action="store_true",
-        help="Record ONLY the 3 spread-viable non-Gold Alpari wave candidates (NAS100_i XAGUSD_i GER40_i)",
+        help="Record ONLY the top 3 spread-viable non-Gold Alpari wave candidates (NAS100_i XAGUSD_i GER40_i)",
+    )
+    parser.add_argument(
+        "--wave-top4",
+        action="store_true",
+        help="Record ONLY the top 4 spread-viable non-Gold Alpari wave candidates (NAS100_i GER40_i US500_i XAGUSD_i)",
     )
     parser.add_argument("--symbols", nargs="*", default=[], help="Exact Alpari symbols to record (e.g. NAS100_i XAGUSD_i GER40_i)")
     parser.add_argument("--include-gold", action="store_true", help="Include XAUUSD_i in auto-discovery (off by default if Gold already runs)")
@@ -450,6 +455,10 @@ def main(argv: list[str] | None = None) -> int:
             # 2) MULTI-SYMBOL RECORDING MODE
             if args.symbols:
                 target_symbols = [s.strip() for s in args.symbols if s.strip()]
+            elif args.wave_top4:
+                target_symbols = ["NAS100_i", "GER40_i", "US500_i", "XAGUSD_i"]
+                if args.include_gold:
+                    target_symbols.insert(0, "XAUUSD_i")
             elif args.wave_top3:
                 target_symbols = ["NAS100_i", "XAGUSD_i", "GER40_i"]
                 if args.include_gold:

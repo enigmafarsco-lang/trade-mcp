@@ -77,6 +77,8 @@ def _build_fast_shock6_cfg(
             trail_pullback_price=4.20,
             max_hold_sec=1800.0,
             runner_max_hold_sec=2400.0,
+            max_single_tick_jump_price=4.50,
+            teleport_cooldown_sec=90.0,
         )
     return cfg
 

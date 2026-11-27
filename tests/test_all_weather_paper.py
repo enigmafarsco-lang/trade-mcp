@@ -548,6 +548,16 @@ def test_aw_v4_partial_bank_htf_zscore_and_coord_bugs_fixed() -> None:
     assert z_v3.basket is not None and z_v3.basket["side"] == "sell"  # unguarded V3 fades rally
     assert z_v4.basket is None  # guarded V4 refuses to short a +$14 macro rally!
 
+    # 6) Production V4 anti-teleport bad-tick guard active by default (V3 remains 0.0)
+    suite_v4 = AllWeatherPaperSuite(engine_version="v4")
+    suite_v3 = AllWeatherPaperSuite(engine_version="v3")
+    assert suite_v4.fast_shock_engine is not None
+    assert suite_v3.fast_shock_engine is not None
+    assert suite_v4.fast_shock_engine.cfg.max_single_tick_jump_price == 4.50
+    assert suite_v4.fast_shock_engine.cfg.teleport_cooldown_sec == 90.0
+    assert suite_v3.fast_shock_engine.cfg.max_single_tick_jump_price == 0.0
+
+
 
 
 
