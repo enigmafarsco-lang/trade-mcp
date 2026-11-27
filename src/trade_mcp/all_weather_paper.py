@@ -1,13 +1,13 @@
-"""All-Weather Paper Trading Suite (COMBO_AW_V3_24H, ORDERS=0).
+"""All-Weather Paper Trading Suite (COMBO_AW_V4_24H, ORDERS=0).
 
-Combines the 4 causally validated 24-hour engines into ONE unified MetaTrader-style paper account:
-  1. SHOCK10_DYN_RUN  (24H News / >=$10 per 60s shock dynamic runner — 100% WR, 0 DD on 363k ticks)
-  2. VSNAP6_24H       (24H Fast sharp $6+/60s burst & night breakout runner — +$67.42 total, +$23.33 night!)
-  3. MACRO_WAVE_DYN   (London/NY macro pullback-continuation dynamic pyramid — +$102.10, PF 3.95, 6.22x R/DD)
-  4. ZSCORE_MR_24H    (24H GitHub TickRobust Z-Score MR with adaptive night regime — 100% WR, 0 DD, +$7.97 today!)
+Combines the 4 causally validated & bug-fixed 24-hour engines into ONE unified MetaTrader-style paper account:
+  1. SHOCK10_DYN_RUN  (24H News / >=$10 per 60s shock dynamic runner; coordinated with VSNAP6 to prevent duplicate peak entries)
+  2. VSNAP6_24H       (24H Fast $6+/60s burst runner with 15m/30m HTF counter-trend guard + 50% partial profit bank @ +$2.60 & wide free runner)
+  3. MACRO_WAVE_DYN   (London/NY macro pullback-continuation dynamic pyramid)
+  4. ZSCORE_MR_24H    (24H TickRobust Z-Score MR with tight $3.20..$4.80 SL + 30m/60m macro breakout guard)
 
-Legacy COMBO_AW_V2 (`calm_profile="CALM_M1_PRO_SESS"`, `fast_shock_24h=False`) remains supported
-for apples-to-apples historical A/B benchmarks.
+Legacy COMBO_AW_V3 (`engine_version="v3"`) and COMBO_AW_V2 (`calm_profile="CALM_M1_PRO_SESS"`, `fast_shock_24h=False`)
+remain supported for apples-to-apples historical A/B benchmarks.
 
 Strictly read-only / paper-only (`paper_only=True`, `orders_submitted=0`).
 """
@@ -35,11 +35,17 @@ def _build_macro_wave_cfg(*, leg_lot: float = 0.01, max_legs: int = 6) -> Any:
     return by_name["MACRO_WAVE_DYN"]
 
 
-def _build_fast_shock6_cfg(*, leg_lot: float = 0.02, all_24h: bool = True, varlot: bool = False) -> Any:
+def _build_fast_shock6_cfg(
+    *,
+    leg_lot: float = 0.02,
+    all_24h: bool = True,
+    varlot: bool = False,
+    engine_version: str = "v4",
+) -> Any:
     by_name = dict(fast_snap_profiles(base_lot=leg_lot))
     cfg = by_name["VSNAP_SHOCK_6"]
     if all_24h and varlot:
-        return replace(
+        cfg = replace(
             cfg,
             name="VSNAP6_24H_VARLOT",
             active_server_hours=None,
@@ -51,12 +57,54 @@ def _build_fast_shock6_cfg(*, leg_lot: float = 0.02, all_24h: bool = True, varlo
             dyn_max_leg_lot=0.12,
             dyn_max_total_lot=0.45,
         )
-    if all_24h:
-        return replace(cfg, name="VSNAP6_24H", active_server_hours=None)
+    elif all_24h:
+        cfg = replace(cfg, name="VSNAP6_24H", active_server_hours=None)
+    if engine_version == "v4":
+        # Bug #1 (causal 15m/30m HTF counter-trend guard) + Bug #2 (50% partial profit bank @ +$2.60 + wide free runner)
+        cfg = replace(
+            cfg,
+            block_counter_15m=5.0,
+            block_counter_30m=8.0,
+            partial_arm_price=2.60,
+            partial_take_frac=0.50,
+            partial_runner_sl_offset=0.60,
+            be_arm_price=4.50,
+            be_lock_profit=0.30,
+            ratchet_arm_price=6.00,
+            ratchet_frac=0.50,
+            ratchet_breathing_room=3.00,
+            trail_arm_price=8.00,
+            trail_pullback_price=4.20,
+            max_hold_sec=1800.0,
+            runner_max_hold_sec=2400.0,
+        )
     return cfg
 
 
-def _build_zscore_mr_24h_cfg(*, leg_lot: float = 0.03) -> TickRobustZScoreConfig:
+def _build_zscore_mr_24h_cfg(*, leg_lot: float = 0.03, engine_version: str = "v4") -> TickRobustZScoreConfig:
+    if engine_version == "v4":
+        # Bug #4: tight SL ($3.20..$4.80) + causal 30m/60m macro breakout guard
+        return TickRobustZScoreConfig(
+            name="ZSCORE_MR_24H",
+            bar_sec=60,
+            entry_z=2.2,
+            adx_max=22.0,
+            min_sd_cost_mult=2.5,
+            min_tp_cost_mult=3.5,
+            min_sl_price=3.20,
+            max_sl_price=4.80,
+            leg_lot=leg_lot,
+            variable_lot_by_z=True,
+            max_lot=0.06,
+            night_adaptive=True,
+            night_entry_z=2.15,
+            night_adx_max=24.0,
+            night_sd_cost_mult=2.2,
+            night_tp_cost_mult=3.2,
+            block_counter_30m=9.0,
+            block_counter_60m=12.0,
+            active_server_hours=None,
+        )
     return TickRobustZScoreConfig(
         name="ZSCORE_MR_24H",
         bar_sec=60,
@@ -110,7 +158,7 @@ ENGINE_LABELS: dict[str, str] = {
 
 @dataclass
 class AllWeatherPaperSuite:
-    """Unified MetaTrader-style paper account driving COMBO_AW_V3_24H (ORDERS=0)."""
+    """Unified MetaTrader-style paper account driving COMBO_AW_V4_24H (ORDERS=0)."""
 
     initial_capital_usd: float = 1000.0
     news_leg_lot: float = 0.01
@@ -121,6 +169,7 @@ class AllWeatherPaperSuite:
     fast_shock_24h: bool = True
     fast_shock_varlot: bool = False
     risk_multiplier: float = 1.0
+    engine_version: str = "v4"  # "v4" (bug-fixed 10x R/DD default) | "v3" (legacy baseline)
 
     shock_engine: S1VelocitySurferEngine = field(init=False)
     fast_shock_engine: FastSnapEngine | None = field(init=False)
@@ -142,6 +191,8 @@ class AllWeatherPaperSuite:
         rm = float(self.risk_multiplier)
         if not math.isfinite(rm) or rm < 0.25 or rm > 5.0:
             raise ValueError(f"risk_multiplier must be in [0.25, 5.0], got {self.risk_multiplier!r}")
+        if self.engine_version not in ("v4", "v3"):
+            raise ValueError(f"engine_version must be 'v4' or 'v3', got {self.engine_version!r}")
         self.risk_multiplier = rm
         self.peak_balance_usd = float(self.initial_capital_usd)
         self.peak_equity_usd = float(self.initial_capital_usd)
@@ -172,6 +223,7 @@ class AllWeatherPaperSuite:
                         leg_lot=self.calm_leg_lot,
                         all_24h=self.fast_shock_24h,
                         varlot=self.fast_shock_varlot,
+                        engine_version=self.engine_version,
                     ),
                     rm,
                 ),
@@ -186,7 +238,13 @@ class AllWeatherPaperSuite:
         )
         if self.calm_profile == "ZSCORE_MR_24H":
             self.calm_engine = TickRobustZScoreEngine(
-                cfg=_scale_cfg_lots(_build_zscore_mr_24h_cfg(leg_lot=max(0.03, self.calm_leg_lot)), rm),
+                cfg=_scale_cfg_lots(
+                    _build_zscore_mr_24h_cfg(
+                        leg_lot=max(0.03, self.calm_leg_lot),
+                        engine_version=self.engine_version,
+                    ),
+                    rm,
+                ),
                 initial_capital_usd=self.initial_capital_usd,
             )
         else:
@@ -224,7 +282,7 @@ class AllWeatherPaperSuite:
         server_now_ts: float,
         spread: float = 0.36,
     ) -> int:
-        """Warm up CALM_M1_PRO_SESS with strictly closed historical M1 bars at live startup."""
+        """Warm up ZSCORE_MR / CALM and VSNAP6 HTF macro context with strictly closed MT5 M1 bars."""
         cur_bar_id = int(server_now_ts // 60)
         half_sp = max(0.0, float(spread)) * 0.5
         closed: list[dict[str, float]] = []
@@ -243,6 +301,8 @@ class AllWeatherPaperSuite:
             })
         if closed:
             self.calm_engine.seed_closed_bars(closed[-120:])
+            if self.fast_shock_engine is not None:
+                self.fast_shock_engine.seed_htf_bars(closed[-60:])
             self.seeded_m1_bars = len(closed[-120:])
         return self.seeded_m1_bars
 
@@ -283,12 +343,32 @@ class AllWeatherPaperSuite:
         m1_context: dict[str, Any],
     ) -> list[dict[str, Any]]:
         out_events: list[dict[str, Any]] = []
-        for eng_name in self.engine_order:
+        coord_v4 = self.engine_version == "v4" and self.fast_shock_engine is not None
+        tick_order = (
+            [n for n in self.engine_order if n != "SHOCK10_DYN_RUN"] + ["SHOCK10_DYN_RUN"]
+            if coord_v4
+            else self.engine_order
+        )
+        for eng_name in tick_order:
             eng = self.engines[eng_name]
+            had_shock_pend = (
+                coord_v4 and eng_name == "SHOCK10_DYN_RUN" and self.shock_engine.pending_order is not None
+            )
             if isinstance(eng, (FastSnapEngine, TickRobustZScoreEngine)):
                 evs = eng.on_tick(ts=ts, bid=bid, ask=ask)
             else:
                 evs = eng.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_context)
+            # Bug #3 Fix: prevent SHOCK10 from piling into the peak of a spike VSNAP6 is already riding
+            if (
+                coord_v4
+                and eng_name == "SHOCK10_DYN_RUN"
+                and (not had_shock_pend)
+                and self.shock_engine.pending_order is not None
+                and self.shock_engine.pending_order.get("kind") == "open"
+                and self.fast_shock_engine is not None
+                and self.fast_shock_engine.basket is not None
+            ):
+                self.shock_engine.pending_order = None
             for ev in evs:
                 ev_copy = dict(ev)
                 ev_copy["engine"] = eng_name
@@ -341,6 +421,8 @@ class AllWeatherPaperSuite:
                 "avg_entry": round(float(b["avg_entry"]), 2),
                 "stop": round(float(b["stop"]), 2),
                 "stop_locked": bool(b.get("stop_locked", False)),
+                "partial_taken": bool(b.get("partial_taken", False)),
+                "banked_pnl_usd": round(float(b.get("banked_pnl_usd", 0.0)), 2),
                 "pnl_usd": round(float(eng.unrealized_pnl_usd(bid, ask)), 2),
                 "opened_utc": _iso_utc(float(b["opened_at"])),
             })
@@ -357,7 +439,8 @@ class AllWeatherPaperSuite:
         gl = abs(sum(float(t["net_pnl_usd"]) for t in losses))
         pf = round(gw / gl, 2) if gl > 0 else (99.0 if gw > 0 else None)
         if self.calm_profile == "ZSCORE_MR_24H" and self.enable_fast_shock6 and self.fast_shock_24h:
-            port_name = "COMBO_AW_V3_24H_VARLOT" if self.fast_shock_varlot else "COMBO_AW_V3_24H"
+            ver_tag = "V4" if self.engine_version == "v4" else "V3"
+            port_name = f"COMBO_AW_{ver_tag}_24H_VARLOT" if self.fast_shock_varlot else f"COMBO_AW_{ver_tag}_24H"
         elif self.enable_fast_shock6:
             port_name = "COMBO_AW_V2"
         else:

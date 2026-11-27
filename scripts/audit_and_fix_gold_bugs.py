@@ -1078,7 +1078,7 @@ def build_candidates() -> list[tuple[str, Any]]:
     shock_cfg = build_s1_profile_config("v2.6_SHOCK10_DYN", leg_lot=0.01, max_legs=6)
 
     def _aw_v3() -> Any:
-        return SimpleAdapter(lambda: AllWeatherPaperSuite(), "suite", "SUITE")
+        return SimpleAdapter(lambda: AllWeatherPaperSuite(engine_version="v3"), "suite", "SUITE")
 
     def _shock10() -> Any:
         return SimpleAdapter(lambda: S1VelocitySurferEngine(cfg=shock_cfg), "m1", "SHOCK10")
@@ -1233,7 +1233,7 @@ def build_phase2_candidates() -> list[tuple[str, Any]]:
     )
 
     def _aw_v3() -> Any:
-        return SimpleAdapter(lambda: AllWeatherPaperSuite(), "suite", "SUITE")
+        return SimpleAdapter(lambda: AllWeatherPaperSuite(engine_version="v3"), "suite", "SUITE")
 
     def _shock10() -> Any:
         return SimpleAdapter(lambda: S1VelocitySurferEngine(cfg=shock_cfg), "m1", "SHOCK10")
@@ -1364,7 +1364,7 @@ def build_phase3_candidates() -> list[tuple[str, Any]]:
     dc12_e42_cfg = DonchianTrendConfig(bar_sec=300, donchian_bars=12, leg_lot=0.02, max_legs=3, min_atr_price=2.20, min_trend_eff=0.42)
 
     def _aw_v3() -> Any:
-        return SimpleAdapter(lambda: AllWeatherPaperSuite(), "suite", "SUITE")
+        return SimpleAdapter(lambda: AllWeatherPaperSuite(engine_version="v3"), "suite", "SUITE")
 
     def _shock10() -> Any:
         return SimpleAdapter(lambda: S1VelocitySurferEngine(cfg=shock_cfg), "m1", "SHOCK10")
@@ -1532,7 +1532,7 @@ def build_phase4_candidates() -> list[tuple[str, Any]]:
     dc20_safe = _dc_safe_cfg(20)
 
     def _aw_v3() -> Any:
-        return SimpleAdapter(lambda: AllWeatherPaperSuite(), "suite", "SUITE")
+        return SimpleAdapter(lambda: AllWeatherPaperSuite(engine_version="v3"), "suite", "SUITE")
 
     def _shock10() -> Any:
         return SimpleAdapter(lambda: S1VelocitySurferEngine(cfg=shock_cfg), "m1", "SHOCK10")
@@ -1591,6 +1591,17 @@ def build_phase4_candidates() -> list[tuple[str, Any]]:
     ]
 
 
+def build_prod_verification_candidates() -> list[tuple[str, Any]]:
+    """Fast production verification: Legacy AW_V3 vs Shipped Production AW_V4 (1x & 2x) vs Phase-4 Prototype."""
+    p4_by_name = dict(build_phase4_candidates())
+    return [
+        ("AW_V3_SHIPPED_BASE", SimpleAdapter(lambda: AllWeatherPaperSuite(engine_version="v3"), "suite", "SUITE")),
+        ("AW_V4_PROD_1X", SimpleAdapter(lambda: AllWeatherPaperSuite(engine_version="v4", risk_multiplier=1.0), "suite", "SUITE")),
+        ("AW_V4_PROD_2X", SimpleAdapter(lambda: AllWeatherPaperSuite(engine_version="v4", risk_multiplier=2.0), "suite", "SUITE")),
+        ("AW_V4_PARTIAL_26", p4_by_name["AW_V4_PARTIAL_26"]),
+    ]
+
+
 def _print_engine_day_matrix(
     model_name: str,
     waves: list[dict[str, Any]],
@@ -1599,7 +1610,7 @@ def _print_engine_day_matrix(
     *,
     is_mock: bool,
 ) -> None:
-    engines_order = ["VSNAP6", "SHOCK10", "MACRO_WAVE", "ZSCORE_MR", "M5_TREND", "DC_TREND"]
+    engines_order = ["VSNAP6", "FAST_SHOCK6", "SHOCK10", "NEWS_SHOCK", "MACRO_WAVE", "ZSCORE_MR", "M5_TREND", "DC_TREND"]
     present_engs = [e for e in engines_order if any(w.get("_engine") == e for w in waves)]
     extra = sorted({str(w.get("_engine", "OTHER")) for w in waves} - set(present_engs))
     present_engs.extend(extra)
@@ -1683,6 +1694,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--phase2", action="store_true", help="Run Phase-2 stability, Bug #2B/#3/#5 fixes & day-by-day report")
     parser.add_argument("--phase3", action="store_true", help="Run Phase-3 Clean Final Selection (Proven AW_V4 Core + 24h Trend-Rider Shootout)")
     parser.add_argument("--phase4", action="store_true", help="Run Phase-4 Zero-Overfit Convexity Fix (50%-Partial/2-Stage BE + Tight-SL 60m Donchian Plateau)")
+    parser.add_argument("--verify-prod", action="store_true", help="Fast verification of shipped production COMBO_AW_V4_24H (1x & 2x) vs AW_V3 & Phase-4 prototype")
     parser.add_argument("--trades", default="", help="Optional model name to print full LAST_NIGHT trade log for")
     parser.add_argument("--mock", action="store_true", help="Run fast synthetic smoke test")
     args = parser.parse_args(argv)
@@ -1747,7 +1759,9 @@ def main(argv: list[str] | None = None) -> int:
             f"{m['open']:.2f}->{m['close']:.2f} (net {chg:+7.2f}, lo..hi {m['lo']:.2f}..{m['hi']:.2f}, rng=${rng:.2f})"
         )
 
-    if args.phase4:
+    if args.verify_prod:
+        cands = build_prod_verification_candidates()
+    elif args.phase4:
         cands = build_phase4_candidates()
     elif args.phase3:
         cands = build_phase3_candidates()

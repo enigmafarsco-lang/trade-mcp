@@ -21,6 +21,18 @@ from trade_mcp.all_weather_paper import AllWeatherPaperSuite  # noqa: E402
 from trade_mcp.s1_dual_radar import make_synthetic_dual_session  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _restore_trade_mcp_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent paper-mode CLI tests from leaking TRADE_MCP_* env vars into later test modules."""
+    import os
+
+    for key in ("TRADE_MCP_ALLOW_TRADING", "TRADE_MCP_PAPER_TRADING"):
+        if key in os.environ:
+            monkeypatch.setenv(key, os.environ[key])
+        else:
+            monkeypatch.delenv(key, raising=False)
+
+
 def test_all_weather_suite_seed_and_account_accounting() -> None:
     """seed_m1_bars skips forming bar, warms CALM_M1_PRO_SESS, and tracks combined Balance/Equity/Profit."""
     suite = AllWeatherPaperSuite(initial_capital_usd=1000.0)
@@ -79,8 +91,16 @@ def test_all_weather_cli_mock_replay_and_live_smoke(
     data1 = json.loads(rep_mock.read_text(encoding="utf-8"))
     assert data1["schema"] == "all_weather_pro_m1_paper_v1"
     assert data1["orders_submitted"] == 0
-    assert data1["account"]["portfolio"] == "COMBO_AW_V3_24H"
+    assert data1["account"]["portfolio"] == "COMBO_AW_V4_24H"
     assert data1["account"]["trades_count"] >= 1
+
+    # Verify legacy --engine-version v3 still produces COMBO_AW_V3_24H cleanly
+    rep_v3 = tmp_path / "reports" / "paper_live" / "aw_mock_v3.json"
+    rc1_v3 = aw_cli.main(["--mock", "--engine-version", "v3", "--capital", "1000", "--report-file", str(rep_v3)])
+    assert rc1_v3 == 0
+    capsys.readouterr()
+    data_v3 = json.loads(rep_v3.read_text(encoding="utf-8"))
+    assert data_v3["account"]["portfolio"] == "COMBO_AW_V3_24H"
 
     # 2) --replay on two JSONL files (verifies multi-file cumulative balance)
     ticks = make_synthetic_dual_session()
@@ -351,6 +371,160 @@ def test_audit_and_fix_gold_bugs_mock(capsys: pytest.CaptureFixture[str]) -> Non
     assert "VSNAP6_PARTIAL_26" in out4
     assert "DC_SAFE_16_M60" in out4
     assert "AW_V4_PARTIAL_26" in out4
+
+    rc5 = ab.main(["--mock", "--verify-prod"])
+    assert rc5 == 0
+    out5 = capsys.readouterr().out
+    assert "AW_V4_PROD_1X" in out5
+    assert "AW_V4_PROD_2X" in out5
+    assert "AW_V4_PARTIAL_26" in out5
+
+
+def test_aw_v4_partial_bank_htf_zscore_and_coord_bugs_fixed() -> None:
+    """Verify all 4 promoted AW_V4 Gold bug fixes (HTF guard, 50% partial bank, SHOCK10/VSNAP6 lock, ZScore guard)."""
+    from dataclasses import replace
+
+    from trade_mcp.all_weather_paper import _build_fast_shock6_cfg
+    from trade_mcp.fast_snap_engines import FastSnapEngine
+    from trade_mcp.quant_github_accel_lab import TickRobustZScoreConfig, TickRobustZScoreEngine
+
+    # 1) Default AW_V4 suite wires all 4 proven fixes
+    s_v4 = AllWeatherPaperSuite(initial_capital_usd=1000.0)
+    assert s_v4.engine_version == "v4"
+    assert s_v4.account_summary()["portfolio"] == "COMBO_AW_V4_24H"
+    assert s_v4.fast_shock_engine is not None
+    assert s_v4.fast_shock_engine.cfg.block_counter_15m == 5.0
+    assert s_v4.fast_shock_engine.cfg.block_counter_30m == 8.0
+    assert s_v4.fast_shock_engine.cfg.partial_arm_price == 2.60
+    assert s_v4.fast_shock_engine.cfg.partial_runner_sl_offset == 0.60
+    assert s_v4.fast_shock_engine.cfg.be_arm_price == 4.50
+    assert s_v4.calm_engine.cfg.min_sl_price == 3.20
+    assert s_v4.calm_engine.cfg.max_sl_price == 4.80
+    assert s_v4.calm_engine.cfg.block_counter_30m == 9.0
+    assert s_v4.calm_engine.cfg.block_counter_60m == 12.0
+
+    # 2) Bug #1: VSNAP6 causal 15m HTF counter-trend guard blocks counter-trend SELL after +$12 15m rally
+    cfg_v4 = replace(_build_fast_shock6_cfg(leg_lot=0.02, all_24h=True, engine_version="v4"), dynamic_sizing=False)
+    cfg_v3 = replace(_build_fast_shock6_cfg(leg_lot=0.02, all_24h=True, engine_version="v3"), dynamic_sizing=False)
+    e_guard = FastSnapEngine(cfg=cfg_v4)
+    e_raw = FastSnapEngine(cfg=cfg_v3)
+    t0 = 1764140000.0
+    # Seed 20m uptrend (+$15) via seed_htf_bars on e_guard AND feed steady climb to both
+    cur_bar = int(t0 // 60)
+    seed_bars = [{"bar_id": float(cur_bar - 20 + i), "o": 3600.0 + i * 0.75, "h": 3601.0 + i * 0.75, "l": 3599.5 + i * 0.75, "c": 3600.75 + i * 0.75} for i in range(20)]
+    assert e_guard.seed_htf_bars(seed_bars) == 20
+    # Quiet 35s plateau at 3615.00, then sharp -$5.50 / 25s counter-trend drop
+    for sec in range(35):
+        for eng in (e_guard, e_raw):
+            eng.on_tick(ts=t0 + sec, bid=3615.0, ask=3615.30)
+    for sec in range(1, 26):
+        px = 3615.0 - 0.22 * sec
+        for eng in (e_guard, e_raw):
+            eng.on_tick(ts=t0 + 35 + sec, bid=px, ask=px + 0.30)
+    assert e_raw.basket is not None or e_raw.pending is not None  # unguarded V3 jumps into counter-trend SELL
+    assert e_guard.basket is None and e_guard.pending is None  # guarded V4 cleanly blocks counter-trend trap
+
+    # 3) Bug #2: 50% Partial Profit Bank + Wide Free Runner survives entry retest & preserves penny-exact equity + 2x scaling
+    def _run_retest_runner(risk_mult: float) -> tuple[dict[str, Any], list[dict[str, Any]], float, float]:
+        suite = AllWeatherPaperSuite(initial_capital_usd=1000.0, risk_multiplier=risk_mult)
+        assert suite.fast_shock_engine is not None
+        # Disable adds for clean isolated partial+runner verification
+        suite.fast_shock_engine.cfg = replace(suite.fast_shock_engine.cfg, enable_adds=False, dynamic_sizing=False)
+        t = 1764150000.0
+        # Warm 35s flat at 3600.00
+        for s in range(35):
+            suite.on_tick(ts=t + s, bid=3600.00, ask=3600.30, m1_context={})
+        # Sharp +$5.40 / 25s upward breakout -> triggers BUY entry
+        t += 35.0
+        all_evs: list[dict[str, Any]] = []
+        for s in range(1, 27):
+            p = 3600.00 + 0.22 * s
+            all_evs.extend(suite.on_tick(ts=t + s, bid=p, ask=p + 0.30, m1_context={}))
+        t += 27.0
+        assert suite.fast_shock_engine.basket is not None
+        entry_px = float(suite.fast_shock_engine.basket["avg_entry"])
+        # Push +$2.70 above entry -> fires PARTIAL_TP with ZERO equity jump!
+        expected_eq = round(1000.0 + 2.70 * (0.02 * risk_mult) * 100.0, 2)
+        p_evs = suite.on_tick(ts=t + 1.0, bid=entry_px + 2.70, ask=entry_px + 3.00, m1_context={})
+        all_evs.extend(p_evs)
+        post_eq = suite.account_summary(entry_px + 2.70, entry_px + 3.00)["equity_usd"]
+        assert post_eq == pytest.approx(expected_eq, abs=0.01)
+        # Verify open_positions reports partial_taken + banked_pnl_usd
+        opens = suite.open_positions(entry_px + 2.70, entry_px + 3.00)
+        assert len(opens) == 1 and opens[0]["partial_taken"] is True and opens[0]["banked_pnl_usd"] > 0.0
+        # Retest back to entry - $0.35 (would have been choked out by old V3 BE=+0.30, SURVIVES runner SL=-0.60!)
+        all_evs.extend(suite.on_tick(ts=t + 5.0, bid=entry_px - 0.35, ask=entry_px - 0.05, m1_context={}))
+        assert suite.fast_shock_engine.basket is not None
+        # Second leg rally +$13.00 then $4.50 pullback to +$8.50 -> triggers p50+snap_trail_exit!
+        all_evs.extend(suite.on_tick(ts=t + 10.0, bid=entry_px + 13.00, ask=entry_px + 13.30, m1_context={}))
+        all_evs.extend(suite.on_tick(ts=t + 15.0, bid=entry_px + 8.50, ask=entry_px + 8.80, m1_context={}))
+        assert suite.fast_shock_engine.basket is None
+        return suite.account_summary(entry_px + 8.50, entry_px + 8.80), all_evs, expected_eq, post_eq
+
+    a1, evs1, _pre1, _post1 = _run_retest_runner(1.0)
+    a2, evs2, _pre2, _post2 = _run_retest_runner(2.0)
+    p1 = [e for e in evs1 if e["type"] == "PARTIAL_TP"]
+    p2 = [e for e in evs2 if e["type"] == "PARTIAL_TP"]
+    assert len(p1) == 1 and p1[0]["closed_volume"] == 0.01 and p1[0]["remaining_volume"] == 0.01
+    assert len(p2) == 1 and p2[0]["closed_volume"] == 0.02 and p2[0]["remaining_volume"] == 0.02
+    c1 = [e["wave"] for e in evs1 if e["type"] == "CLOSE_ALL"][0]
+    assert c1["exit_reason"] == "p50+snap_trail_exit"
+    assert c1["total_volume"] == 0.02
+    assert c1["partial_banked_usd"] == pytest.approx(2.70, abs=0.05)
+    assert a1["net_profit_usd"] == pytest.approx(2.70 + 8.50, abs=0.05)  # 0.01*$2.70 + 0.01*$8.50 = $11.20
+    assert a1["balance_usd"] == a1["equity_usd"]
+    assert a2["net_profit_usd"] == pytest.approx(a1["net_profit_usd"] * 2.0, abs=0.02)
+
+    # 4) Bug #3: SHOCK10 / VSNAP6 coordination lock blocks SHOCK10 duplicate open while VSNAP6 holds basket
+    ticks_dual = make_synthetic_dual_session()
+    s_coord = AllWeatherPaperSuite(engine_version="v4")
+    s_v3 = AllWeatherPaperSuite(engine_version="v3")
+    for ts, bid, ask, m1_ctx in ticks_dual:
+        s_coord.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_ctx)
+        s_v3.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1_ctx)
+    s_coord.close_all_open(ts=ticks_dual[-1][0], bid=ticks_dual[-1][1], ask=ticks_dual[-1][2])
+    s_v3.close_all_open(ts=ticks_dual[-1][0], bid=ticks_dual[-1][1], ask=ticks_dual[-1][2])
+    v3_shocks = [t for t in s_v3.trades_closed if t["engine"] == "SHOCK10_DYN_RUN"]
+    v4_shocks = [t for t in s_coord.trades_closed if t["engine"] == "SHOCK10_DYN_RUN"]
+    assert len(v3_shocks) >= 1  # unguarded V3 double-enters SHOCK10 on top of VSNAP6
+    assert len(v4_shocks) == 0  # guarded V4 cleanly locks out duplicate SHOCK10 entry while VSNAP6 rides the spike
+
+    # 5) Bug #4: TickRobustZScoreEngine 30m/60m macro breakout guard blocks counter-trend SELL in +$14 rally
+    z_cfg_v4 = TickRobustZScoreConfig(
+        bar_sec=60,
+        entry_z=2.0,
+        adx_max=0.0,
+        atr_min_ratio=0.1,
+        atr_max_ratio=10.0,
+        min_sd_cost_mult=1.0,
+        min_tp_cost_mult=1.0,
+        min_sl_price=3.20,
+        max_sl_price=4.80,
+        block_counter_30m=9.0,
+        block_counter_60m=12.0,
+    )
+    z_cfg_v3 = replace(z_cfg_v4, block_counter_30m=0.0, block_counter_60m=0.0)
+    z_v4 = TickRobustZScoreEngine(cfg=z_cfg_v4)
+    z_v3 = TickRobustZScoreEngine(cfg=z_cfg_v3)
+    # Build 40 M1 bars climbing steadily +$14 then printing a sharp overbought spike + turn bar
+    base_id = 29400000
+    z_bars: list[dict[str, float]] = []
+    for i in range(38):
+        p = 3600.0 + 0.35 * i
+        z_bars.append({"bar_id": float(base_id + i), "o": p, "h": p + 0.6, "l": p - 0.3, "c": p + 0.35})
+    # Bar 38: huge overbought push to 3622.0; Bar 39 (closed on tick below): turn down to 3621.0
+    z_bars.append({"bar_id": float(base_id + 38), "o": 3613.5, "h": 3622.5, "l": 3613.5, "c": 3622.0})
+    z_v4.seed_closed_bars(z_bars)
+    z_v3.seed_closed_bars(z_bars)
+    ts_close = float((base_id + 39) * 60 + 5)
+    ts_next = float((base_id + 40) * 60 + 5)
+    # Close bar 39 at 3621.0 (turn bar with z > 2.0) and trigger bar close on ts_next
+    for ze in (z_v4, z_v3):
+        ze.on_tick(ts=ts_close, bid=3620.85, ask=3621.15)
+        ze.on_tick(ts=ts_next, bid=3620.85, ask=3621.15)
+    assert z_v3.basket is not None and z_v3.basket["side"] == "sell"  # unguarded V3 fades rally
+    assert z_v4.basket is None  # guarded V4 refuses to short a +$14 macro rally!
+
 
 
 

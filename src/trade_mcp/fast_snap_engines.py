@@ -107,6 +107,15 @@ class FastSnapConfig:
     loss_cooldown_sec: float = 90.0
     consec_loss_cooldown_sec: float = 240.0
 
+    # Causal HTF counter-trend guard (0.0 = disabled)
+    block_counter_15m: float = 0.0
+    block_counter_30m: float = 0.0
+
+    # Causal 50% partial profit banking + wide free runner (0.0 = disabled)
+    partial_arm_price: float = 0.0
+    partial_take_frac: float = 0.50
+    partial_runner_sl_offset: float = 0.60
+
 
 @dataclass
 class FastSnapEngine:
@@ -119,6 +128,7 @@ class FastSnapEngine:
     _sec_hist: deque[tuple[int, float, float, float]] = field(default_factory=lambda: deque(maxlen=2800))
     _cur_sec: list[Any] | None = None  # [sec, mid, high_mid, low_mid]
     _prev_ts: float | None = None
+    _htf_seed: list[tuple[int, float]] = field(default_factory=list)
 
     # Micro-pullback state machine
     _pb_arm: dict[str, Any] | None = None
@@ -137,6 +147,7 @@ class FastSnapEngine:
         self._sec_hist.clear()
         self._cur_sec = None
         self._prev_ts = None
+        self._htf_seed.clear()
         self._pb_arm = None
         self.pending = None
         self.basket = None
@@ -159,6 +170,7 @@ class FastSnapEngine:
         if self._prev_ts is not None and (ts - self._prev_ts) > 120.0:
             # Discontinuous file gap: reset rolling buffers so cross-gap ghosts cannot fire
             self._sec_hist.clear()
+            self._htf_seed.clear()
             self._cur_sec = [sec, mid, mid, mid]
             self._pb_arm = None
             self._prev_ts = ts
@@ -175,6 +187,32 @@ class FastSnapEngine:
                 self._cur_sec[2] = mid
             if mid < self._cur_sec[3]:
                 self._cur_sec[3] = mid
+
+    def seed_htf_bars(self, bars: list[dict[str, float]]) -> int:
+        """Warm up causal 15m/30m HTF macro context from closed M1 bars without altering 1s fast windows."""
+        pts: list[tuple[int, float]] = []
+        for b in bars:
+            bar_id = int(float(b.get("bar_id", 0.0)))
+            pts.append((bar_id * 60 + 59, float(b["c"])))
+        pts.sort(key=lambda x: x[0])
+        self._htf_seed = pts[-60:]
+        return len(self._htf_seed)
+
+    def _htf_net_move(self, sec: int, mid: float, win_sec: int) -> float:
+        """Causal net mid move over [sec - win_sec, sec] using 1s history (falling back to M1 seed at live start)."""
+        cut = sec - win_sec
+        if self._sec_hist and (not self._htf_seed or self._sec_hist[0][0] <= cut):
+            for row in self._sec_hist:
+                if row[0] >= cut:
+                    return mid - row[1]
+            return 0.0
+        for s_ts, px in self._htf_seed:
+            if s_ts >= cut:
+                return mid - px
+        for row in self._sec_hist:
+            if row[0] >= cut:
+                return mid - row[1]
+        return 0.0
 
     def _window_stats(self, sec: int, mid: float, win_sec: int) -> tuple[bool, float, float, float, float]:
         """Causal (has_win, net_move, efficiency, hi, lo) over [sec-win_sec, sec]."""
@@ -258,7 +296,8 @@ class FastSnapEngine:
         b = self.basket
         ex = bid if b["side"] == "buy" else ask
         diff = (ex - b["avg_entry"]) if b["side"] == "buy" else (b["avg_entry"] - ex)
-        return round(diff * b["total_volume"] * self.cfg.multiplier, 4)
+        banked = float(b.get("banked_pnl_usd", 0.0))
+        return round(diff * b["total_volume"] * self.cfg.multiplier + banked, 4)
 
     def _update_dd(self, bid: float, ask: float) -> None:
         eq = self.initial_capital_usd + self.realized_pnl_usd + self.unrealized_pnl_usd(bid, ask)
@@ -274,14 +313,23 @@ class FastSnapEngine:
         self.basket = None
         self.pending = None
         diff = (exit_px - b["avg_entry"]) if b["side"] == "buy" else (b["avg_entry"] - exit_px)
-        pnl = round(diff * b["total_volume"] * self.cfg.multiplier, 4)
+        rem_pnl = diff * b["total_volume"] * self.cfg.multiplier
+        banked = float(b.get("banked_pnl_usd", 0.0))
+        partial_taken = bool(b.get("partial_taken", False))
+        pnl = round(rem_pnl + banked, 4)
         self.realized_pnl_usd = round(self.realized_pnl_usd + pnl, 4)
+        reported_vol = (
+            round(float(b["total_volume"]) + float(b.get("partial_closed_vol", 0.0)), 2)
+            if partial_taken
+            else b["total_volume"]
+        )
+        final_reason = f"p50+{reason}" if partial_taken else reason
         rec = {
             "wave_id": b["wave_id"],
             "side": b["side"],
             "regime": self.cfg.name,
             "legs_count": len(b["legs"]),
-            "total_volume": b["total_volume"],
+            "total_volume": reported_vol,
             "avg_entry": b["avg_entry"],
             "leg1_entry": b["legs"][0]["entry"],
             "exit_price": round(exit_px, 4),
@@ -292,11 +340,13 @@ class FastSnapEngine:
             "closed_utc": _iso_utc(ts),
             "hold_seconds": round(max(0.0, ts - b["opened_at"]), 2),
             "net_pnl_usd": pnl,
-            "exit_reason": reason,
+            "exit_reason": final_reason,
             "equity_after_usd": round(self.initial_capital_usd + self.realized_pnl_usd, 4),
             "paper_only": True,
             "orders_submitted": 0,
         }
+        if partial_taken:
+            rec["partial_banked_usd"] = round(banked, 4)
         self.waves_closed.append(rec)
         if pnl > 0:
             self.consecutive_losses = 0
@@ -667,12 +717,68 @@ class FastSnapEngine:
                 if cand_lot >= 0.01:
                     self.pending = {"kind": "add", "side": side, "fill_ts": ts + self.cfg.latency_sec}
 
+            # Priority 5: Causal 50% Partial Profit Bank + Free Runner (survives breakout retests!)
+            if (
+                self.cfg.partial_arm_price > 0.0
+                and not b.get("partial_taken")
+                and avg_gain >= self.cfg.partial_arm_price
+            ):
+                tot_v = float(b["total_volume"])
+                step = max(0.01, float(self.cfg.dyn_lot_step))
+                n_half = int((tot_v * self.cfg.partial_take_frac + 1e-9) / step)
+                half_v = round(max(step, n_half * step), 2)
+                rem_v = round(tot_v - half_v, 2)
+                if half_v >= 0.01 and rem_v >= 0.01:
+                    banked = round(avg_gain * half_v * self.cfg.multiplier, 4)
+                    b["banked_pnl_usd"] = round(float(b.get("banked_pnl_usd", 0.0)) + banked, 4)
+                    b["partial_closed_vol"] = round(float(b.get("partial_closed_vol", 0.0)) + half_v, 2)
+                    b["partial_taken"] = True
+                    b["total_volume"] = rem_v
+                    # Move SL to small cushion behind avg_entry so total trade is guaranteed net-positive
+                    # while giving the runner room to survive entry retests!
+                    if side == "buy":
+                        p_sl = round(b["avg_entry"] - self.cfg.partial_runner_sl_offset, 4)
+                        if p_sl > b["stop"]:
+                            b["stop"] = p_sl
+                    else:
+                        p_sl = round(b["avg_entry"] + self.cfg.partial_runner_sl_offset, 4)
+                        if p_sl < b["stop"]:
+                            b["stop"] = p_sl
+                    events.append({
+                        "type": "PARTIAL_TP",
+                        "wave_id": b["wave_id"],
+                        "side": side,
+                        "price": round(ex_px, 4),
+                        "closed_volume": half_v,
+                        "remaining_volume": rem_v,
+                        "banked_pnl_usd": banked,
+                        "stop": b["stop"],
+                    })
+
             self._update_dd(bid, ask)
             return events
 
         # 3) Flat: check causal signal
         if self.pending is None and ts >= self.cooldown_until:
             side, sl_dist, speed = self._detect_signal(ts, mid, spread)
+            if side is not None and (self.cfg.block_counter_15m > 0.0 or self.cfg.block_counter_30m > 0.0):
+                m15 = self._htf_net_move(sec, mid, 900) if self.cfg.block_counter_15m > 0.0 else 0.0
+                m30 = self._htf_net_move(sec, mid, 1800) if self.cfg.block_counter_30m > 0.0 else 0.0
+                blocked = (
+                    self.cfg.block_counter_15m > 0.0
+                    and (
+                        (side == "sell" and m15 >= self.cfg.block_counter_15m)
+                        or (side == "buy" and m15 <= -self.cfg.block_counter_15m)
+                    )
+                ) or (
+                    self.cfg.block_counter_30m > 0.0
+                    and (
+                        (side == "sell" and m30 >= self.cfg.block_counter_30m)
+                        or (side == "buy" and m30 <= -self.cfg.block_counter_30m)
+                    )
+                )
+                if blocked:
+                    side = None
             if side is not None:
                 self.pending = {
                     "kind": "entry",

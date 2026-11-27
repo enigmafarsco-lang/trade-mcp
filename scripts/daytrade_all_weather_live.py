@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""MetaTrader-style Live Paper Monitor for the winning All-Weather engine (COMBO_AW_PRO_M1, ORDERS=0).
+"""MetaTrader-style Live Paper Monitor for the winning All-Weather V4 engine (COMBO_AW_V4_24H, ORDERS=0).
 
-Runs ONE read-only Alpari MT5 loopback feed driving our 3 validated engines as one unified paper account:
-  - NEWS_SHOCK  (SHOCK10_DYN_RUN)  : >=$10/60s news rockets
-  - MACRO_WAVE  (MACRO_WAVE_DYN)   : London/NY macro pullback-continuation waves
-  - CALM_M1_PRO (CALM_M1_PRO_SESS) : London/NY calm-drift M1 trend engine (warm-started from MT5 M1 history)
+Runs ONE read-only Alpari MT5 loopback feed driving our 4 bug-fixed engines as one unified paper account:
+  - NEWS_SHOCK  (SHOCK10_DYN_RUN) : >=$10/60s news rockets (coordinated with VSNAP6 to prevent duplicate peak entries)
+  - FAST_SHOCK6 (VSNAP6_24H)      : 24h $6+/60s bursts with 15m/30m HTF guard + 50% partial bank @ +$2.60 & wide free runner
+  - MACRO_WAVE  (MACRO_WAVE_DYN)  : London/NY macro pullback-continuation waves
+  - ZSCORE_MR   (ZSCORE_MR_24H)   : 24h TickRobust Z-Score MR with tight $3.20..$4.80 SL + 30m/60m breakout guard
 
 Strictly paper-only (`ORDERS=0`, `TRADE_MCP_ALLOW_TRADING=false`). Zero broker orders are ever submitted.
 """
@@ -120,6 +121,18 @@ def _print_trade_event(ev: dict[str, Any], *, ts: float, realized_profit: float)
             f"| SL={sl:.2f} (LOCKED)  [{label}]",
             flush=True,
         )
+    elif etype == "PARTIAL_TP":
+        side = str(ev.get("side", "")).upper()
+        closed_lot = float(ev.get("closed_volume", 0.01))
+        rem_lot = float(ev.get("remaining_volume", 0.01))
+        px = float(ev.get("price", 0.0))
+        banked = float(ev.get("banked_pnl_usd", 0.0))
+        sl = float(ev.get("stop", 0.0))
+        print(
+            f">>> [P50% ] {t_str}  {side:4s} -{closed_lot:.2f} -> {rem_lot:.2f} lot @ {px:.2f} "
+            f"| Banked: {_fmt_usd(banked)} | Runner SL={sl:.2f}  [{label}]",
+            flush=True,
+        )
     elif etype == "CLOSE_ALL":
         w = ev.get("wave", {})
         side = str(w.get("side", "")).upper()
@@ -152,7 +165,7 @@ def _print_mt5_panel(
     bar = "=" * 74
     print(f"\n{bar}", flush=True)
     print(
-        f"[{mode_tag} | ORDERS=0{rm_s}]  {symbol}   Bid={bid:.2f}  Ask={ask:.2f}  (sp={ask - bid:.2f})   SRV {srv_time}",
+        f"[{mode_tag} | {acct['portfolio']} | ORDERS=0{rm_s}]  {symbol}   Bid={bid:.2f}  Ask={ask:.2f}  (sp={ask - bid:.2f})   SRV {srv_time}",
         flush=True,
     )
     print(
@@ -174,9 +187,10 @@ def _print_mt5_panel(
         print(f"OPEN POSITIONS ({len(opens)}):", flush=True)
         for p in opens:
             lk = " (LOCKED)" if p["stop_locked"] else ""
+            p50 = f" [P50% banked {_fmt_usd(p['banked_pnl_usd'])}]" if p.get("partial_taken") else ""
             print(
                 f"  • {p['side']:4s} {p['volume']:.2f} lot ({p['legs']}L) @ {p['avg_entry']:.2f} "
-                f"| SL: {p['stop']:.2f}{lk} | P/L: {_fmt_usd(p['pnl_usd'])}  [{p['engine_label']}]",
+                f"| SL: {p['stop']:.2f}{lk}{p50} | P/L: {_fmt_usd(p['pnl_usd'])}  [{p['engine_label']}]",
                 flush=True,
             )
     else:
@@ -209,10 +223,16 @@ def _print_final_summary(suite: AllWeatherPaperSuite, *, title: str, bid: float,
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="MetaTrader-style Live Paper Monitor for COMBO_AW_V3_24H (ORDERS=0)"
+        description="MetaTrader-style Live Paper Monitor for COMBO_AW_V4_24H (ORDERS=0)"
     )
     parser.add_argument("--symbol", default="XAUUSD_i", help="Symbol to watch (default XAUUSD_i)")
     parser.add_argument("--capital", type=float, default=1000.0, help="Starting paper balance USD (default 1000)")
+    parser.add_argument(
+        "--engine-version",
+        default="v4",
+        choices=("v4", "v3"),
+        help="All-Weather engine generation (default v4 — bug-fixed 10x R/DD with 50%% partial bank + HTF/macro guards)",
+    )
     parser.add_argument(
         "--calm-profile",
         default="ZSCORE_MR_24H",
@@ -222,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--fast-shock-varlot",
         action="store_true",
-        help="Use higher-lot VSNAP6_24H_VARLOT (+$44 night / +$82 total) instead of default safer VSNAP6_24H",
+        help="Use higher-lot VSNAP6_24H_VARLOT instead of default safer VSNAP6_24H",
     )
     parser.add_argument(
         "--risk-mult",
@@ -245,6 +265,8 @@ def main(argv: list[str] | None = None) -> int:
     os.environ["TRADE_MCP_PAPER_TRADING"] = "true"
 
     variant_parts: list[str] = []
+    if args.engine_version != "v4":
+        variant_parts.append(str(args.engine_version))
     if args.fast_shock_varlot:
         variant_parts.append("varlot")
     if abs(float(args.risk_mult) - 1.0) > 1e-6:
@@ -269,6 +291,7 @@ def main(argv: list[str] | None = None) -> int:
             calm_profile=args.calm_profile,
             fast_shock_varlot=args.fast_shock_varlot,
             risk_multiplier=args.risk_mult,
+            engine_version=args.engine_version,
         )
         ticks = make_synthetic_dual_session()
         last_ts, last_bid, last_ask = 0.0, 0.0, 0.0
@@ -308,6 +331,7 @@ def main(argv: list[str] | None = None) -> int:
             calm_profile=args.calm_profile,
             fast_shock_varlot=args.fast_shock_varlot,
             risk_multiplier=args.risk_mult,
+            engine_version=args.engine_version,
         )
         total_ticks = 0
         last_ts, last_bid, last_ask = 0.0, 0.0, 0.0
@@ -382,6 +406,7 @@ def main(argv: list[str] | None = None) -> int:
                 calm_profile=args.calm_profile,
                 fast_shock_varlot=args.fast_shock_varlot,
                 risk_multiplier=args.risk_mult,
+                engine_version=args.engine_version,
             )
             suite.set_multiplier(float(mult))
 

@@ -809,6 +809,10 @@ class TickRobustZScoreConfig:
     max_hold_bars: int = 35
     loss_cooldown_bars: int = 6
 
+    # Causal 30m/60m macro breakout guard (0.0 = disabled, prevents fading sustained trends)
+    block_counter_30m: float = 0.0
+    block_counter_60m: float = 0.0
+
     active_server_hours: tuple[int, ...] | None = None  # None = 24h (includes Night/Asia!)
     multiplier: float = 100.0
 
@@ -844,6 +848,17 @@ class TickRobustZScoreEngine:
         if not self.cfg.active_server_hours:
             return True
         return datetime.fromtimestamp(ts, tz=timezone.utc).hour in self.cfg.active_server_hours
+
+    def _macro_move(self, cur_bar_id: int, current_mid: float, window_sec: int) -> float:
+        """Causal net mid move over [cur_bar - window_sec, now] using closed bars."""
+        if not self._bars:
+            return 0.0
+        n_bars = max(1, round(window_sec / max(1, self.cfg.bar_sec)))
+        cut_id = cur_bar_id - n_bars
+        for bar in self._bars:
+            if bar["bar_id"] >= cut_id:
+                return current_mid - float(bar["o"])
+        return 0.0
 
     def _push_closed_bar(self, bar: dict[str, float]) -> None:
         if self._bars:
@@ -1105,7 +1120,21 @@ class TickRobustZScoreEngine:
                 tp_dist = (ind["mean"] - entry_px) if sdir == 1 else (entry_px - ind["mean"])
                 tp_ok = tp_dist >= (eff_tp_mult * max(spread, 0.20))
 
-                if turn_ok and adx_ok and vol_ok and sd_ok and tp_ok:
+                macro_ok = True
+                if self.cfg.block_counter_30m > 0.0:
+                    m30 = self._macro_move(bar_id, mid, 1800)
+                    if (sdir == -1 and m30 >= self.cfg.block_counter_30m) or (
+                        sdir == 1 and m30 <= -self.cfg.block_counter_30m
+                    ):
+                        macro_ok = False
+                if macro_ok and self.cfg.block_counter_60m > 0.0:
+                    m60 = self._macro_move(bar_id, mid, 3600)
+                    if (sdir == -1 and m60 >= self.cfg.block_counter_60m) or (
+                        sdir == 1 and m60 <= -self.cfg.block_counter_60m
+                    ):
+                        macro_ok = False
+
+                if turn_ok and adx_ok and vol_ok and sd_ok and tp_ok and macro_ok:
                     sl_dist = min(self.cfg.max_sl_price, max(self.cfg.min_sl_price, self.cfg.sl_atr_mult * ind["atr"]))
                     lot = self.cfg.leg_lot
                     if self.cfg.variable_lot_by_z:
