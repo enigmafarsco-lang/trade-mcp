@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""Forensic Bug-Fix & Full-Timeline Gold Audit Lab (OLD CHOP DAYS vs LAST NIGHT +$108 RALLY, ORDERS=0).
+"""Forensic Bug-Fix & Day-by-Day Full-Timeline Gold Audit Lab (ORDERS=0).
 
-Diagnoses and causally tests concrete fixes for the exact 5 bugs exposed by live overnight paper trading:
+Diagnoses and causally tests concrete fixes for all 5 bugs exposed by live overnight paper trading:
   BUG 1: VSNAP6 counter-trend entries (shorting -$6 dips during a +$70 bull rally -> 4 straight SLs)
-  BUG 2: VSNAP6 premature profit_floor_hit choke-out (be_arm=$1.50 / ratchet=$2.50 -> AvgWin $1.15 vs AvgLoss -$2.89)
+  BUG 2: VSNAP6 premature profit_floor_hit choke-out (be_arm=$1.50 / ratchet=$2.50 / add breathing=$1.15!)
   BUG 3: SHOCK10 buying exhausted vertical peaks + duplicating an already-open VSNAP6 spike trade
   BUG 4: ZSCORE_MR shorting flags inside a +$70 breakout (no 60m macro trend guard + oversized SL)
-  BUG 5: Missing 24h trend-rider engine (MACRO_WAVE slept at night; CALM_M1/M3/M5 trend riders made +$44..+$169!)
+  BUG 5: Missing 24h trend-rider / conditional overnight MACRO_WAVE during smooth +$108 overnight rallies
 
-CRITICAL DATA HYGIENE:
-  Deduplicates overlapping XAUUSD_i tick recorder files into ONE clean, non-overlapping chronological
-  timeline (split into continuous segments at >120s gaps) so NO night or day is ever double-counted!
+CRITICAL DATA HYGIENE & TRANSPARENCY:
+  1. Deduplicates overlapping XAUUSD_i tick recorder files into ONE clean chronological timeline.
+  2. Reports EXACT day-by-day & session-by-session PnL (e.g., 2026-11-24, 2026-11-25, 2026-11-26_DAY,
+     LAST_NIGHT >= 2026-11-26 19:35 SRV) — NEVER opaque lumped numbers!
+  3. Prints per-engine x per-day reconciliation matrices AND a complete trade-by-trade LAST_NIGHT log.
 
 Strictly read-only / paper-only (ORDERS=0).
 """
@@ -40,7 +42,13 @@ from trade_mcp.quant_github_accel_lab import (  # noqa: E402
     TickRobustZScoreEngine,
 )
 from trade_mcp.s1_dual_radar import make_synthetic_dual_session  # noqa: E402
-from trade_mcp.s1_impulse_audit import PullbackDipEngine, load_tick_stream, pullback_dip_profiles  # noqa: E402
+from trade_mcp.s1_impulse_audit import (  # noqa: E402
+    ALPARI_LONDON_NY_HOURS,
+    PullbackDipConfig,
+    PullbackDipEngine,
+    load_tick_stream,
+    pullback_dip_profiles,
+)
 from trade_mcp.s1_velocity_surfer import (  # noqa: E402
     S1VelocitySurferEngine,
     _mini_m1_context,
@@ -51,6 +59,36 @@ from trade_mcp.s1_velocity_surfer import (  # noqa: E402
 
 def _iso_dt(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+
+
+def _iso_hms(ts: float) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%m-%d %H:%M:%S")
+
+
+def _fmt_usd(val: float, dec: int = 2) -> str:
+    sign = "+" if val >= 0 else "-"
+    return f"{sign}${abs(val):.{dec}f}"
+
+
+def _norm_engine_label(raw: str) -> str:
+    up = str(raw or "").upper()
+    if "SHOCK10" in up or "NEWS_SHOCK" in up:
+        return "SHOCK10"
+    if "VSNAP" in up or "FAST_SHOCK" in up:
+        return "VSNAP6"
+    if "MACRO" in up or "PULLBACK" in up:
+        return "MACRO_WAVE"
+    if "ZSCORE" in up:
+        return "ZSCORE_MR"
+    if "CALM" in up or "M5" in up or "M1_" in up or "M3_" in up or "TREND" in up:
+        return "M5_TREND"
+    return up or "OTHER"
+
+
+def _tag_wave(w: dict[str, Any], engine_label: str) -> dict[str, Any]:
+    out = dict(w)
+    out["_engine"] = _norm_engine_label(engine_label)
+    return out
 
 
 def load_deduplicated_gold_segments(
@@ -114,7 +152,11 @@ def load_deduplicated_gold_segments(
                 cur_min["c"] = mid
             if min_ep != last_min:
                 last_min = min_ep
-                cached_m1 = analyze_m1_sr_context(synth_bars, server_now_ts=ts) if len(synth_bars) >= 25 else _mini_m1_context(synth_bars)
+                cached_m1 = (
+                    analyze_m1_sr_context(synth_bars, server_now_ts=ts)
+                    if len(synth_bars) >= 25
+                    else _mini_m1_context(synth_bars)
+                )
             out_seg.append((ts, bid, ask, cached_m1))
         segments.append(out_seg)
 
@@ -154,10 +196,10 @@ class CausalMacroTrendTracker:
 
 
 # ---------------------------------------------------------------------------
-# Wrapper applying Bug Fixes #1/#2/#3/#4 causally WITHOUT mutating production yet
+# Causal Bug-Fix Wrappers (non-invasive until verified on full history)
 # ---------------------------------------------------------------------------
 class GuardedFastSnap:
-    """FastSnapEngine with causal HTF counter-trend block (Bug #1) & optional wider winner breathing (Bug #2)."""
+    """FastSnapEngine with causal HTF counter-trend block (Bug #1) & wider winner/add breathing (Bug #2)."""
 
     def __init__(
         self,
@@ -182,7 +224,6 @@ class GuardedFastSnap:
         m15, m30, _ = self.macro.update(ts, 0.5 * (bid + ask))
         had_pending = self.eng.pending is not None
         evs = self.eng.on_tick(ts=ts, bid=bid, ask=ask)
-        # If a brand-new entry was just queued, apply strict causal HTF guard before fill!
         if (not had_pending) and self.eng.pending is not None and self.eng.pending.get("kind") == "entry":
             side = self.eng.pending["side"]
             blocked = (
@@ -212,12 +253,12 @@ class GuardedFastSnap:
                 self.eng.pending = None
         for ev in evs:
             if ev.get("type") == "CLOSE_ALL":
-                self.waves_closed.append(ev["wave"])
+                self.waves_closed.append(_tag_wave(ev["wave"], "VSNAP6"))
 
     def close_open(self, ts: float, bid: float, ask: float) -> None:
         w = self.eng.force_close_open(ts=ts, bid=bid, ask=ask, reason="eof_seg")
         if w is not None:
-            self.waves_closed.append(w)
+            self.waves_closed.append(_tag_wave(w, "VSNAP6"))
 
 
 class GuardedZScoreMR:
@@ -244,7 +285,6 @@ class GuardedZScoreMR:
         _, m30, m60 = self.macro.update(ts, 0.5 * (bid + ask))
         was_flat = self.eng.basket is None
         evs = self.eng.on_tick(ts=ts, bid=bid, ask=ask)
-        # If ZScore just opened on bar close against a huge 30m/60m breakout, cancel entry causally!
         if was_flat and self.eng.basket is not None:
             side = self.eng.basket["side"]
             if (
@@ -255,20 +295,73 @@ class GuardedZScoreMR:
                 return
         for ev in evs:
             if ev.get("type") == "CLOSE_ALL":
-                self.waves_closed.append(ev["wave"])
+                self.waves_closed.append(_tag_wave(ev["wave"], "ZSCORE_MR"))
 
     def close_open(self, ts: float, bid: float, ask: float) -> None:
         w = self.eng.force_close_open(ts=ts, bid=bid, ask=ask, reason="eof_seg")
         if w is not None:
-            self.waves_closed.append(w)
+            self.waves_closed.append(_tag_wave(w, "ZSCORE_MR"))
+
+
+class GuardedMacroWave24H:
+    """MACRO_WAVE_DYN active in London/NY, and conditionally wakes up off-hours ONLY on real 30m macro trends (Bug #5A)."""
+
+    def __init__(
+        self,
+        cfg: PullbackDipConfig,
+        *,
+        primary_hours: tuple[int, ...] = ALPARI_LONDON_NY_HOURS,
+        night_min_30m_move: float = 10.0,
+    ) -> None:
+        self.cfg_24h = replace(cfg, active_server_hours=None)
+        self.primary_hours = set(primary_hours)
+        self.night_min_30m_move = float(night_min_30m_move)
+        self.eng = PullbackDipEngine(cfg=self.cfg_24h)
+        self.macro = CausalMacroTrendTracker()
+        self.waves_closed: list[dict[str, Any]] = []
+
+    def reset_segment(self) -> None:
+        self.eng = PullbackDipEngine(cfg=self.cfg_24h)
+        self.macro = CausalMacroTrendTracker()
+
+    def on_tick(self, ts: float, bid: float, ask: float, m1: dict[str, Any]) -> None:
+        _, m30, _ = self.macro.update(ts, 0.5 * (bid + ask))
+        had_pending = self.eng.pending is not None
+        evs = self.eng.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1)
+        if (not had_pending) and self.eng.pending is not None and self.eng.pending.get("kind") == "open":
+            srv_hour = (int(ts) // 3600) % 24
+            if srv_hour not in self.primary_hours:
+                side = self.eng.pending["side"]
+                aligned = (side == "buy" and m30 >= self.night_min_30m_move) or (
+                    side == "sell" and m30 <= -self.night_min_30m_move
+                )
+                if not aligned:
+                    self.eng.pending = None
+        for ev in evs:
+            if ev.get("type") == "CLOSE_ALL":
+                self.waves_closed.append(_tag_wave(ev["wave"], "MACRO_WAVE"))
+
+    def close_open(self, ts: float, bid: float, ask: float) -> None:
+        if self.eng.basket is not None:
+            ex_px = bid if self.eng.basket["side"] == "buy" else ask
+            w = self.eng._close(ex_px, ts, "eof_seg")
+            if w is not None:
+                self.waves_closed.append(_tag_wave(w, "MACRO_WAVE"))
 
 
 class GuardedCalmTrend:
-    """CalmRegimeEngine with optional causal 30m macro trend alignment filter (blocks chop fakeouts!)."""
+    """CalmRegimeEngine with optional causal 30m/60m macro trend alignment filter (Bug #5B: sleeps in chop, rides rallies!)."""
 
-    def __init__(self, cfg: Any, *, min_30m_align: float = 0.0) -> None:
+    def __init__(
+        self,
+        cfg: Any,
+        *,
+        min_30m_align: float = 0.0,
+        min_60m_align: float = 0.0,
+    ) -> None:
         self.eng = CalmRegimeEngine(cfg=cfg)
         self.min_30m_align = float(min_30m_align)
+        self.min_60m_align = float(min_60m_align)
         self.macro = CausalMacroTrendTracker()
         self.waves_closed: list[dict[str, Any]] = []
 
@@ -277,32 +370,38 @@ class GuardedCalmTrend:
         self.macro = CausalMacroTrendTracker()
 
     def on_tick(self, ts: float, bid: float, ask: float, m1: dict[str, Any]) -> None:
-        _, m30, _ = self.macro.update(ts, 0.5 * (bid + ask))
+        _, m30, m60 = self.macro.update(ts, 0.5 * (bid + ask))
         had_pending = self.eng.pending is not None
         evs = self.eng.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1)
         if (
-            self.min_30m_align > 0.0
+            (self.min_30m_align > 0.0 or self.min_60m_align > 0.0)
             and (not had_pending)
             and self.eng.pending is not None
             and self.eng.pending.get("kind") == "open"
         ):
             side = self.eng.pending["side"]
-            if (side == "buy" and m30 < self.min_30m_align) or (side == "sell" and m30 > -self.min_30m_align):
+            bad_30 = self.min_30m_align > 0.0 and (
+                (side == "buy" and m30 < self.min_30m_align) or (side == "sell" and m30 > -self.min_30m_align)
+            )
+            bad_60 = self.min_60m_align > 0.0 and (
+                (side == "buy" and m60 < self.min_60m_align) or (side == "sell" and m60 > -self.min_60m_align)
+            )
+            if bad_30 or bad_60:
                 self.eng.pending = None
         for ev in evs:
             if ev.get("type") == "CLOSE_ALL":
-                self.waves_closed.append(ev["wave"])
+                self.waves_closed.append(_tag_wave(ev["wave"], "M5_TREND"))
 
     def close_open(self, ts: float, bid: float, ask: float) -> None:
         if self.eng.basket is not None:
             ex_px = bid if self.eng.basket["side"] == "buy" else ask
             w = self.eng._close(ex_px, ts, "eof_seg")
             if w is not None:
-                self.waves_closed.append(w)
+                self.waves_closed.append(_tag_wave(w, "M5_TREND"))
 
 
 class CoordinatedAWV4:
-    """AW_V4 portfolio with Bug #3 Fix: blocks SHOCK10 duplicate entry when VSNAP6 is already open."""
+    """AW_V4 portfolio with Bug #3 Fix: cancels fresh SHOCK10 open when VSNAP6 is already open on the spike."""
 
     def __init__(
         self,
@@ -329,14 +428,12 @@ class CoordinatedAWV4:
         self._init_subs()
 
     def on_tick(self, ts: float, bid: float, ask: float, m1: dict[str, Any]) -> None:
-        # 1) Run VSNAP6 first so coordination lock sees live VSNAP basket state
         for sub in (self.vsnap, self.macro, self.zscore, *([self.trend] if self.trend is not None else [])):
             prev = len(sub.waves_closed)
             sub.on_tick(ts, bid, ask, m1)
             if len(sub.waves_closed) > prev:
                 self.waves_closed.extend(sub.waves_closed[prev:])
 
-        # 2) Run SHOCK10 with Bug #3 coordination lock (cancel fresh pending open if VSNAP6 is already in a spike!)
         had_pend = self.shock.eng.pending_order is not None
         prev_s = len(self.shock.waves_closed)
         self.shock.on_tick(ts, bid, ask, m1)
@@ -390,9 +487,10 @@ class PortfolioWrapper:
 class SimpleAdapter:
     """Uniform adapter for CalmRegimeEngine, PullbackDipEngine, S1VelocitySurferEngine, AllWeatherPaperSuite."""
 
-    def __init__(self, factory: Any, kind: str) -> None:
+    def __init__(self, factory: Any, kind: str, engine_label: str = "OTHER") -> None:
         self._factory = factory
         self._kind = kind
+        self._engine_label = engine_label
         self.eng = factory()
         self.waves_closed: list[dict[str, Any]] = []
 
@@ -407,37 +505,39 @@ class SimpleAdapter:
             prev = len(self.eng.trades_closed)
             self.eng.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1)
             if len(self.eng.trades_closed) > prev:
-                self.waves_closed.extend(self.eng.trades_closed[prev:])
+                for t in self.eng.trades_closed[prev:]:
+                    self.waves_closed.append(_tag_wave(t, str(t.get("engine_label", t.get("engine", "OTHER")))))
         elif self._kind == "m1":
             evs = self.eng.on_tick(ts=ts, bid=bid, ask=ask, m1_context=m1)
             for ev in evs:
                 if ev.get("type") == "CLOSE_ALL":
-                    self.waves_closed.append(ev["wave"])
+                    self.waves_closed.append(_tag_wave(ev["wave"], self._engine_label))
         else:
             evs = self.eng.on_tick(ts=ts, bid=bid, ask=ask)
             for ev in evs:
                 if ev.get("type") == "CLOSE_ALL":
-                    self.waves_closed.append(ev["wave"])
+                    self.waves_closed.append(_tag_wave(ev["wave"], self._engine_label))
 
     def close_open(self, ts: float, bid: float, ask: float) -> None:
         if self._kind == "suite":
             prev = len(self.eng.trades_closed)
             self.eng.close_all_open(ts=ts, bid=bid, ask=ask, reason="eof_seg")
             if len(self.eng.trades_closed) > prev:
-                self.waves_closed.extend(self.eng.trades_closed[prev:])
+                for t in self.eng.trades_closed[prev:]:
+                    self.waves_closed.append(_tag_wave(t, str(t.get("engine_label", t.get("engine", "OTHER")))))
         elif hasattr(self.eng, "close_open_wave"):
             w = self.eng.close_open_wave(ts=ts, bid=bid, ask=ask, reason="eof_seg")
             if w is not None:
-                self.waves_closed.append(w)
+                self.waves_closed.append(_tag_wave(w, self._engine_label))
         elif hasattr(self.eng, "force_close_open"):
             w = self.eng.force_close_open(ts=ts, bid=bid, ask=ask, reason="eof_seg")
             if w is not None:
-                self.waves_closed.append(w)
+                self.waves_closed.append(_tag_wave(w, self._engine_label))
         elif getattr(self.eng, "basket", None) is not None and hasattr(self.eng, "_close"):
             ex_px = bid if self.eng.basket["side"] == "buy" else ask
             w = self.eng._close(ex_px, ts, "eof_seg")
             if w is not None:
-                self.waves_closed.append(w)
+                self.waves_closed.append(_tag_wave(w, self._engine_label))
 
 
 def _stats(waves: list[dict[str, Any]]) -> dict[str, Any]:
@@ -472,9 +572,26 @@ def _stats(waves: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _bucket_label(ts: float, overnight_cut: float, *, is_mock: bool) -> str:
+    if is_mock:
+        return "MOCK_D1" if ts < overnight_cut else "LAST_NIGHT"
+    if ts >= overnight_cut:
+        return "LAST_NIGHT"
+    d = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+    cut_d = datetime.fromtimestamp(overnight_cut, tz=timezone.utc).strftime("%Y-%m-%d")
+    return f"{d}_DAY" if d == cut_d else d
+
+
+def _short_bucket_hdr(b: str) -> str:
+    if b == "LAST_NIGHT":
+        return "LAST_NIGHT"
+    if b.startswith("2026-"):
+        return b[5:]  # e.g. 11-24, 11-25, 11-26_DAY
+    return b[:10]
+
+
 def build_candidates() -> list[tuple[str, Any]]:
     vsnap_base = replace(dict(fast_snap_profiles(base_lot=0.02))["VSNAP_SHOCK_6"], name="VSNAP6_24H", active_server_hours=None)
-    # Bug #2 Fix: Wider winner breathing room so waves run +$5..+$25 instead of choking at +$1.15!
     vsnap_breathe = replace(
         vsnap_base,
         name="VSNAP6_BREATHE",
@@ -525,13 +642,13 @@ def build_candidates() -> list[tuple[str, Any]]:
     shock_cfg = build_s1_profile_config("v2.6_SHOCK10_DYN", leg_lot=0.01, max_legs=6)
 
     def _aw_v3() -> Any:
-        return SimpleAdapter(lambda: AllWeatherPaperSuite(), "suite")
+        return SimpleAdapter(lambda: AllWeatherPaperSuite(), "suite", "SUITE")
 
     def _shock10() -> Any:
-        return SimpleAdapter(lambda: S1VelocitySurferEngine(cfg=shock_cfg), "m1")
+        return SimpleAdapter(lambda: S1VelocitySurferEngine(cfg=shock_cfg), "m1", "SHOCK10")
 
     def _macro_sess() -> Any:
-        return SimpleAdapter(lambda: PullbackDipEngine(cfg=macro_sess_cfg), "m1")
+        return SimpleAdapter(lambda: PullbackDipEngine(cfg=macro_sess_cfg), "m1", "MACRO_WAVE")
 
     def _z_guard() -> Any:
         return GuardedZScoreMR(z_base, block_counter_30m=9.0, block_counter_60m=12.0)
@@ -552,10 +669,10 @@ def build_candidates() -> list[tuple[str, Any]]:
         return SimpleAdapter(
             lambda: CalmRegimeEngine(cfg=build_calm_regime_profile_config(name, leg_lot=0.02, max_legs=8)),
             "m1",
+            "M5_TREND",
         )
 
     return [
-        # Baseline shipped AW_V3_24H + all 4 solo components
         ("AW_V3_SHIPPED_BASE", _aw_v3()),
         ("SHOCK10_ORIG", _shock10()),
         ("MACRO_SESS_ORIG", _macro_sess()),
@@ -566,20 +683,12 @@ def build_candidates() -> list[tuple[str, Any]]:
         ("ZSCORE_ORIG", GuardedZScoreMR(z_base, block_counter_30m=999.0, block_counter_60m=999.0)),
         ("ZSCORE_FIX4_GUARD", _z_guard()),
         ("ZSCORE_FIX4_TIGHTSL", _z_guard_tight()),
-        # 24H Multi-Minute Trend-Riders (M1 / M3 / M5) across ALL days (Chop + $108 Rally!)
         ("CALM_M1_EMA_24H", _calm("CALM_M1_EMA_24H")),
         ("CALM_M3_SWING_24H", _calm("CALM_M3_SWING_24H")),
         ("CALM_M5_TREND_24H", _calm("CALM_M5_TREND_24H")),
         ("CALM_M5_RR_24H", _calm("CALM_M5_RR_24H")),
-        ("CALM_M1_PRO_SESS", _calm("CALM_M1_PRO_SESS")),
-        # Combined AW_V4 candidates!
-        ("AW_V4_FIX124_ONLY", PortfolioWrapper([_shock10, _vsnap_htf_breathe, _macro_sess, _z_guard])),
         ("AW_V4_FIX124_WIDE", PortfolioWrapper([_shock10, _vsnap_htf_wide, _macro_sess, _z_guard_tight])),
-        ("AW_V4_PLUS_M5_TREND", PortfolioWrapper([_shock10, _vsnap_htf_breathe, _macro_sess, _z_guard, lambda: _calm("CALM_M5_TREND_24H")])),
-        ("AW_V4_PLUS_M5_RR", PortfolioWrapper([_shock10, _vsnap_htf_breathe, _macro_sess, _z_guard, lambda: _calm("CALM_M5_RR_24H")])),
-        ("AW_V4_PLUS_M1_EMA", PortfolioWrapper([_shock10, _vsnap_htf_breathe, _macro_sess, _z_guard, lambda: _calm("CALM_M1_EMA_24H")])),
-        ("AW_V4_TREND_ONLY_M5", PortfolioWrapper([_shock10, _macro_sess, _z_guard, lambda: _calm("CALM_M5_TREND_24H")])),
-        ("AW_V4_TREND_ONLY_M5RR", PortfolioWrapper([_shock10, _macro_sess, _z_guard, lambda: _calm("CALM_M5_RR_24H")])),
+        ("AW_V4_PLUS_M5_RR", PortfolioWrapper([_shock10, _vsnap_htf_wide, _macro_sess, _z_guard_tight, lambda: _calm("CALM_M5_RR_24H")])),
     ]
 
 
@@ -597,7 +706,7 @@ def build_phase2_candidates() -> list[tuple[str, Any]]:
         trail_pullback_price=3.20,
         max_hold_sec=600.0,
     )
-    # Parameter-stability neighbors around VSNAP6_WIDE (confirm smooth plateau, NOT an isolated lucky point!)
+    # Parameter-stability neighbors around VSNAP6_WIDE
     vsnap_wide_nb1 = replace(
         vsnap_wide,
         name="VSNAP6_WIDE_NB1",
@@ -615,6 +724,14 @@ def build_phase2_candidates() -> list[tuple[str, Any]]:
         ratchet_breathing_room=2.70,
         trail_arm_price=7.00,
         trail_pullback_price=3.40,
+    )
+    # Bug #2B Fix: Also fix Leg-2 choke-out (sl_min_breathing_room was 1.15 -> killed 2-leg rally winners in 10s!)
+    vsnap_wide_add22 = replace(
+        vsnap_wide,
+        name="VSNAP6_WIDE_ADD22",
+        sl_min_breathing_room=2.20,
+        add_step_price=3.00,
+        runner_max_hold_sec=1200.0,
     )
 
     z_tight = TickRobustZScoreConfig(
@@ -639,8 +756,10 @@ def build_phase2_candidates() -> list[tuple[str, Any]]:
     macro_cfg = dict(pullback_dip_profiles(leg_lot=0.01, max_legs=4))["MACRO_WAVE_DYN"]
     shock_cfg = build_s1_profile_config("v2.6_SHOCK10_DYN", leg_lot=0.01, max_legs=6)
     m5_rr_base = build_calm_regime_profile_config("CALM_M5_RR_24H", leg_lot=0.02, max_legs=8)
+    m5_pro_base = build_calm_regime_profile_config("CALM_M5_PRO_24H", leg_lot=0.02, max_legs=8)
 
-    m5_e35_cfg = replace(
+    # Gated M5 Trend-Riders (sleep in sideways chop, wake up & surf real multi-hour trends like +$108 rally!)
+    m5_e35_l01 = replace(
         m5_rr_base,
         leg_lot=0.01,
         dyn_max_leg_lot=0.06,
@@ -649,24 +768,48 @@ def build_phase2_candidates() -> list[tuple[str, Any]]:
         min_trend_sep_atr=0.35,
         min_trend_eff=0.35,
     )
-    m5_e42_cfg = replace(
+    m5_m30_l02 = replace(
         m5_rr_base,
-        leg_lot=0.01,
-        dyn_max_leg_lot=0.06,
-        dyn_max_total_lot=0.25,
-        min_atr_price=2.50,
-        min_trend_sep_atr=0.42,
-        min_trend_eff=0.42,
+        leg_lot=0.02,
+        dyn_max_leg_lot=0.08,
+        dyn_max_total_lot=0.32,
+        min_atr_price=2.00,
+        min_trend_sep_atr=0.28,
+        min_trend_eff=0.30,
+    )
+    m5_m60_l02 = replace(
+        m5_rr_base,
+        leg_lot=0.02,
+        dyn_max_leg_lot=0.08,
+        dyn_max_total_lot=0.32,
+        min_atr_price=1.90,
+        min_trend_sep_atr=0.24,
+        min_trend_eff=0.26,
+    )
+    m5_pro_m60_l02 = replace(
+        m5_pro_base,
+        leg_lot=0.02,
+        dyn_max_leg_lot=0.08,
+        dyn_max_total_lot=0.32,
+        min_atr_price=1.90,
+        min_trend_sep_atr=0.24,
+        min_trend_eff=0.26,
     )
 
     def _aw_v3() -> Any:
-        return SimpleAdapter(lambda: AllWeatherPaperSuite(), "suite")
+        return SimpleAdapter(lambda: AllWeatherPaperSuite(), "suite", "SUITE")
 
     def _shock10() -> Any:
-        return SimpleAdapter(lambda: S1VelocitySurferEngine(cfg=shock_cfg), "m1")
+        return SimpleAdapter(lambda: S1VelocitySurferEngine(cfg=shock_cfg), "m1", "SHOCK10")
 
     def _macro_sess() -> Any:
-        return SimpleAdapter(lambda: PullbackDipEngine(cfg=macro_cfg), "m1")
+        return SimpleAdapter(lambda: PullbackDipEngine(cfg=macro_cfg), "m1", "MACRO_WAVE")
+
+    def _macro_24h_10() -> Any:
+        return GuardedMacroWave24H(macro_cfg, night_min_30m_move=10.0)
+
+    def _macro_24h_12() -> Any:
+        return GuardedMacroWave24H(macro_cfg, night_min_30m_move=12.0)
 
     def _z_safe() -> Any:
         return GuardedZScoreMR(z_tight, block_counter_30m=9.0, block_counter_60m=12.0)
@@ -680,28 +823,140 @@ def build_phase2_candidates() -> list[tuple[str, Any]]:
     def _v_nb2() -> Any:
         return GuardedFastSnap(vsnap_wide_nb2, block_counter_15m=5.0, block_counter_30m=8.0)
 
+    def _v_add22() -> Any:
+        return GuardedFastSnap(vsnap_wide_add22, block_counter_15m=5.0, block_counter_30m=8.0)
+
+    def _m5_e35() -> Any:
+        return GuardedCalmTrend(m5_e35_l01, min_30m_align=0.0, min_60m_align=0.0)
+
+    def _m5_m30_8() -> Any:
+        return GuardedCalmTrend(m5_m30_l02, min_30m_align=8.0, min_60m_align=0.0)
+
+    def _m5_m60_14() -> Any:
+        return GuardedCalmTrend(m5_m60_l02, min_30m_align=6.0, min_60m_align=14.0)
+
+    def _m5_pro_m60_14() -> Any:
+        return GuardedCalmTrend(m5_pro_m60_l02, min_30m_align=6.0, min_60m_align=14.0)
+
     return [
+        # 1) Baseline shipped AW_V3
         ("AW_V3_SHIPPED_BASE", _aw_v3()),
+        # 2) VSNAP6 stability plateau + Leg-2 breathing fix (Bug #1 + #2/#2B)
         ("VSNAP6_WIDE_BASE", _v_wide()),
         ("VSNAP6_WIDE_NB1", _v_nb1()),
         ("VSNAP6_WIDE_NB2", _v_nb2()),
-        ("M5_RR_GATED_E35", GuardedCalmTrend(m5_e35_cfg, min_30m_align=0.0)),
-        ("M5_RR_GATED_E42", GuardedCalmTrend(m5_e42_cfg, min_30m_align=0.0)),
-        ("M5_RR_GATED_M30_8", GuardedCalmTrend(m5_e35_cfg, min_30m_align=8.0)),
-        ("M5_RR_GATED_M30_12", GuardedCalmTrend(m5_e35_cfg, min_30m_align=12.0)),
-        ("AW_V4_FIX124_WIDE", PortfolioWrapper([_shock10, _v_wide, _macro_sess, _z_safe])),
-        ("AW_V4_FIX1234_COORD", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_wide, macro_factory=_macro_sess, zscore_factory=_z_safe)),
-        ("AW_V4_COORD_M5_E35", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_wide, macro_factory=_macro_sess, zscore_factory=_z_safe, trend_factory=lambda: GuardedCalmTrend(m5_e35_cfg, min_30m_align=0.0))),
-        ("AW_V4_COORD_M5_E42", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_wide, macro_factory=_macro_sess, zscore_factory=_z_safe, trend_factory=lambda: GuardedCalmTrend(m5_e42_cfg, min_30m_align=0.0))),
-        ("AW_V4_COORD_M5_M30_8", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_wide, macro_factory=_macro_sess, zscore_factory=_z_safe, trend_factory=lambda: GuardedCalmTrend(m5_e35_cfg, min_30m_align=8.0))),
-        ("AW_V4_COORD_M5_M30_12", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_wide, macro_factory=_macro_sess, zscore_factory=_z_safe, trend_factory=lambda: GuardedCalmTrend(m5_e35_cfg, min_30m_align=12.0))),
+        ("VSNAP6_WIDE_ADD22", _v_add22()),
+        # 3) Conditional 24h MACRO_WAVE solo (Bug #5A)
+        ("MACRO_24H_TREND10", _macro_24h_10()),
+        ("MACRO_24H_TREND12", _macro_24h_12()),
+        # 4) Gated M5 Trend-Riders solo (Bug #5B)
+        ("M5_RR_E35_L01", _m5_e35()),
+        ("M5_RR_M30_8_L02", _m5_m30_8()),
+        ("M5_RR_M60_14_L02", _m5_m60_14()),
+        ("M5_PRO_M60_14_L02", _m5_pro_m60_14()),
+        # 5) Full Coordinated AW_V4 Portfolios (Bugs #1+#2+#3+#4+#5)
+        ("AW_V4_COORD_BASE", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_wide, macro_factory=_macro_sess, zscore_factory=_z_safe)),
+        ("AW_V4_ADD22_MAC10", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_add22, macro_factory=_macro_24h_10, zscore_factory=_z_safe)),
+        ("AW_V4_WIDE_M5_M30", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_wide, macro_factory=_macro_24h_10, zscore_factory=_z_safe, trend_factory=_m5_m30_8)),
+        ("AW_V4_WIDE_M5_M60", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_wide, macro_factory=_macro_24h_10, zscore_factory=_z_safe, trend_factory=_m5_m60_14)),
+        ("AW_V4_ADD22_M5_E35", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_add22, macro_factory=_macro_24h_10, zscore_factory=_z_safe, trend_factory=_m5_e35)),
+        ("AW_V4_ADD22_M5_M30", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_add22, macro_factory=_macro_24h_10, zscore_factory=_z_safe, trend_factory=_m5_m30_8)),
+        ("AW_V4_ADD22_M5_M60", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_add22, macro_factory=_macro_24h_10, zscore_factory=_z_safe, trend_factory=_m5_m60_14)),
+        ("AW_V4_ADD22_M5PRO", CoordinatedAWV4(shock_factory=_shock10, vsnap_factory=_v_add22, macro_factory=_macro_24h_10, zscore_factory=_z_safe, trend_factory=_m5_pro_m60_14)),
     ]
 
 
+def _print_engine_day_matrix(
+    model_name: str,
+    waves: list[dict[str, Any]],
+    buckets: list[str],
+    overnight_cut: float,
+    *,
+    is_mock: bool,
+) -> None:
+    engines_order = ["VSNAP6", "SHOCK10", "MACRO_WAVE", "ZSCORE_MR", "M5_TREND"]
+    present_engs = [e for e in engines_order if any(w.get("_engine") == e for w in waves)]
+    extra = sorted({str(w.get("_engine", "OTHER")) for w in waves} - set(present_engs))
+    present_engs.extend(extra)
+
+    hdr_cols = " | ".join(f"{_short_bucket_hdr(b):>15s}" for b in buckets)
+    print(f"\n  [{model_name}] PER-ENGINE x PER-DAY BREAKDOWN (exact reconciliation):")
+    print(f"  {'ENGINE':12s} | {hdr_cols} | {'TOTAL':>17s}")
+    print("  " + "-" * (35 + 18 * len(buckets)))
+    for eng in present_engs:
+        ew = [w for w in waves if w.get("_engine") == eng]
+        cells: list[str] = []
+        for b in buckets:
+            bw = [
+                w
+                for w in ew
+                if _bucket_label(float(w.get("opened_at", w.get("closed_at", 0.0))), overnight_cut, is_mock=is_mock) == b
+            ]
+            st = _stats(bw)
+            cells.append(f"{_fmt_usd(st['net'])}({st['w']}/{st['l']})" if st["n"] else "$0.00(0/0)")
+        st_all = _stats(ew)
+        tot_cell = f"{_fmt_usd(st_all['net'])} ({st_all['w']}W/{st_all['l']}L)"
+        print(f"  {eng:12s} | " + " | ".join(f"{c:>15s}" for c in cells) + f" | {tot_cell:>17s}")
+
+    # TOTAL row
+    tot_cells: list[str] = []
+    for b in buckets:
+        bw = [
+            w
+            for w in waves
+            if _bucket_label(float(w.get("opened_at", w.get("closed_at", 0.0))), overnight_cut, is_mock=is_mock) == b
+        ]
+        st = _stats(bw)
+        tot_cells.append(f"{_fmt_usd(st['net'])}({st['w']}/{st['l']})")
+    sa = _stats(waves)
+    print("  " + "-" * (35 + 18 * len(buckets)))
+    print(
+        f"  {'TOTAL':12s} | "
+        + " | ".join(f"{c:>15s}" for c in tot_cells)
+        + f" | {_fmt_usd(sa['net'])} ({sa['w']}W/{sa['l']}L)"
+    )
+
+
+def _print_last_night_trades(
+    model_name: str,
+    waves: list[dict[str, Any]],
+    overnight_cut: float,
+) -> None:
+    ngt = [w for w in waves if float(w.get("opened_at", w.get("closed_at", 0.0))) >= overnight_cut]
+    ngt.sort(key=lambda w: float(w.get("opened_at", w.get("closed_at", 0.0))))
+    print(f"\n  [{model_name}] COMPLETE LAST-NIGHT TRADE-BY-TRADE AUDIT ({len(ngt)} trades, >= {_iso_dt(overnight_cut)} SRV):")
+    if not ngt:
+        print("    (no trades in LAST_NIGHT)")
+        return
+    print(
+        f"  {'#':>2s} {'OPEN_SRV':14s} {'ENGINE':11s} {'SIDE':4s} {'LG':>2s} {'VOL':>4s} "
+        f"{'ENTRY->EXIT':19s} {'HOLD':>5s} {'REASON':18s} {'NET_USD':>9s} {'CUM_USD':>9s}"
+    )
+    print("  " + "-" * 108)
+    cum = 0.0
+    for i, w in enumerate(ngt, 1):
+        pnl = float(w.get("net_pnl_usd", 0.0))
+        cum += pnl
+        opened = float(w.get("opened_at", w.get("closed_at", 0.0)))
+        eng = str(w.get("_engine", w.get("engine_label", "OTHER")))[:11]
+        side = str(w.get("side", "?")).upper()[:4]
+        legs = int(w.get("legs_count", 1))
+        vol = float(w.get("total_volume", w.get("volume", 0.0)))
+        ent = float(w.get("avg_entry", w.get("entry_price", 0.0)))
+        ex = float(w.get("exit_price", 0.0))
+        hold = float(w.get("hold_seconds", 0.0))
+        rsn = str(w.get("exit_reason", ""))[:18]
+        print(
+            f"  {i:2d} {_iso_hms(opened):14s} {eng:11s} {side:4s} {legs:2d} {vol:4.2f} "
+            f"{ent:8.2f}->{ex:<8.2f} {hold:4.0f}s {rsn:18s} {_fmt_usd(pnl):>9s} {_fmt_usd(cum):>9s}"
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Deduplicated Full-History Gold Bug-Fix Audit (ORDERS=0)")
+    parser = argparse.ArgumentParser(description="Day-by-Day Deduplicated Gold Bug-Fix Audit (ORDERS=0)")
     parser.add_argument("--logs-dir", default="logs")
-    parser.add_argument("--phase2", action="store_true", help="Run Phase-2 stability, Bug #3 coordination lock & gated M5 trend rider")
+    parser.add_argument("--phase2", action="store_true", help="Run Phase-2 stability, Bug #2B/#3/#5 fixes & day-by-day report")
+    parser.add_argument("--trades", default="", help="Optional model name to print full LAST_NIGHT trade log for")
     parser.add_argument("--mock", action="store_true", help="Run fast synthetic smoke test")
     args = parser.parse_args(argv)
 
@@ -718,28 +973,66 @@ def main(argv: list[str] | None = None) -> int:
         if not segs:
             print("No s1_ticks_XAUUSD*.jsonl files found.", file=sys.stderr)
             return 2
-        # Split strictly at 2026-11-26 19:35 SRV (start of last night's live session & +$108 rally)
         overnight_cut = datetime(2026, 11, 26, 19, 35, 0, tzinfo=timezone.utc).timestamp()
 
     total_ticks = sum(len(s) for s in segs)
-    old_ticks = sum(sum(1 for r in s if r[0] < overnight_cut) for s in segs)
-    new_ticks = total_ticks - old_ticks
+
+    # Auto-discover chronological day/session buckets and exact market price stats per bucket
+    bucket_order: list[str] = []
+    bucket_meta: dict[str, dict[str, Any]] = {}
+    for seg in segs:
+        for ts, bid, ask, _ in seg:
+            b = _bucket_label(ts, overnight_cut, is_mock=args.mock)
+            mid = 0.5 * (bid + ask)
+            if b not in bucket_meta:
+                bucket_order.append(b)
+                bucket_meta[b] = {
+                    "start": ts,
+                    "end": ts,
+                    "ticks": 0,
+                    "open": mid,
+                    "close": mid,
+                    "lo": mid,
+                    "hi": mid,
+                }
+            m = bucket_meta[b]
+            m["end"] = ts
+            m["ticks"] += 1
+            m["close"] = mid
+            if mid < m["lo"]:
+                m["lo"] = mid
+            if mid > m["hi"]:
+                m["hi"] = mid
+
+    prior_buckets = [b for b in bucket_order if b != "LAST_NIGHT"]
+
     print(
-        f"=== GOLD FULL DEDUPLICATED BUG-FIX AUDIT ({n_files} FILES -> {len(segs)} CLEAN SEGMENTS, "
-        f"{total_ticks} UNIQUE TICKS | OLD_CHOP={old_ticks}t | LAST_NIGHT_RALLY={new_ticks}t | ORDERS=0) ==="
+        f"=== GOLD DAY-BY-DAY DEDUPLICATED BUG-FIX AUDIT ({n_files} FILES -> {len(segs)} SEGMENTS, "
+        f"{total_ticks:,d} UNIQUE TICKS | ORDERS=0) ==="
     )
-    for idx, s in enumerate(segs, 1):
-        mids = [0.5 * (b + a) for _, b, a, _ in s]
-        print(f"  Seg#{idx:02d}: {_iso_dt(s[0][0])} -> {_iso_dt(s[-1][0])} | {len(s):6d}t | {min(mids):.2f}..{max(mids):.2f} (rng=${max(mids) - min(mids):.2f})")
+    print("SECTION 1 — MARKET TIMELINE BY DAY / SESSION (Server Clock):")
+    for b in bucket_order:
+        m = bucket_meta[b]
+        chg = m["close"] - m["open"]
+        rng = m["hi"] - m["lo"]
+        print(
+            f"  {b:14s}: {_iso_dt(m['start'])} -> {_iso_dt(m['end'])} | {m['ticks']:7,d}t | "
+            f"{m['open']:.2f}->{m['close']:.2f} (net {chg:+7.2f}, lo..hi {m['lo']:.2f}..{m['hi']:.2f}, rng=${rng:.2f})"
+        )
 
     cands = build_phase2_candidates() if args.phase2 else build_candidates()
-    print("-" * 124)
-    print(
-        f"{'MODEL':22s} | {'ALL_NET':>8s} {'ALL_DD':>7s} {'R/DD':>5s} {'W/L':>7s} {'PF':>5s} {'AvgW/AvgL':>12s} "
-        f"| {'OLD_CHOP':>8s} {'OLD_DD':>7s} | {'LAST_NGT':>8s} {'NGT_DD':>7s} {'NGT_WL':>6s}"
-    )
-    print("-" * 124)
 
+    day_hdr = " | ".join(f"{_short_bucket_hdr(b):>14s}" for b in prior_buckets)
+    sep_len = 82 + 17 * len(prior_buckets) + 27
+    print("\nSECTION 2 — MODEL COMPARISON (EXACT DAY-BY-DAY + LAST NIGHT RALLY, 1x LOT):")
+    print("-" * sep_len)
+    print(
+        f"{'MODEL':21s} | {'ALL_NET':>9s} {'ALL_DD':>8s} {'R/DD':>5s} {'W/L':>7s} {'PF':>5s} "
+        f"| {day_hdr} | {'LAST_NIGHT (DD, W/L)':>26s}"
+    )
+    print("-" * sep_len)
+
+    results: dict[str, dict[str, Any]] = {}
     for name, model in cands:
         for seg_idx, seg in enumerate(segs):
             if seg_idx > 0:
@@ -750,17 +1043,57 @@ def main(argv: list[str] | None = None) -> int:
                 model.close_open(seg[-1][0], seg[-1][1], seg[-1][2])
 
         all_w = model.waves_closed
-        old_w = [w for w in all_w if float(w.get("opened_at", w.get("closed_at", 0.0))) < overnight_cut]
-        new_w = [w for w in all_w if float(w.get("opened_at", w.get("closed_at", 0.0))) >= overnight_cut]
         sa = _stats(all_w)
-        so = _stats(old_w)
-        sn = _stats(new_w)
-        print(
-            f"{name:22s} | ${sa['net']:+7.2f} -${sa['dd']:5.2f} {sa['rdd']:5.2f} {sa['w']:2d}W/{sa['l']:<2d}L {sa['pf']:5.2f} "
-            f"{sa['avg_w']:+5.2f}/{sa['avg_l']:+5.2f} "
-            f"| ${so['net']:+7.2f} -${so['dd']:5.2f} | ${sn['net']:+7.2f} -${sn['dd']:5.2f} {sn['w']:2d}W/{sn['l']:<2d}L"
+        by_b: dict[str, dict[str, Any]] = {}
+        for b in bucket_order:
+            bw = [
+                w
+                for w in all_w
+                if _bucket_label(float(w.get("opened_at", w.get("closed_at", 0.0))), overnight_cut, is_mock=args.mock) == b
+            ]
+            by_b[b] = _stats(bw)
+        results[name] = {"waves": all_w, "all": sa, "by_b": by_b}
+
+        prior_cells = " | ".join(
+            f"{_fmt_usd(by_b[b]['net'], 1)}({by_b[b]['w']}/{by_b[b]['l']})" if by_b[b]["n"] else "$0.0(0/0)"
+            for b in prior_buckets
         )
-    print("=" * 124)
+        prior_fmt = " | ".join(f"{c:>14s}" for c in prior_cells.split(" | ")) if prior_buckets else ""
+        sn = by_b.get("LAST_NIGHT", _stats([]))
+        ngt_cell = f"{_fmt_usd(sn['net']):>9s} -${sn['dd']:5.1f} {sn['w']:2d}W/{sn['l']:<2d}L"
+        print(
+            f"{name:21s} | {_fmt_usd(sa['net']):>9s} -${sa['dd']:6.2f} {sa['rdd']:5.2f} {sa['w']:2d}W/{sa['l']:<2d}L {sa['pf']:5.2f} "
+            f"| {prior_fmt} | {ngt_cell:>26s}"
+        )
+    print("=" * sep_len)
+
+    # SECTION 3: Per-Engine x Per-Day Reconciliation Matrices for Baseline + Top Portfolio Winners
+    port_names = [n for n in results if n.startswith("AW_V4")]
+    # Rank AW_V4 portfolios prioritizing strong LAST_NIGHT profit AND strong overall R/DD + Net
+    ranked_ports = sorted(
+        port_names,
+        key=lambda n: (
+            1 if results[n]["by_b"].get("LAST_NIGHT", {"net": 0.0})["net"] > 15.0 else 0,
+            results[n]["all"]["net"] + 1.5 * results[n]["by_b"].get("LAST_NIGHT", {"net": 0.0})["net"],
+        ),
+        reverse=True,
+    )
+
+    print("\nSECTION 3 — PER-ENGINE x PER-DAY RECONCILIATION (ZERO MYSTERY):")
+    inspect_list = ["AW_V3_SHIPPED_BASE"]
+    for pn in ranked_ports[:3]:
+        if pn not in inspect_list:
+            inspect_list.append(pn)
+    for mname in inspect_list:
+        if mname in results:
+            _print_engine_day_matrix(mname, results[mname]["waves"], bucket_order, overnight_cut, is_mock=args.mock)
+
+    # SECTION 4: Complete Trade-by-Trade LAST_NIGHT Audit for #1 Winner (or user-specified --trades model)
+    print("\nSECTION 4 — LAST-NIGHT TRADE-BY-TRADE AUDIT:")
+    trade_target = args.trades if (args.trades and args.trades in results) else (ranked_ports[0] if ranked_ports else "AW_V3_SHIPPED_BASE")
+    if trade_target in results:
+        _print_last_night_trades(trade_target, results[trade_target]["waves"], overnight_cut)
+
     return 0
 
 

@@ -314,16 +314,29 @@ def test_multi_symbol_wave_scanner_and_recorder_mock(capsys: pytest.CaptureFixtu
 
 
 def test_audit_and_fix_gold_bugs_mock(capsys: pytest.CaptureFixture[str]) -> None:
-    """Verify deduplicated Gold bug-fix audit lab runs cleanly in --mock mode (ORDERS=0)."""
+    """Verify day-by-day deduplicated Gold bug-fix audit lab runs cleanly in --mock and --phase2 modes (ORDERS=0)."""
     import audit_and_fix_gold_bugs as ab
 
     rc = ab.main(["--mock"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "GOLD FULL DEDUPLICATED BUG-FIX AUDIT" in out
+    assert "GOLD DAY-BY-DAY DEDUPLICATED BUG-FIX AUDIT" in out
+    assert "SECTION 1" in out
+    assert "SECTION 2" in out
+    assert "SECTION 3" in out
+    assert "SECTION 4" in out
     assert "AW_V3_SHIPPED_BASE" in out
     assert "VSNAP6_FIX12_BREATHE" in out
     assert "CALM_M5_TREND_24H" in out
+
+    rc2 = ab.main(["--mock", "--phase2"])
+    assert rc2 == 0
+    out2 = capsys.readouterr().out
+    assert "VSNAP6_WIDE_ADD22" in out2
+    assert "MACRO_24H_TREND10" in out2
+    assert "AW_V4_ADD22_M5_M60" in out2
+    assert "PER-ENGINE x PER-DAY BREAKDOWN" in out2
+    assert "COMPLETE LAST-NIGHT TRADE-BY-TRADE AUDIT" in out2
 
 
 
