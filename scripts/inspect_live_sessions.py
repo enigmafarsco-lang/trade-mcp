@@ -578,8 +578,36 @@ def main(argv: list[str] | None = None) -> int:
     if args.tick_files:
         tick_paths = [Path(x) if Path(x).is_absolute() else (ROOT / x) for x in args.tick_files]
     else:
-        all_ticks = sorted(logs_dir.glob("s1_ticks_*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+        gold_ticks = sorted(logs_dir.glob("s1_ticks_XAUUSD*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+        all_ticks = gold_ticks or sorted(logs_dir.glob("s1_ticks_*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
         tick_paths = list(reversed(all_ticks[: max(1, args.latest_ticks)]))
+
+    other_sym_files = sorted(
+        (p for p in logs_dir.glob("s1_ticks_*.jsonl") if "XAUUSD" not in p.name.upper()),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )[:12]
+    other_sym_summaries: list[dict[str, Any]] = []
+    for p in other_sym_files:
+        tks = load_tick_stream(p, rebuild_m1=False)
+        if not tks:
+            continue
+        mids = [0.5 * (b + a) for _, b, a, _ in tks]
+        sps = [a - b for _, b, a, _ in tks]
+        avg_sp = sum(sps) / len(sps)
+        rng = max(mids) - min(mids)
+        other_sym_summaries.append({
+            "file": p.name,
+            "ticks": len(tks),
+            "start_srv": _iso_hms(tks[0][0]),
+            "end_srv": _iso_hms(tks[-1][0]),
+            "duration_min": round((tks[-1][0] - tks[0][0]) / 60.0, 1),
+            "low": round(min(mids), 4),
+            "high": round(max(mids), 4),
+            "range": round(rng, 4),
+            "avg_spread": round(avg_sp, 5),
+            "range_to_spread": round(rng / avg_sp, 2) if avg_sp > 1e-9 else 0.0,
+        })
 
     tick_charts = [summarize_tick_chart(p) for p in tick_paths if p.exists()]
 
@@ -691,6 +719,14 @@ def main(argv: list[str] | None = None) -> int:
         for s in recent_micro["all_28_trades"]:
             print(f"    • {s['strategy']:18s}: {s['trades']} trades | NET=${s['net_usd']:+.2f}")
 
+    if other_sym_summaries:
+        print("\n=== 5) OTHER RECORDED SYMBOLS (NON-XAUUSD) ===")
+        for osum in other_sym_summaries:
+            print(
+                f"  • {osum['file']:36s} | {osum['start_srv']} -> {osum['end_srv']} ({osum['duration_min']}m, {osum['ticks']}t) "
+                f"| rng={osum['range']:.4g} avgSp={osum['avg_spread']:.4g} ({osum['range_to_spread']:.1f}x)"
+            )
+
     if args.save:
         out_path = reports_dir / "live_audit_summary.json"
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -702,6 +738,7 @@ def main(argv: list[str] | None = None) -> int:
             "log_snapshots": log_snaps,
             "trade_logs": log_rows,
             "tick_charts": tick_charts,
+            "other_symbols": other_sym_summaries,
             "recent_microscope": recent_micro,
         }
         tmp = out_path.with_name(f".{out_path.name}.{os.getpid()}.tmp")
