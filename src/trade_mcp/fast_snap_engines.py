@@ -348,7 +348,9 @@ class FastSnapEngine:
         if partial_taken:
             rec["partial_banked_usd"] = round(banked, 4)
         self.waves_closed.append(rec)
-        if pnl > 0:
+        # Structural cooldown uses runner PnL (`rem_pnl`): if a `p50+hard_stop_loss` reversed back
+        # through entry, respect `loss_cooldown_sec` even though the 50% partial kept the trade net-green.
+        if rem_pnl > 0:
             self.consecutive_losses = 0
             cd = self.cfg.win_cooldown_sec
         else:

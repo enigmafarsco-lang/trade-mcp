@@ -400,8 +400,13 @@ def test_aw_v4_partial_bank_htf_zscore_and_coord_bugs_fixed() -> None:
     assert s_v4.fast_shock_engine.cfg.be_arm_price == 4.50
     assert s_v4.calm_engine.cfg.min_sl_price == 3.20
     assert s_v4.calm_engine.cfg.max_sl_price == 4.80
+    assert s_v4.calm_engine.cfg.leg_lot == 0.01
+    assert s_v4.calm_engine.cfg.max_lot == 0.02
     assert s_v4.calm_engine.cfg.block_counter_30m == 9.0
     assert s_v4.calm_engine.cfg.block_counter_60m == 12.0
+    s_v4_2x = AllWeatherPaperSuite(initial_capital_usd=1000.0, risk_multiplier=2.0)
+    assert s_v4_2x.calm_engine.cfg.leg_lot == 0.02
+    assert s_v4_2x.calm_engine.cfg.max_lot == 0.04
 
     # 2) Bug #1: VSNAP6 causal 15m HTF counter-trend guard blocks counter-trend SELL after +$12 15m rally
     cfg_v4 = replace(_build_fast_shock6_cfg(leg_lot=0.02, all_24h=True, engine_version="v4"), dynamic_sizing=False)
@@ -474,6 +479,24 @@ def test_aw_v4_partial_bank_htf_zscore_and_coord_bugs_fixed() -> None:
     assert a1["net_profit_usd"] == pytest.approx(2.70 + 8.50, abs=0.05)  # 0.01*$2.70 + 0.01*$8.50 = $11.20
     assert a1["balance_usd"] == a1["equity_usd"]
     assert a2["net_profit_usd"] == pytest.approx(a1["net_profit_usd"] * 2.0, abs=0.02)
+
+    # Verify structural cooldown: p50+hard_stop_loss (net-green financially, yet failed breakout) uses loss_cooldown_sec!
+    e_cd = FastSnapEngine(cfg=replace(cfg_v4, enable_adds=False))
+    t_cd = 1764155000.0
+    for s in range(35):
+        e_cd.on_tick(ts=t_cd + s, bid=3600.00, ask=3600.30)
+    for s in range(1, 27):
+        p = 3600.00 + 0.22 * s
+        e_cd.on_tick(ts=t_cd + 35 + s, bid=p, ask=p + 0.30)
+    assert e_cd.basket is not None
+    ent_cd = float(e_cd.basket["avg_entry"])
+    t_part = t_cd + 65.0
+    e_cd.on_tick(ts=t_part, bid=ent_cd + 2.70, ask=ent_cd + 3.00)  # banks 50% (+$2.70), runner SL -> ent - 0.60
+    t_stop = t_cd + 70.0
+    stop_evs = e_cd.on_tick(ts=t_stop, bid=ent_cd - 0.65, ask=ent_cd - 0.35)  # runner stopped -> p50+hard_stop_loss
+    assert stop_evs and stop_evs[0]["wave"]["exit_reason"] == "p50+hard_stop_loss"
+    assert stop_evs[0]["wave"]["net_pnl_usd"] > 0.0  # financially green (+$2.05)!
+    assert e_cd.cooldown_until == pytest.approx(t_stop + e_cd.cfg.loss_cooldown_sec)  # structurally failed breakout -> 90s cooldown!
 
     # 4) Bug #3: SHOCK10 / VSNAP6 coordination lock blocks SHOCK10 duplicate open while VSNAP6 holds basket
     ticks_dual = make_synthetic_dual_session()

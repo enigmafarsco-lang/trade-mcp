@@ -81,9 +81,10 @@ def _build_fast_shock6_cfg(
     return cfg
 
 
-def _build_zscore_mr_24h_cfg(*, leg_lot: float = 0.03, engine_version: str = "v4") -> TickRobustZScoreConfig:
+def _build_zscore_mr_24h_cfg(*, leg_lot: float = 0.01, engine_version: str = "v4") -> TickRobustZScoreConfig:
     if engine_version == "v4":
-        # Bug #4: tight SL ($3.20..$4.80) + causal 30m/60m macro breakout guard
+        # Bug #4 + Risk-Parity Sizing: tight SL ($3.20..$4.80), causal 30m/60m breakout guard,
+        # and ~$4.80/trade SL risk parity with SHOCK10 ($4.50), MACRO_WAVE ($4.50), and VSNAP6 ($5.60).
         return TickRobustZScoreConfig(
             name="ZSCORE_MR_24H",
             bar_sec=60,
@@ -95,7 +96,7 @@ def _build_zscore_mr_24h_cfg(*, leg_lot: float = 0.03, engine_version: str = "v4
             max_sl_price=4.80,
             leg_lot=leg_lot,
             variable_lot_by_z=True,
-            max_lot=0.06,
+            max_lot=round(max(0.02, leg_lot * 2.0), 2),
             night_adaptive=True,
             night_entry_z=2.15,
             night_adx_max=24.0,
@@ -237,10 +238,11 @@ class AllWeatherPaperSuite:
             initial_capital_usd=self.initial_capital_usd,
         )
         if self.calm_profile == "ZSCORE_MR_24H":
+            z_base_lot = self.news_leg_lot if self.engine_version == "v4" else max(0.03, self.calm_leg_lot)
             self.calm_engine = TickRobustZScoreEngine(
                 cfg=_scale_cfg_lots(
                     _build_zscore_mr_24h_cfg(
-                        leg_lot=max(0.03, self.calm_leg_lot),
+                        leg_lot=z_base_lot,
                         engine_version=self.engine_version,
                     ),
                     rm,
