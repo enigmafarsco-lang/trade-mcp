@@ -316,6 +316,25 @@ def _run_mock(args: argparse.Namespace) -> int:
     return 0
 
 
+def resolve_recorder_mode(args: argparse.Namespace) -> tuple[str, list[str]]:
+    """Return ('scan' | 'record', explicit_target_symbols) for CLI flags."""
+    if args.scan or (not args.symbols and not args.auto_wave and not args.wave_top3 and not args.wave_top4):
+        return "scan", []
+    if args.symbols:
+        return "record", [s.strip() for s in args.symbols if s.strip()]
+    if args.wave_top4:
+        syms = ["NAS100_i", "GER40_i", "US500_i", "XAGUSD_i"]
+        if args.include_gold:
+            syms.insert(0, "XAUUSD_i")
+        return "record", syms
+    if args.wave_top3:
+        syms = ["NAS100_i", "XAGUSD_i", "GER40_i"]
+        if args.include_gold:
+            syms.insert(0, "XAUUSD_i")
+        return "record", syms
+    return "record", []
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Read-only Multi-Symbol Alpari Wave Scanner & 24/7 Tick Recorder (ORDERS=0)"
@@ -370,7 +389,8 @@ def main(argv: list[str] | None = None) -> int:
             clock_offset = srv_ts0 - time.time()
 
             # 1) SCAN MODE: discover exact Alpari symbols, live spreads, and M1 ATR/Spread wave score
-            if args.scan or (not args.symbols and not args.auto_wave):
+            mode, preset_symbols = resolve_recorder_mode(args)
+            if mode == "scan":
                 all_rows = _fetch_all_symbols_rows(feed, include_hidden=True, limit=1500)
                 found = discover_wave_symbols(all_rows, include_gold=True, max_symbols=14)
                 visible_names = sorted(
@@ -453,16 +473,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
 
             # 2) MULTI-SYMBOL RECORDING MODE
-            if args.symbols:
-                target_symbols = [s.strip() for s in args.symbols if s.strip()]
-            elif args.wave_top4:
-                target_symbols = ["NAS100_i", "GER40_i", "US500_i", "XAGUSD_i"]
-                if args.include_gold:
-                    target_symbols.insert(0, "XAUUSD_i")
-            elif args.wave_top3:
-                target_symbols = ["NAS100_i", "XAGUSD_i", "GER40_i"]
-                if args.include_gold:
-                    target_symbols.insert(0, "XAUUSD_i")
+            if preset_symbols:
+                target_symbols = preset_symbols
             else:
                 all_rows = _fetch_all_symbols_rows(feed, include_hidden=True, limit=1500)
                 found = discover_wave_symbols(

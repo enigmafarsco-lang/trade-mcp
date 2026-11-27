@@ -252,6 +252,35 @@ def test_anti_teleport_guard_blocks_single_tick_flash_spike() -> None:
     assert guarded._has_open_position() is False
 
 
+def test_record_multi_ticks_live_wave_top4_enters_record_mode() -> None:
+    import argparse
+
+    import record_multi_ticks_live as rml
+
+    def _ns(**kw: object) -> argparse.Namespace:
+        defaults: dict[str, object] = {
+            "scan": False,
+            "auto_wave": False,
+            "wave_top3": False,
+            "wave_top4": False,
+            "symbols": [],
+            "include_gold": False,
+        }
+        defaults.update(kw)
+        return argparse.Namespace(**defaults)
+
+    assert rml.resolve_recorder_mode(_ns()) == ("scan", [])
+    assert rml.resolve_recorder_mode(_ns(scan=True, wave_top4=True)) == ("scan", [])
+    assert rml.resolve_recorder_mode(_ns(wave_top4=True)) == ("record", ["NAS100_i", "GER40_i", "US500_i", "XAGUSD_i"])
+    assert rml.resolve_recorder_mode(_ns(wave_top4=True, include_gold=True)) == (
+        "record",
+        ["XAUUSD_i", "NAS100_i", "GER40_i", "US500_i", "XAGUSD_i"],
+    )
+    assert rml.resolve_recorder_mode(_ns(wave_top3=True)) == ("record", ["NAS100_i", "XAGUSD_i", "GER40_i"])
+    assert rml.resolve_recorder_mode(_ns(symbols=["NAS100_i", "US500_i"])) == ("record", ["NAS100_i", "US500_i"])
+    assert rml.resolve_recorder_mode(_ns(auto_wave=True)) == ("record", [])
+
+
 def test_audit_multi_symbol_waves_mock_cli_runs_cleanly(capsys) -> None:
     prev_allow = os.environ.get("TRADE_MCP_ALLOW_TRADING")
     prev_paper = os.environ.get("TRADE_MCP_PAPER_TRADING")
