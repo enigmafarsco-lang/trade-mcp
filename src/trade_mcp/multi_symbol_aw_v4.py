@@ -174,7 +174,13 @@ def _scale_m1_context(m1_ctx: dict[str, Any], price_scale: float) -> dict[str, A
 
 @dataclass
 class NormalizedAllWeatherV4:
-    """Runs production `AllWeatherPaperSuite(v4)` on ANY symbol via linear price normalization (ORDERS=0)."""
+    """Runs production `AllWeatherPaperSuite(v4)` on ANY symbol via linear price normalization (ORDERS=0).
+
+    Includes a built-in Stale-Quote / Market-Reopen Gap Guard: if `(bid, ask)` remains frozen
+    identically for `stale_freeze_sec` (e.g. daily rollover or holiday halt), frozen ticks are
+    ignored, and when live quotes resume, rolling velocity buffers reset with a `reopen_warmup_sec`
+    entry suppression window so multi-hour reopen gaps never trigger false velocity shocks.
+    """
 
     symbol: str
     price_scale: float
@@ -184,9 +190,17 @@ class NormalizedAllWeatherV4:
     initial_capital_usd: float = 1000.0
     active_hours_srv: tuple[int, ...] | None = None
     allow_partial_split: bool = True
+    stale_freeze_sec: float = 90.0
+    reopen_warmup_sec: float = 120.0
 
     suite: AllWeatherPaperSuite = field(init=False)
     waves_closed: list[dict[str, Any]] = field(default_factory=list)
+    _last_quote: tuple[float, float] | None = field(default=None, init=False, repr=False)
+    _last_change_ts: float = field(default=0.0, init=False, repr=False)
+    _is_frozen: bool = field(default=False, init=False, repr=False)
+    _reopen_block_until: float = field(default=0.0, init=False, repr=False)
+    frozen_ticks_skipped: int = field(default=0, init=False)
+    reopen_resets: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
         if self.price_scale <= 0.0 or not math.isfinite(self.price_scale):
@@ -226,6 +240,9 @@ class NormalizedAllWeatherV4:
         if self.active_hours_srv is not None:
             self.suite.calm_engine.cfg.active_server_hours = self.active_hours_srv
             self.suite.macro_engine.cfg.active_server_hours = self.active_hours_srv
+        self._last_quote = None
+        self._last_change_ts = 0.0
+        self._is_frozen = False
 
     def _denormalize_wave(self, raw_wave: dict[str, Any]) -> dict[str, Any]:
         s = self.price_scale
@@ -242,9 +259,54 @@ class NormalizedAllWeatherV4:
         w["_engine"] = {"FAST_SHOCK6": "VSNAP6", "NEWS_SHOCK": "SHOCK10"}.get(lbl, lbl)
         return w
 
+    def _has_open_position(self) -> bool:
+        if self.suite.fast_shock_engine is not None and self.suite.fast_shock_engine.basket is not None:
+            return True
+        if self.suite.shock_engine is not None and self.suite.shock_engine.basket is not None:
+            return True
+        if self.suite.macro_engine.basket is not None:
+            return True
+        return self.suite.calm_engine.basket is not None
+
     def on_tick(self, ts: float, bid: float, ask: float, m1_context: dict[str, Any]) -> list[dict[str, Any]]:
         if bid <= 0.0 or ask <= 0.0 or ask < bid:
             return []
+
+        # Stale-quote / market-closed freeze detector
+        if self.stale_freeze_sec > 0.0:
+            q_now = (bid, ask)
+            if self._last_quote is None:
+                self._last_quote = q_now
+                self._last_change_ts = ts
+            elif q_now == self._last_quote:
+                if (ts - self._last_change_ts) >= self.stale_freeze_sec:
+                    if not self._is_frozen:
+                        # Close any open position cleanly at last pre-halt quote before freezing
+                        if self._has_open_position():
+                            self.close_open(ts, bid, ask, reason="market_freeze_halt")
+                        self._is_frozen = True
+                    self.frozen_ticks_skipped += 1
+                    return []
+            else:
+                was_frozen = self._is_frozen
+                self._last_quote = q_now
+                self._last_change_ts = ts
+                if was_frozen:
+                    self._is_frozen = False
+                    self.reset_segment()
+                    self._last_quote = q_now
+                    self._last_change_ts = ts
+                    self.reopen_resets += 1
+                    if self.reopen_warmup_sec > 0.0:
+                        self._reopen_block_until = ts + self.reopen_warmup_sec
+
+        # During post-reopen warmup, let rolling buffers absorb the new price level without firing into reopen gap
+        if ts < self._reopen_block_until and not self._has_open_position():
+            # Feed a neutral/blocked m1 context and keep suite cooldowns armed until warmup finishes
+            for eng in (self.suite.fast_shock_engine, self.suite.shock_engine, self.suite.macro_engine, self.suite.calm_engine):
+                if eng is not None and hasattr(eng, "cooldown_until"):
+                    eng.cooldown_until = max(float(eng.cooldown_until), self._reopen_block_until)
+
         s = self.price_scale
         prev = len(self.suite.trades_closed)
         evs = self.suite.on_tick(

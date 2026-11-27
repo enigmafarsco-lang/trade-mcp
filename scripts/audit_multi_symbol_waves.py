@@ -71,8 +71,12 @@ def _quantile(sorted_vals: list[float], q: float) -> float:
 
 
 def _scale_free_m1_context(bars: list[list[float]], *, sr_lookback: int = 15) -> dict[str, Any]:
-    """Strictly causal closed-bar M1 S/R + ATR context without any Gold $0.10 ATR floor."""
-    if len(bars) < max(25, sr_lookback + 2):
+    """Strictly causal closed-bar M1 S/R + ATR context without any Gold $0.10 ATR floor.
+
+    Matches `s1_impulse_audit._mini_m1_context` during minutes 4..24 so Gold benchmark matches
+    production `AW_V4_PROD_1X`, then transitions seamlessly to full EMA9/EMA21 + 15-bar S/R.
+    """
+    if len(bars) < 4:
         return {
             "bias": 0,
             "label": "INSUFFICIENT_M1",
@@ -81,6 +85,29 @@ def _scale_free_m1_context(bars: list[list[float]], *, sr_lookback: int = 15) ->
             "atr_m1": 0.0,
             "pullback_resume": False,
             "last_close": 0.0,
+        }
+    if len(bars) < max(25, sr_lookback + 2):
+        w = bars[-min(len(bars), 20) :]
+        c0 = float(w[0][1])
+        c1 = float(w[-1][4])
+        sup = min(float(b[3]) for b in w[:-1]) if len(w) > 1 else float(w[0][3])
+        res = max(float(b[2]) for b in w[:-1]) if len(w) > 1 else float(w[0][2])
+        atr_m = sum(max(float(b[2]) - float(b[3]), 1e-6) for b in w) / len(w)
+        slope = c1 - c0
+        if slope > 0.35 * atr_m:
+            bias, label = 1, "MINI_BULL_TREND"
+        elif slope < -0.35 * atr_m:
+            bias, label = -1, "MINI_BEAR_TREND"
+        else:
+            bias, label = 0, "MINI_NEUTRAL"
+        return {
+            "bias": bias,
+            "label": label,
+            "support": round(sup, 6),
+            "resistance": round(res, 6),
+            "atr_m1": round(max(atr_m, 1e-6), 6),
+            "pullback_resume": False,
+            "last_close": round(c1, 6),
         }
     window = bars[-60:]
     closes = [b[4] for b in window]
@@ -164,8 +191,9 @@ def load_deduplicated_symbol_segments(
     *,
     dedupe_sec: float = 0.22,
     gap_split_sec: float = 120.0,
-) -> list[list[tuple[float, float, float, dict[str, Any]]]]:
-    """Merge, chronologically sort, deduplicate, gap-split, and rebuild causal scale-free M1 context."""
+    freeze_split_sec: float = 90.0,
+) -> tuple[list[list[tuple[float, float, float, dict[str, Any]]]], dict[str, Any]]:
+    """Merge, chronologically sort, deduplicate, strip frozen market-closed spans, gap-split, and rebuild M1."""
     raw: list[tuple[float, float, float]] = []
     for f in files:
         with f.open("r", encoding="utf-8") as fh:
@@ -184,7 +212,7 @@ def load_deduplicated_symbol_segments(
                     raw.append((ts, bid, ask))
 
     if not raw:
-        return []
+        return [], {"dedup_ticks": 0, "active_ticks": 0, "frozen_ticks": 0, "live_hrs": 0.0, "frozen_hrs": 0.0, "freeze_events": 0}
     raw.sort(key=lambda x: x[0])
 
     dedup: list[tuple[float, float, float]] = []
@@ -194,16 +222,71 @@ def load_deduplicated_symbol_segments(
             dedup.append(item)
             last_ts = item[0]
 
+    # Split on wall-clock gaps (> gap_split_sec) AND frozen market-closed quotes (>= freeze_split_sec unchanged bid/ask)
     seg_raw: list[list[tuple[float, float, float]]] = []
     cur: list[tuple[float, float, float]] = []
+    last_q: tuple[float, float] | None = None
+    last_q_ts = 0.0
+    in_freeze = False
+    frozen_ticks = 0
+    frozen_sec_total = 0.0
+    freeze_start_ts = 0.0
+    freeze_events = 0
+
     for item in dedup:
-        if cur and (item[0] - cur[-1][0]) > gap_split_sec:
+        ts, bid, ask = item
+        q = (bid, ask)
+
+        if cur and (ts - cur[-1][0]) > gap_split_sec:
             if len(cur) >= 30:
                 seg_raw.append(cur)
             cur = []
+            last_q = q
+            last_q_ts = ts
+            in_freeze = False
+
+        if last_q is None:
+            last_q = q
+            last_q_ts = ts
+        elif q == last_q:
+            if freeze_split_sec > 0.0 and (ts - last_q_ts) >= freeze_split_sec:
+                if not in_freeze:
+                    in_freeze = True
+                    freeze_events += 1
+                    freeze_start_ts = last_q_ts
+                    # Trim the trailing frozen ticks already appended since last_q_ts
+                    while cur and cur[-1][0] > last_q_ts and (cur[-1][1], cur[-1][2]) == q:
+                        cur.pop()
+                        frozen_ticks += 1
+                    if len(cur) >= 30:
+                        seg_raw.append(cur)
+                    cur = []
+                frozen_ticks += 1
+                continue
+        else:
+            if in_freeze:
+                frozen_sec_total += max(0.0, ts - freeze_start_ts)
+                in_freeze = False
+            last_q = q
+            last_q_ts = ts
+
         cur.append(item)
+
+    if in_freeze and dedup:
+        frozen_sec_total += max(0.0, dedup[-1][0] - freeze_start_ts)
     if len(cur) >= 30:
         seg_raw.append(cur)
+
+    live_sec_total = sum(max(0.0, s[-1][0] - s[0][0]) for s in seg_raw)
+    active_ticks = sum(len(s) for s in seg_raw)
+    freeze_meta = {
+        "dedup_ticks": len(dedup),
+        "active_ticks": active_ticks,
+        "frozen_ticks": frozen_ticks,
+        "live_hrs": round(live_sec_total / 3600.0, 2),
+        "frozen_hrs": round(frozen_sec_total / 3600.0, 2),
+        "freeze_events": freeze_events,
+    }
 
     segments: list[list[tuple[float, float, float, dict[str, Any]]]] = []
     for s_ticks in seg_raw:
@@ -220,8 +303,8 @@ def load_deduplicated_symbol_segments(
                 cur_bar = [float(bm * 60), mid, mid, mid, mid, 1.0]
             elif bm > cur_bm:
                 synth_bars.append(cur_bar)
-                if len(synth_bars) > 90:
-                    synth_bars = synth_bars[-90:]
+                if len(synth_bars) > 200:
+                    synth_bars = synth_bars[-200:]
                 cached_m1 = _scale_free_m1_context(synth_bars)
                 cur_bm = bm
                 cur_bar = [float(bm * 60), mid, mid, mid, mid, 1.0]
@@ -235,7 +318,7 @@ def load_deduplicated_symbol_segments(
             out_seg.append((ts, bid, ask, cached_m1))
         segments.append(out_seg)
 
-    return segments
+    return segments, freeze_meta
 
 
 def analyze_symbol_microstructure(
@@ -611,8 +694,13 @@ def main(argv: list[str] | None = None) -> int:
             pass
 
     sym_segments: dict[str, list[list[tuple[float, float, float, dict[str, Any]]]]] = {}
+    freeze_map: dict[str, dict[str, Any]] = {}
     if args.mock:
         sym_segments = _make_mock_symbol_streams()
+        for sym, segs in sym_segments.items():
+            nt = sum(len(s) for s in segs)
+            lh = sum(max(0.0, s[-1][0] - s[0][0]) for s in segs) / 3600.0
+            freeze_map[sym] = {"dedup_ticks": nt, "active_ticks": nt, "frozen_ticks": 0, "live_hrs": round(lh, 2), "frozen_hrs": 0.0, "freeze_events": 0}
     else:
         logs_dir = Path(args.logs_dir) if Path(args.logs_dir).is_absolute() else (ROOT / args.logs_dir)
         files_by_sym = discover_recorded_symbol_files(logs_dir)
@@ -625,9 +713,10 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             if wanted is not None and sym not in wanted:
                 continue
-            segs = load_deduplicated_symbol_segments(flist)
+            segs, fmeta = load_deduplicated_symbol_segments(flist)
             if segs:
                 sym_segments[sym] = segs
+                freeze_map[sym] = fmeta
 
     if not sym_segments:
         print("No valid symbol tick segments found.", file=sys.stderr)
@@ -644,34 +733,36 @@ def main(argv: list[str] | None = None) -> int:
     micro_map: dict[str, dict[str, Any]] = {}
     for sym, segs in sym_segments.items():
         spec = specs.get(sym, AlpariSymbolSpec(sym, "OTHER", 1.0, "USD", 2))
-        micro_map[sym] = analyze_symbol_microstructure(sym, spec, segs)
+        m_row = analyze_symbol_microstructure(sym, spec, segs)
+        m_row.update(freeze_map.get(sym, {}))
+        micro_map[sym] = m_row
 
     ordered_syms = sorted(
         sym_segments.keys(),
         key=lambda s: (0 if s.startswith("XAUUSD") else 1, -micro_map[s]["rng_to_sp"], s),
     )
 
-    print("=" * 136)
-    print(f"=== MULTI-SYMBOL ALPARI REAL-SPREAD & AW_V4 WAVE-SURFING AUDIT ({len(ordered_syms)} SYMBOLS | ORDERS=0) ===")
-    print("=" * 136)
-    print("SECTION 1 — REAL TICK-BY-TICK SPREAD ANATOMY, CONTRACT ECONOMICS & WAVE PHYSICS:")
+    print("=" * 150)
+    print(f"=== MULTI-SYMBOL ALPARI REAL-SPREAD & AW_V4 WAVE-SURFING AUDIT ({len(ordered_syms)} SYMBOLS | FREEZE-CLEANED | ORDERS=0) ===")
+    print("=" * 150)
+    print("SECTION 1 — ACTIVE-MARKET SPREAD ANATOMY (FROZEN MARKET-CLOSED HOURS STRIPPED!), CONTRACT ECONOMICS & WAVE PHYSICS:")
     print(
-        f"{'SYMBOL':11s} {'TICKS':>7s} {'SPAN (SRV)':23s} | {'MED_SP':>7s} {'DAY_SP':>7s} {'NGT_SP':>7s} {'P90_SP':>7s} | "
-        f"{'$/1/LOT':>7s} {'0.01SP$':>7s} {'RNG/SP':>6s} {'60s/SP':>6s} | {'S_SP':>6s} {'1xLOT':>5s} {'1xSL$':>6s} {'GRADE':10s}"
+        f"{'SYMBOL':11s} {'LIVE_T':>7s} {'LIVE/FRZ':>9s} {'SEGS':>4s} | {'MED_SP':>7s} {'DAY_SP':>7s} {'NGT_SP':>7s} {'P90_SP':>7s} | "
+        f"{'0.01SP$':>7s} {'RNG/SP':>6s} {'60s/SP':>6s} {'5m/SP':>6s} | {'S_SP':>6s} {'1xLOT':>5s} {'1xSL$':>6s} {'GRADE':10s}"
     )
-    print("-" * 136)
+    print("-" * 150)
     for sym in ordered_syms:
         m = micro_map[sym]
         d = max(1, min(4, int(m["digits"])))
-        span_s = f"{_iso_dt(m['start_ts'])[5:]}->{_iso_dt(m['end_ts'])[5:]}"
+        lh_s = f"{m.get('live_hrs', 0.0):4.1f}/{m.get('frozen_hrs', 0.0):<4.1f}"
         clamp_s = "*" if m["min_lot_clamped"] else " "
         print(
-            f"{sym:11s} {m['ticks']:7,d} {span_s:23s} | "
+            f"{sym:11s} {m['ticks']:7,d} {lh_s:>9s} {m['segments']:4d} | "
             f"{m['med_sp']:7.{d}f} {m['day_med_sp']:7.{d}f} {m['ngt_med_sp']:7.{d}f} {m['p90_sp']:7.{d}f} | "
-            f"{m['usd_per_unit']:7.1f} ${m['sp_cost_001']:6.2f} {m['rng_to_sp']:5.1f}x {m['p98_60_to_sp']:5.1f}x | "
+            f"${m['sp_cost_001']:6.2f} {m['rng_to_sp']:5.1f}x {m['p98_60_to_sp']:5.1f}x {m['p98_5m_to_sp']:5.1f}x | "
             f"{_fmt_scale(m['s_spread'])} {m['real_vsnap_lot']:5.2f} ${m['real_sl_usd']:5.1f}{clamp_s} {m['grade']:10s}"
         )
-    print("  (* = broker 0.02-lot splittable minimum exceeds Gold $5.60/SL risk target; actual 1-SL USD shown)")
+    print("  (LIVE/FRZ = active moving hours / frozen closed-market hours stripped; * = broker 0.02-lot min > $5.60 SL target)")
 
     # Discover chronological buckets across all symbols
     all_buckets: list[str] = []
@@ -753,16 +844,24 @@ def main(argv: list[str] | None = None) -> int:
             best_by_sym[sym] = sym_best
         print("-" * (104 + 18 * len(all_buckets)))
 
-    # SECTION 3: Per-Engine x Per-Day Reconciliation + Trade Log for Profitable Non-Gold Symbols
-    winners = [
-        best_by_sym[s]
-        for s in ordered_syms
-        if (not s.startswith("XAUUSD")) and best_by_sym[s]["stats"]["net"] > 0.0 and best_by_sym[s]["stats"]["n"] >= 1
-    ]
-    print("\nSECTION 3 — PROFITABLE NON-GOLD WINNERS (PER-ENGINE x PER-DAY + TRADE LIST):")
-    if not winners:
-        print("  (No non-Gold symbol was net-positive in this window — see Section 4 for spread/range diagnosis)")
-    for wrec in winners:
+    # SECTION 3: Per-Engine x Per-Day Reconciliation + Trade Log for ALL Active Non-Gold Symbols (Wins & Losses!)
+    active_non_gold: list[dict[str, Any]] = []
+    for s in ordered_syms:
+        if s.startswith("XAUUSD"):
+            continue
+        # Prefer best variant if it took trades; otherwise show V4_SPREAD_24H or first variant with trades
+        cand = best_by_sym[s]
+        if cand["stats"]["n"] == 0:
+            traded = [r for r in audit_rows if r["symbol"] == s and r["stats"]["n"] > 0]
+            if traded:
+                cand = traded[0]
+        if cand["stats"]["n"] > 0:
+            active_non_gold.append(cand)
+
+    print("\nSECTION 3 — ACTIVE NON-GOLD TRADE DIAGNOSTICS (PER-ENGINE x PER-DAY + FULL TRADE LIST, WINS & LOSSES):")
+    if not active_non_gold:
+        print("  (No non-Gold symbol triggered any trades after stripping frozen market-closed spans!)")
+    for wrec in active_non_gold:
         sym = wrec["symbol"]
         waves = wrec["waves"]
         sa = wrec["stats"]
@@ -790,8 +889,8 @@ def main(argv: list[str] | None = None) -> int:
             p = float(w.get("net_pnl_usd", 0.0))
             cum += p
             print(
-                f"    {i:2d} {_iso_hms(float(w.get('opened_at', 0.0))):14s} {str(w.get('_engine', ''))[:10]:10s} "
-                f"{str(w.get('side', '')).upper():4s} {float(w.get('total_volume', 0.0)):5.2f}L "
+                f"    {i:2d} {_iso_hms(float(w.get('opened_at', 0.0))):14s}->{_iso_hms(float(w.get('closed_at', 0.0)))[6:]:8s} "
+                f"{str(w.get('_engine', ''))[:10]:10s} {str(w.get('side', '')).upper():4s} {float(w.get('total_volume', 0.0)):5.2f}L "
                 f"{float(w.get('avg_entry', 0.0)):.{d}f}->{float(w.get('exit_price', 0.0)):.{d}f} "
                 f"{str(w.get('exit_reason', ''))[:18]:18s} {_fmt_usd(p):>9s} (cum {_fmt_usd(cum):>9s})"
             )

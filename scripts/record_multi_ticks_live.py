@@ -475,8 +475,10 @@ def main(argv: list[str] | None = None) -> int:
                 stats[sym] = {
                     "ticks_total": 0,
                     "ticks_day": 0,
+                    "frozen_skipped": 0,
                     "last_bid": 0.0,
                     "last_ask": 0.0,
+                    "last_change_ts": 0.0,
                     "spread_sum": 0.0,
                     "low": None,
                     "high": None,
@@ -566,8 +568,14 @@ def main(argv: list[str] | None = None) -> int:
                             bid, ask = float(q["bid"]), float(q["ask"])
                             if bid <= 0.0 or ask < bid:
                                 continue
-                            fhs[sym].write(_format_tick_line(now_ts, bid, ask, m1_ctxs[sym]))
                             st = stats[sym]
+                            if st["ticks_total"] > 0 and bid == st["last_bid"] and ask == st["last_ask"]:
+                                if (now_ts - float(st["last_change_ts"])) >= 10.0:
+                                    st["frozen_skipped"] += 1
+                                    continue
+                            else:
+                                st["last_change_ts"] = now_ts
+                            fhs[sym].write(_format_tick_line(now_ts, bid, ask, m1_ctxs[sym]))
                             st["ticks_total"] += 1
                             st["ticks_day"] += 1
                             st["last_bid"] = bid

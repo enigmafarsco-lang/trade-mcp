@@ -141,6 +141,62 @@ def test_scale_free_m1_context_has_no_gold_atr_floor() -> None:
     assert ctx["bias"] == 1
 
 
+def test_normalized_aw_v4_blocks_market_reopen_gap_after_freeze() -> None:
+    nas = NormalizedAllWeatherV4(
+        symbol="NAS100_i",
+        price_scale=10.0,
+        usd_per_price_unit=1.0,
+        lot_scale=10.0,
+        digits=1,
+        stale_freeze_sec=90.0,
+        reopen_warmup_sec=120.0,
+    )
+    m1_bull = {"bias": 1, "label": "BULL_TREND", "support": 25950.0, "resistance": 26050.0, "atr_m1": 15.0, "pullback_resume": False, "last_close": 26000.0}
+    ts = 1_795_700_000.0
+    # 1) Normal moving market for 60s
+    for i in range(60):
+        px = 26000.0 + (i % 5) * 0.5
+        nas.on_tick(ts + i, px, px + 3.8, m1_bull)
+    # 2) Market closes & freezes identically for 400s
+    for j in range(1, 401):
+        nas.on_tick(ts + 60 + j, 26002.0, 26008.0, m1_bull)
+    # 3) Market reopens with massive +220 pt gap + volatile spikes over 60s
+    for k in range(60):
+        px = 26220.0 + k * 2.0
+        nas.on_tick(ts + 461 + k, px, px + 4.0, m1_bull)
+
+    assert nas.frozen_ticks_skipped >= 300
+    assert nas.reopen_resets == 1
+    assert len(nas.waves_closed) == 0
+    assert nas._has_open_position() is False
+
+
+def test_load_deduplicated_symbol_segments_strips_frozen_market_hours(tmp_path: Path) -> None:
+    import json
+
+    p = tmp_path / "s1_ticks_NAS100_i_20261126.jsonl"
+    ts0 = 1_795_700_000.0
+    rows: list[str] = []
+    # Segment 1: 40 live moving ticks
+    for i in range(40):
+        b = 26000.0 + i * 0.5
+        rows.append(json.dumps({"ts": ts0 + i, "bid": b, "ask": b + 4.0}))
+    # 300s frozen closed market (identical bid/ask)
+    for j in range(1, 301):
+        rows.append(json.dumps({"ts": ts0 + 40 + j, "bid": 26019.5, "ask": 26025.5}))
+    # Segment 2: reopen with +200 pt gap & 40 live moving ticks
+    for k in range(40):
+        b = 26220.0 + k * 0.5
+        rows.append(json.dumps({"ts": ts0 + 341 + k, "bid": b, "ask": b + 4.0}))
+    p.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    segs, meta = msa.load_deduplicated_symbol_segments([p], freeze_split_sec=90.0)
+    assert len(segs) == 2
+    assert meta["freeze_events"] == 1
+    assert meta["frozen_ticks"] == 299
+    assert meta["active_ticks"] == 81
+
+
 def test_audit_multi_symbol_waves_mock_cli_runs_cleanly(capsys) -> None:
     prev_allow = os.environ.get("TRADE_MCP_ALLOW_TRADING")
     prev_paper = os.environ.get("TRADE_MCP_PAPER_TRADING")
@@ -150,7 +206,7 @@ def test_audit_multi_symbol_waves_mock_cli_runs_cleanly(capsys) -> None:
         _restore_trade_mcp_env(prev_allow, prev_paper)
     out = capsys.readouterr().out
     assert rc == 0
-    assert "SECTION 1 — REAL TICK-BY-TICK SPREAD ANATOMY" in out
+    assert "SECTION 1 — ACTIVE-MARKET SPREAD ANATOMY" in out
     assert "V4_SHIPPED_1.0" in out
     assert "NAS100_i" in out
     assert "XAGUSD_i" in out
