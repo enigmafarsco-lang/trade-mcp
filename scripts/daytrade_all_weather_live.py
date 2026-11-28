@@ -160,65 +160,47 @@ def _print_mt5_panel(
     acct = suite.account_summary(bid, ask)
     opens = suite.open_positions(bid, ask)
     st = suite.live_status(now_ts)
-    pf_s = f"{acct['pf']:.2f}" if acct["pf"] is not None else "-"
     rm_s = f" | Risk={acct['risk_multiplier']:.2g}x" if abs(acct["risk_multiplier"] - 1.0) > 1e-6 else ""
-    bar = "=" * 74
+    bar = "=" * 68
     print(f"\n{bar}", flush=True)
     print(
-        f"[{mode_tag} | {acct['portfolio']} | ORDERS=0{rm_s}]  {symbol}   Bid={bid:.2f}  Ask={ask:.2f}  (sp={ask - bid:.2f})   SRV {srv_time}",
+        f"[{mode_tag} | {acct['portfolio']} | ORDERS=0{rm_s}]  {symbol}   Price={bid:.2f}   {srv_time}",
         flush=True,
     )
     print(
-        f"Balance: ${acct['balance_usd']:,.2f}  |  Equity: ${acct['equity_usd']:,.2f}  |  "
-        f"PROFIT: {_fmt_usd(acct['net_profit_usd'])}  (Floating: {_fmt_usd(acct['floating_pnl_usd'])})",
+        f"Balance: ${acct['equity_usd']:,.2f}  |  Trades: {acct['trades_count']}  |  Status: {st['headline']}",
         flush=True,
     )
-    print(
-        f"Closed: {acct['wins']}W/{acct['losses']}L ({acct['win_rate_pct']:.1f}%)  |  "
-        f"Realized: {_fmt_usd(acct['realized_pnl_usd'])}  |  PF: {pf_s}  |  MaxDD: -${acct['max_dd_usd']:.2f}",
-        flush=True,
-    )
-    print(
-        f"Status:  {st['headline']}  (15m {st['move_15m']:+.2f} | ATR ${st['atr_m1']:.2f} | 60s {st['move_60s']:+.2f})",
-        flush=True,
-    )
-    print("-" * 74, flush=True)
     if opens:
         print(f"OPEN POSITIONS ({len(opens)}):", flush=True)
         for p in opens:
-            lk = " (LOCKED)" if p["stop_locked"] else ""
-            p50 = f" [P50% banked {_fmt_usd(p['banked_pnl_usd'])}]" if p.get("partial_taken") else ""
             print(
-                f"  • {p['side']:4s} {p['volume']:.2f} lot ({p['legs']}L) @ {p['avg_entry']:.2f} "
-                f"| SL: {p['stop']:.2f}{lk}{p50} | P/L: {_fmt_usd(p['pnl_usd'])}  [{p['engine_label']}]",
+                f"  • {p['side']:4s} {p['volume']:.2f} lot @ {p['avg_entry']:.2f} "
+                f"| SL: {p['stop']:.2f} | {_fmt_usd(p['pnl_usd'])}",
                 flush=True,
             )
-    else:
-        print("OPEN POSITIONS (0):  —  (Waiting for valid setup)", flush=True)
+    print("-" * 68, flush=True)
+    print(f"PROFIT: {_fmt_usd(acct['net_profit_usd'])}", flush=True)
     print(bar, flush=True)
 
 
 def _print_final_summary(suite: AllWeatherPaperSuite, *, title: str, bid: float, ask: float) -> None:
     acct = suite.account_summary(bid, ask)
-    pf_s = f"{acct['pf']:.2f}" if acct["pf"] is not None else "-"
-    print(f"\n{'=' * 74}")
+    print(f"\n{'=' * 68}")
     print(title)
-    print(f"{'=' * 74}")
+    print(f"{'=' * 68}")
     print(
-        f"Balance:  ${acct['balance_usd']:,.2f}  (Start: ${acct['initial_capital_usd']:,.2f}  |  RiskMult: {acct['risk_multiplier']:.2g}x)\n"
-        f"PROFIT:   {_fmt_usd(acct['net_profit_usd'])}\n"
-        f"MaxDD:   -${acct['max_dd_usd']:.2f}\n"
-        f"Trades:   {acct['trades_count']} ({acct['wins']}W / {acct['losses']}L = {acct['win_rate_pct']:.1f}% WR)\n"
-        f"PF:       {pf_s}   |   AvgWin: {_fmt_usd(acct['avg_win_usd'])}   |   AvgLoss: {_fmt_usd(acct['avg_loss_usd'])}"
+        f"Balance:  ${acct['equity_usd']:,.2f}  (Start: ${acct['initial_capital_usd']:,.2f}  |  RiskMult: {acct['risk_multiplier']:.2g}x)\n"
+        f"Trades:   {acct['trades_count']}"
     )
-    print("-" * 74)
+    print("-" * 68)
     for eng_name in suite.engine_order:
         e_trades = [t for t in suite.trades_closed if t["engine"] == eng_name]
-        ew = sum(1 for t in e_trades if float(t["net_pnl_usd"]) > 0)
-        el = len(e_trades) - ew
         epnl = sum(float(t["net_pnl_usd"]) for t in e_trades)
-        print(f"  {eng_name:18s} | {ew:2d}W/{el:<2d}L | Profit: {_fmt_usd(epnl):>10s}")
-    print("=" * 74, flush=True)
+        print(f"  {eng_name:18s} | {len(e_trades):2d} trades | {_fmt_usd(epnl):>10s}")
+    print("-" * 68)
+    print(f"PROFIT:   {_fmt_usd(acct['net_profit_usd'])}")
+    print("=" * 68, flush=True)
 
 
 def main(argv: list[str] | None = None) -> int:

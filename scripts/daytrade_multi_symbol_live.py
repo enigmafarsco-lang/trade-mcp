@@ -342,6 +342,13 @@ def _compute_portfolio_totals(
     }
 
 
+def _unpack_tick(tick: Any) -> tuple[float, float, float]:
+    """Unpack either `(ts, bid, ask, ...)` tuples or `{'ts','bid','ask'}` dicts."""
+    if isinstance(tick, dict):
+        return float(tick["ts"]), float(tick["bid"]), float(tick["ask"])
+    return float(tick[0]), float(tick[1]), float(tick[2])
+
+
 def _print_dashboard(
     *,
     active_syms: list[str],
@@ -355,58 +362,40 @@ def _print_dashboard(
     elapsed_min: float,
     recording: bool,
 ) -> None:
+    del metas, tick_counts, rec_counts
     t_str = _utc_iso(now_ts)[:19].replace("T", " ")
     tot_active = _compute_portfolio_totals(active_syms, engines, last_quotes)
-    pf_s = f"{tot_active['pf']:.2f}" if tot_active["pf"] is not None else "-"
     rec_lbl = "REC=ON" if recording else "REC=OFF"
-    print(f"\n{'=' * 96}", flush=True)
+    print(f"\n{'=' * 68}", flush=True)
     print(
-        f" MULTI-SYMBOL ALL-WEATHER V5 PAPER  |  {t_str} SRV  |  {elapsed_min:.1f}m  |  ORDERS=0  |  {rec_lbl}",
+        f" MULTI-SYMBOL ALL-WEATHER V5 PAPER  |  {t_str}  |  ORDERS=0  |  {rec_lbl}",
         flush=True,
     )
-    print(
-        f" PROVEN PORTFOLIO ({', '.join(active_syms)}): "
-        f"Realized {_fmt_usd(tot_active['realized_pnl_usd'])} | "
-        f"Float {_fmt_usd(tot_active['floating_pnl_usd'])} | "
-        f"Total {_fmt_usd(tot_active['total_pnl_usd'])} | "
-        f"{tot_active['wins']}W/{tot_active['losses']}L (PF {pf_s}) | Open {tot_active['open_positions_count']}",
-        flush=True,
-    )
-    print("-" * 96, flush=True)
-    print(
-        f"{'ROLE':6s} {'SYMBOL':10s} {'BID':>10s} {'SPREAD':>8s} {'SCALE':>6s} "
-        f"{'REALIZED':>10s} {'FLOAT':>9s} {'DD':>8s} {'W/L':>7s} {'GUARDS':>11s} {'TICKS':>7s}",
-        flush=True,
-    )
+    print("-" * 68, flush=True)
+    print(f"{'SYMBOL':18s} {'PRICE':>10s} {'TRADES':>7s} {'PROFIT / LOSS':>16s}", flush=True)
     for role, syms in (("PROVEN", active_syms), ("WATCH", watch_syms)):
         for sym in syms:
             eng = engines.get(sym)
             if eng is None:
                 continue
             bid, ask = last_quotes.get(sym, (0.0, 0.0))
-            sp = max(0.0, ask - bid)
             d = eng.digits
             acct = eng.account_summary(bid, ask)
-            g_str = f"F{eng.frozen_ticks_skipped}/R{eng.reopen_resets}/T{eng.teleport_blocks}"
+            sym_total = float(acct["net_profit_usd"]) + float(acct["floating_pnl_usd"])
+            label = sym if role == "PROVEN" else f"{sym} (watch)"
             print(
-                f"{role:6s} {sym:10s} {bid:10.{d}f} {sp:8.{max(1, d)}f} {eng.price_scale:6.2f} "
-                f"{_fmt_usd(acct['net_profit_usd']):>10s} {_fmt_usd(acct['floating_pnl_usd']):>9s} "
-                f"-${acct['max_dd_usd']:6.2f} {acct['wins']:3d}W/{acct['losses']:<2d}L "
-                f"{g_str:>11s} {tick_counts.get(sym, 0):7d}",
+                f"{label:18s} {bid:10.{d}f} {acct['trades_count']:6d}   {_fmt_usd(sym_total):>14s}",
                 flush=True,
             )
             for pos in eng.open_positions(bid, ask):
-                lk = " LOCK" if pos["stop_locked"] else ""
-                p50 = f" P50({_fmt_usd(pos['banked_pnl_usd'])})" if pos.get("partial_taken") else ""
                 print(
-                    f"   OPEN {sym}: {pos['side']:4s} {pos['volume']:.2f}L @ {pos['avg_entry']} "
-                    f"| SL {pos['stop']}{lk}{p50} | P/L {_fmt_usd(pos['pnl_usd'])} [{pos['engine_label']}]",
+                    f"   OPEN {sym}: {pos['side']:4s} {pos['volume']:.2f} @ {pos['avg_entry']} "
+                    f"| SL {pos['stop']} | {_fmt_usd(pos['pnl_usd'])}",
                     flush=True,
                 )
-    if recording:
-        rec_summary = ", ".join(f"{s}:{rec_counts.get(s, 0)}" for s in active_syms + watch_syms)
-        print(f" Recorded ticks: {rec_summary}", flush=True)
-    print("=" * 96, flush=True)
+    print("-" * 68, flush=True)
+    print(f" PROFIT / LOSS: {_fmt_usd(tot_active['total_pnl_usd'])}", flush=True)
+    print("=" * 68, flush=True)
 
 
 def _build_snapshot(
@@ -601,10 +590,11 @@ def _run_replay(args: argparse.Namespace, report_path: Path | None) -> int:
             print(f"  [SKIP] {sym}: only {len(all_t)} active ticks after freeze stripping")
             continue
 
-        spreads_obs = sorted(max(0.0, t["ask"] - t["bid"]) for t in all_t)
+        spreads_obs = sorted(max(0.0, _unpack_tick(t)[2] - _unpack_tick(t)[1]) for t in all_t)
         med_sp = spreads_obs[len(spreads_obs) // 2]
         ref_sp = med_sp if med_sp > 0 else ref_spreads.get(sym, 0.40)
-        mid_px = 0.5 * (all_t[len(all_t) // 2]["bid"] + all_t[len(all_t) // 2]["ask"])
+        _, mid_b, mid_a = _unpack_tick(all_t[len(all_t) // 2])
+        mid_px = 0.5 * (mid_b + mid_a)
         spec = specs.get(sym, AlpariSymbolSpec(sym, "OTHER", 1.0, "USD", 2))
         eng, meta = build_symbol_engine(
             sym,
@@ -625,16 +615,14 @@ def _run_replay(args: argparse.Namespace, report_path: Path | None) -> int:
         cur_min: int | None = None
         bo = bh = bl = bc = 0.0
         cur_ctx: dict[str, Any] = {"bias": 0, "label": "INSUFFICIENT_M1", "support": None, "resistance": None, "atr_m1": 0.0}
-        last_ts = all_t[0]["ts"]
-        last_bid = all_t[0]["bid"]
-        last_ask = all_t[0]["ask"]
+        last_ts, last_bid, last_ask = _unpack_tick(all_t[0])
 
         for si, seg in enumerate(segs):
             if si > 0:
                 eng.reset_segment()
                 cur_min = None
             for t in seg:
-                ts, bid, ask = float(t["ts"]), float(t["bid"]), float(t["ask"])
+                ts, bid, ask = _unpack_tick(t)
                 mid = 0.5 * (bid + ask)
                 m = int(ts // 60) * 60
                 if cur_min is None:

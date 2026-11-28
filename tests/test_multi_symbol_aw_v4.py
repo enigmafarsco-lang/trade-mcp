@@ -479,4 +479,28 @@ def test_multi_symbol_aw_v5_scale_free_m1_seed_and_live_mock(tmp_path: Path, mon
         assert snap["symbols"][sym]["account"]["teleport_blocks"] >= 1
         assert snap["symbols"][sym]["account"]["portfolio"] == "COMBO_AW_V5_24H"
 
+    # 4) End-to-end --replay on recorded tick JSONL files (exercises tuple unpacking from load_deduplicated_symbol_segments)
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir(parents=True)
+    t_nas = ms_live._make_mock_symbol_ticks("NAS100_i", base_px=25300.0, spread=3.9, scale=9.75)
+    with (logs_dir / "s1_ticks_NAS100_i_20261127.jsonl").open("w", encoding="utf-8") as fh:
+        for ts, bid, ask in t_nas:
+            fh.write(json.dumps({"ts": ts, "bid": bid, "ask": ask}) + "\n")
+    rep_replay = tmp_path / "reports" / "paper_live" / "ms_v5_replay.json"
+    try:
+        rc_rep = ms_live.main(
+            ["--replay", "--preset", "top4", "--logs-dir", str(logs_dir), "--report-file", str(rep_replay)]
+        )
+    finally:
+        _restore_trade_mcp_env(prev_allow, prev_paper)
+    out_rep = capsys.readouterr().out
+    assert rc_rep == 0
+    assert "PROFIT / LOSS:" in out_rep
+    assert "NAS100_i" in out_rep
+    snap_rep = json.loads(rep_replay.read_text(encoding="utf-8"))
+    assert snap_rep["mode"] == "replay"
+    assert snap_rep["orders_submitted"] == 0
+    assert "NAS100_i" in snap_rep["symbols"]
+
+
 
