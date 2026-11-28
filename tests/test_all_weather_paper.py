@@ -91,10 +91,17 @@ def test_all_weather_cli_mock_replay_and_live_smoke(
     data1 = json.loads(rep_mock.read_text(encoding="utf-8"))
     assert data1["schema"] == "all_weather_pro_m1_paper_v1"
     assert data1["orders_submitted"] == 0
-    assert data1["account"]["portfolio"] == "COMBO_AW_V4_24H"
+    assert data1["account"]["portfolio"] == "COMBO_AW_V5_24H"
     assert data1["account"]["trades_count"] >= 1
 
-    # Verify legacy --engine-version v3 still produces COMBO_AW_V3_24H cleanly
+    # Verify explicit --engine-version v4 and legacy v3 still work cleanly
+    rep_v4 = tmp_path / "reports" / "paper_live" / "aw_mock_v4.json"
+    rc1_v4 = aw_cli.main(["--mock", "--engine-version", "v4", "--capital", "1000", "--report-file", str(rep_v4)])
+    assert rc1_v4 == 0
+    capsys.readouterr()
+    data_v4 = json.loads(rep_v4.read_text(encoding="utf-8"))
+    assert data_v4["account"]["portfolio"] == "COMBO_AW_V4_24H"
+
     rep_v3 = tmp_path / "reports" / "paper_live" / "aw_mock_v3.json"
     rc1_v3 = aw_cli.main(["--mock", "--engine-version", "v3", "--capital", "1000", "--report-file", str(rep_v3)])
     assert rc1_v3 == 0
@@ -388,8 +395,8 @@ def test_aw_v4_partial_bank_htf_zscore_and_coord_bugs_fixed() -> None:
     from trade_mcp.fast_snap_engines import FastSnapEngine
     from trade_mcp.quant_github_accel_lab import TickRobustZScoreConfig, TickRobustZScoreEngine
 
-    # 1) Default AW_V4 suite wires all 4 proven fixes
-    s_v4 = AllWeatherPaperSuite(initial_capital_usd=1000.0)
+    # 1) Explicit AW_V4 suite wires all 4 proven v4 fixes (while default is now v5)
+    s_v4 = AllWeatherPaperSuite(initial_capital_usd=1000.0, engine_version="v4")
     assert s_v4.engine_version == "v4"
     assert s_v4.account_summary()["portfolio"] == "COMBO_AW_V4_24H"
     assert s_v4.fast_shock_engine is not None
@@ -548,7 +555,7 @@ def test_aw_v4_partial_bank_htf_zscore_and_coord_bugs_fixed() -> None:
     assert z_v3.basket is not None and z_v3.basket["side"] == "sell"  # unguarded V3 fades rally
     assert z_v4.basket is None  # guarded V4 refuses to short a +$14 macro rally!
 
-    # 6) Production V4 anti-teleport bad-tick guard active by default (V3 remains 0.0)
+    # 6) Production V4 anti-teleport bad-tick guard active on VSNAP6 (V3 remains 0.0)
     suite_v4 = AllWeatherPaperSuite(engine_version="v4")
     suite_v3 = AllWeatherPaperSuite(engine_version="v3")
     assert suite_v4.fast_shock_engine is not None
@@ -556,6 +563,64 @@ def test_aw_v4_partial_bank_htf_zscore_and_coord_bugs_fixed() -> None:
     assert suite_v4.fast_shock_engine.cfg.max_single_tick_jump_price == 4.50
     assert suite_v4.fast_shock_engine.cfg.teleport_cooldown_sec == 90.0
     assert suite_v3.fast_shock_engine.cfg.max_single_tick_jump_price == 0.0
+
+
+def test_aw_v5_gold_htf120_freeze_reopen_and_cross_engine_teleport() -> None:
+    """Verify default COMBO_AW_V5_24H: 60m/120m HTF guard (B6), 300s freeze/reopen, and cross-engine teleport guard."""
+    s_v5 = AllWeatherPaperSuite(initial_capital_usd=1000.0)
+    assert s_v5.engine_version == "v5"
+    assert s_v5.account_summary()["portfolio"] == "COMBO_AW_V5_24H"
+    assert s_v5.fast_shock_engine is not None
+    assert s_v5.fast_shock_engine.cfg.block_counter_60m == 12.0
+    assert s_v5.fast_shock_engine.cfg.block_counter_120m == 16.0
+    assert s_v5.fast_shock_engine.cfg.dynamic_sizing is True
+    assert s_v5.macro_engine.cfg.block_counter_30m == 8.0
+    assert s_v5.macro_engine.cfg.block_counter_60m == 12.0
+    assert s_v5.macro_engine.cfg.block_counter_120m == 16.0
+    assert s_v5.stale_freeze_sec == 300.0
+    assert s_v5.reopen_warmup_sec == 120.0
+    assert s_v5.max_single_tick_jump_price == 4.50
+
+    # 1) Cross-engine single-tick bad-tick teleport guard blocks spike without triggering ANY of the 4 engines
+    t0 = 1795860000.0
+    for i in range(60):
+        s_v5.on_tick(ts=t0 + i, bid=4150.00, ask=4150.40, m1_context={"bias": 1, "label": "BULL_TREND"})
+    # Single-tick $14 flash glitch -> must be caught at suite level across ALL engines
+    s_v5.on_tick(ts=t0 + 61, bid=4164.00, ask=4164.40, m1_context={"bias": 1, "label": "BULL_TREND"})
+    s_v5.on_tick(ts=t0 + 62, bid=4150.00, ask=4150.40, m1_context={"bias": 1, "label": "BULL_TREND"})
+    assert s_v5.teleport_blocks >= 1
+    assert s_v5.open_positions(4150.0, 4150.4) == []
+    assert len(s_v5.trades_closed) == 0
+
+    # 2) Stale-quote freeze (300s+) + reopen gap (+$20) cleanly resets without false velocity entry
+    t_freeze = t0 + 200.0
+    for sec in range(0, 340, 10):
+        s_v5.on_tick(ts=t_freeze + sec, bid=4150.00, ask=4150.40, m1_context={})
+    assert s_v5.frozen_ticks_skipped >= 1
+    # Reopen $20 higher after weekend/rollover halt
+    s_v5.on_tick(ts=t_freeze + 350.0, bid=4170.00, ask=4170.40, m1_context={"bias": 1, "label": "BULL_TREND"})
+    s_v5.on_tick(ts=t_freeze + 355.0, bid=4170.50, ask=4170.90, m1_context={"bias": 1, "label": "BULL_TREND"})
+    assert s_v5.reopen_resets == 1
+    assert s_v5.open_positions(4170.5, 4170.9) == []
+
+    # 3) Snapshot exposes guard counters cleanly
+    snap = s_v5.snapshot(
+        symbol="XAUUSD_i",
+        status="running",
+        started_utc="2026-11-24T00:00:00Z",
+        elapsed_minutes=10.0,
+        last_bid=4170.5,
+        last_ask=4170.9,
+        server_time_str="2026-11-24 10:00:00",
+        ticks_processed=100,
+        ticks_recorded=50,
+        reconnect_count=0,
+        consecutive_errors=0,
+    )
+    assert snap["live_state"]["frozen_ticks_skipped"] >= 1
+    assert snap["live_state"]["reopen_resets"] == 1
+    assert snap["live_state"]["teleport_blocks"] >= 1
+
 
 
 

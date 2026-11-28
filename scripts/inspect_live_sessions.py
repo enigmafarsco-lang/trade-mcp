@@ -240,6 +240,24 @@ def summarize_live_reports(reports_dir: Path) -> list[dict[str, Any]]:
             row["wl"] = f"{a.get('wins', 0)}/{a.get('losses', 0)}"
             row["max_dd"] = a.get("max_dd_usd")
             row["open_count"] = a.get("open_positions_count")
+        elif "proven_portfolio" in data and isinstance(data["proven_portfolio"], dict):
+            pp = data["proven_portfolio"]
+            row["profit_usd"] = pp.get("realized_pnl_usd")
+            row["trades"] = pp.get("trades_count")
+            row["wl"] = f"{pp.get('wins', 0)}/{pp.get('losses', 0)}"
+            row["max_dd"] = pp.get("sum_symbol_max_dd_usd")
+            row["open_count"] = pp.get("open_positions_count")
+            sym_map = data.get("symbols", {})
+            if isinstance(sym_map, dict):
+                row["engines"] = {
+                    f"{sym}({sdata.get('role', 'proven')[:1].upper()})": {
+                        "waves": (sdata.get("account") or {}).get("trades_count", 0),
+                        "wl": f"{(sdata.get('account') or {}).get('wins', 0)}/{(sdata.get('account') or {}).get('losses', 0)}",
+                        "pnl": (sdata.get("account") or {}).get("net_profit_usd", 0.0),
+                    }
+                    for sym, sdata in sym_map.items()
+                    if isinstance(sdata, dict)
+                }
         elif "engines" in data and isinstance(data["engines"], dict):
             eng_brief: dict[str, Any] = {}
             for k, v in data["engines"].items():

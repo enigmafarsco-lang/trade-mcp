@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -398,4 +399,84 @@ def test_ab_structural_risk_variants_and_mock_cli(capsys) -> None:
     assert "B6_HTF120_DYN_L1" in out
     assert "B7_HTF120_CAP15" in out
     assert "SCIENTIFIC ANTI-OVERFIT VERDICT" in out
+
+
+def test_multi_symbol_aw_v5_scale_free_m1_seed_and_live_mock(tmp_path: Path, monkeypatch, capsys) -> None:
+    """Verify NormalizedAllWeatherV5, scale-free Silver M1 context, M1 seeding, and daytrade_multi_symbol_live --mock."""
+    from trade_mcp.multi_symbol_aw_v4 import (
+        NormalizedAllWeatherV5,
+        analyze_scale_free_m1_context,
+    )
+
+    # 1) Scale-free M1 analyzer accurately measures Silver ATR (~0.03) without Gold's 0.10 floor bug
+    base_ts = 1795860000.0
+    silver_bars = [
+        [base_ts + i * 60.0, 44.200 + i * 0.015, 44.225 + i * 0.015, 44.195 + i * 0.015, 44.215 + i * 0.015, 10.0]
+        for i in range(40)
+    ]
+    ctx = analyze_scale_free_m1_context(silver_bars, server_now_ts=base_ts + 45 * 60.0)
+    assert ctx["bias"] == 1
+    assert 0.020 <= ctx["atr_m1"] <= 0.045  # Gold analyzer would falsely clamp to 0.10!
+    assert ctx["support"] < ctx["resistance"]
+
+    # 2) NormalizedAllWeatherV5 wires engine_version=v5, 60m/120m HTF, 4.5x teleport, and disables inner double-counting
+    eng = NormalizedAllWeatherV5(
+        symbol="NAS100_i",
+        price_scale=9.75,
+        usd_per_price_unit=1.0,
+        lot_scale=10.0,
+        digits=1,
+    )
+    assert eng.engine_version == "v5"
+    assert eng.suite.engine_version == "v5"
+    assert eng.suite.stale_freeze_sec == 0.0
+    assert eng.suite.max_single_tick_jump_price == 0.0
+    assert eng.suite.fast_shock_engine is not None
+    assert eng.suite.fast_shock_engine.cfg.block_counter_60m == 12.0
+    assert eng.suite.fast_shock_engine.cfg.block_counter_120m == 16.0
+    assert eng.suite.macro_engine.cfg.block_counter_120m == 16.0
+
+    # Verify normalized seed_m1_bars warms up 120m HTF cleanly
+    nas_bars = [
+        [base_ts + i * 60.0, 25000.0 + i * 2.0, 25010.0 + i * 2.0, 24995.0 + i * 2.0, 25002.0 + i * 2.0, 10.0]
+        for i in range(130)
+    ]
+    seeded = eng.seed_m1_bars(nas_bars, server_now_ts=base_ts + 135 * 60.0, spread=3.9)
+    assert seeded == 120
+    assert len(eng.suite.fast_shock_engine._htf_seed) == 125
+    assert len(eng.suite.macro_engine._htf_seed) == 125
+    assert eng.suite.fast_shock_engine._htf_net_move(int(base_ts + 130 * 60), 25260.0 / 9.75, 7200) > 20.0
+    assert eng.suite.macro_engine._htf_net_move(int(base_ts + 130 * 60), 25260.0 / 9.75, 7200) > 20.0
+
+    # 3) End-to-end daytrade_multi_symbol_live.py --mock --preset top4 --report-file
+    scripts_dir = Path(__file__).resolve().parents[1] / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    import daytrade_multi_symbol_live as ms_live
+
+    monkeypatch.setattr(ms_live, "ROOT", tmp_path)
+    (tmp_path / "reports" / "paper_live").mkdir(parents=True)
+    rep = tmp_path / "reports" / "paper_live" / "ms_v5_mock.json"
+
+    prev_allow = os.environ.get("TRADE_MCP_ALLOW_TRADING")
+    prev_paper = os.environ.get("TRADE_MCP_PAPER_TRADING")
+    try:
+        rc = ms_live.main(["--mock", "--preset", "top4", "--report-file", str(rep)])
+    finally:
+        _restore_trade_mcp_env(prev_allow, prev_paper)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "MULTI-SYMBOL ALL-WEATHER V5 PAPER" in out
+    assert "NAS100_i" in out and "XAGUSD_i" in out and "US500_i" in out and "GER40_i" in out
+
+    snap = json.loads(rep.read_text(encoding="utf-8"))
+    assert snap["schema"] == "multi_symbol_aw_v5_live_v1"
+    assert snap["orders_submitted"] == 0
+    assert snap["engine_version"] == "v5"
+    assert snap["proven_portfolio"]["symbols"] == ["NAS100_i", "XAGUSD_i"]
+    assert snap["watchlist_summary"]["symbols"] == ["US500_i", "GER40_i"]
+    for sym in ("NAS100_i", "XAGUSD_i", "US500_i", "GER40_i"):
+        assert snap["symbols"][sym]["account"]["teleport_blocks"] >= 1
+        assert snap["symbols"][sym]["account"]["portfolio"] == "COMBO_AW_V5_24H"
+
 

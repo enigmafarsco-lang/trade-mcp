@@ -223,15 +223,15 @@ def _print_final_summary(suite: AllWeatherPaperSuite, *, title: str, bid: float,
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="MetaTrader-style Live Paper Monitor for COMBO_AW_V4_24H (ORDERS=0)"
+        description="MetaTrader-style Live Paper Monitor for COMBO_AW_V5_24H (ORDERS=0)"
     )
     parser.add_argument("--symbol", default="XAUUSD_i", help="Symbol to watch (default XAUUSD_i)")
     parser.add_argument("--capital", type=float, default=1000.0, help="Starting paper balance USD (default 1000)")
     parser.add_argument(
         "--engine-version",
-        default="v4",
-        choices=("v4", "v3"),
-        help="All-Weather engine generation (default v4 — bug-fixed 10x R/DD with 50%% partial bank + HTF/macro guards)",
+        default="v5",
+        choices=("v5", "v4", "v3"),
+        help="All-Weather engine generation (default v5 — 60m/120m HTF + 4.5x cross-engine teleport + 300s freeze guard)",
     )
     parser.add_argument(
         "--calm-profile",
@@ -265,7 +265,7 @@ def main(argv: list[str] | None = None) -> int:
     os.environ["TRADE_MCP_PAPER_TRADING"] = "true"
 
     variant_parts: list[str] = []
-    if args.engine_version != "v4":
+    if args.engine_version != "v5":
         variant_parts.append(str(args.engine_version))
     if args.fast_shock_varlot:
         variant_parts.append("varlot")
@@ -476,6 +476,10 @@ def main(argv: list[str] | None = None) -> int:
                 tick_fh = os.fdopen(fd, "a", encoding="utf-8")
                 os.chmod(tick_path, 0o600)
 
+            last_rec_quote: tuple[float, float] | None = None
+            last_rec_change_ts = 0.0
+            last_rec_write_ts = 0.0
+
             try:
                 while not stop_requested:
                     loop_t0 = time.monotonic()
@@ -499,25 +503,34 @@ def main(argv: list[str] | None = None) -> int:
                         ticks_processed += 1
 
                         if tick_fh is not None:
-                            tick_fh.write(
-                                json.dumps(
-                                    {
-                                        "ts": round(now_ts, 3),
-                                        "bid": bid_now,
-                                        "ask": ask_now,
-                                        "m1": {
-                                            "bias": m1_ctx.get("bias", 0),
-                                            "label": m1_ctx.get("label", "NEUTRAL"),
-                                            "support": m1_ctx.get("support"),
-                                            "resistance": m1_ctx.get("resistance"),
-                                        },
-                                    }
+                            q_rec = (bid_now, ask_now)
+                            should_write = True
+                            if q_rec != last_rec_quote:
+                                last_rec_quote = q_rec
+                                last_rec_change_ts = now_ts
+                            elif (now_ts - last_rec_change_ts) >= 30.0 and (now_ts - last_rec_write_ts) < 10.0:
+                                should_write = False
+                            if should_write:
+                                tick_fh.write(
+                                    json.dumps(
+                                        {
+                                            "ts": round(now_ts, 3),
+                                            "bid": bid_now,
+                                            "ask": ask_now,
+                                            "m1": {
+                                                "bias": m1_ctx.get("bias", 0),
+                                                "label": m1_ctx.get("label", "NEUTRAL"),
+                                                "support": m1_ctx.get("support"),
+                                                "resistance": m1_ctx.get("resistance"),
+                                            },
+                                        }
+                                    )
+                                    + "\n"
                                 )
-                                + "\n"
-                            )
-                            ticks_recorded += 1
-                            if ticks_recorded % 20 == 0:
-                                tick_fh.flush()
+                                last_rec_write_ts = now_ts
+                                ticks_recorded += 1
+                                if ticks_recorded % 20 == 0:
+                                    tick_fh.flush()
 
                         evs = suite.on_tick(ts=now_ts, bid=bid_now, ask=ask_now, m1_context=m1_ctx)
                         for ev in evs:

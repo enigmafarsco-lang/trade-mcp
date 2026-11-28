@@ -1,13 +1,20 @@
-"""All-Weather Paper Trading Suite (COMBO_AW_V4_24H, ORDERS=0).
+"""All-Weather Paper Trading Suite (COMBO_AW_V5_24H, ORDERS=0).
 
 Combines the 4 causally validated & bug-fixed 24-hour engines into ONE unified MetaTrader-style paper account:
   1. SHOCK10_DYN_RUN  (24H News / >=$10 per 60s shock dynamic runner; coordinated with VSNAP6 to prevent duplicate peak entries)
-  2. VSNAP6_24H       (24H Fast $6+/60s burst runner with 15m/30m HTF counter-trend guard + 50% partial profit bank @ +$2.60 & wide free runner)
-  3. MACRO_WAVE_DYN   (London/NY macro pullback-continuation dynamic pyramid)
+  2. VSNAP6_24H       (24H Fast $6+/60s burst runner with 15m/30m/60m/120m HTF counter-trend guard + 50% partial profit bank @ +$2.60 & wide free runner)
+  3. MACRO_WAVE_DYN   (London/NY macro pullback-continuation dynamic pyramid with 30m/60m/120m HTF counter-trend guard)
   4. ZSCORE_MR_24H    (24H TickRobust Z-Score MR with tight $3.20..$4.80 SL + 30m/60m macro breakout guard)
 
-Legacy COMBO_AW_V3 (`engine_version="v3"`) and COMBO_AW_V2 (`calm_profile="CALM_M1_PRO_SESS"`, `fast_shock_24h=False`)
-remain supported for apples-to-apples historical A/B benchmarks.
+V5 adds cross-market validated upgrades over V4:
+  - Causal 60m ($12) / 120m ($16) macro HTF counter-trend guard on BOTH VSNAP6 and MACRO_WAVE (eliminated 0W/4L -$61.94
+    Friday NY dead-cat bounce traps on Gold AND doubled profit / cut DD -38% on NAS100_i with zero symbol tuning).
+  - Cross-engine single-tick anti-teleport guard ($4.50 / 90s cooldown) shielding ALL 4 sub-engines (not just VSNAP6).
+  - Suite-level stale-quote / market-close freeze (300s) & reopen-gap warmup (120s) guard so rollover/weekend halts
+    never leave positions stranded or fire phantom reopen spikes.
+
+Legacy COMBO_AW_V4 (`engine_version="v4"`), COMBO_AW_V3 (`engine_version="v3"`), and COMBO_AW_V2 remain supported
+for apples-to-apples historical A/B benchmarks.
 
 Strictly read-only / paper-only (`paper_only=True`, `orders_submitted=0`).
 """
@@ -30,9 +37,17 @@ def _iso_utc(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="seconds")
 
 
-def _build_macro_wave_cfg(*, leg_lot: float = 0.01, max_legs: int = 6) -> Any:
+def _build_macro_wave_cfg(*, leg_lot: float = 0.01, max_legs: int = 6, engine_version: str = "v5") -> Any:
     by_name = dict(pullback_dip_profiles(leg_lot=leg_lot, max_legs=min(4, max_legs)))
-    return by_name["MACRO_WAVE_DYN"]
+    cfg = by_name["MACRO_WAVE_DYN"]
+    if engine_version == "v5":
+        cfg = replace(
+            cfg,
+            block_counter_30m=8.0,
+            block_counter_60m=12.0,
+            block_counter_120m=16.0,
+        )
+    return cfg
 
 
 def _build_fast_shock6_cfg(
@@ -40,7 +55,7 @@ def _build_fast_shock6_cfg(
     leg_lot: float = 0.02,
     all_24h: bool = True,
     varlot: bool = False,
-    engine_version: str = "v4",
+    engine_version: str = "v5",
 ) -> Any:
     by_name = dict(fast_snap_profiles(base_lot=leg_lot))
     cfg = by_name["VSNAP_SHOCK_6"]
@@ -59,12 +74,14 @@ def _build_fast_shock6_cfg(
         )
     elif all_24h:
         cfg = replace(cfg, name="VSNAP6_24H", active_server_hours=None)
-    if engine_version == "v4":
-        # Bug #1 (causal 15m/30m HTF counter-trend guard) + Bug #2 (50% partial profit bank @ +$2.60 + wide free runner)
+    if engine_version in ("v4", "v5"):
+        # Bug #1 (causal HTF counter-trend guard) + Bug #2 (50% partial profit bank @ +$2.60 + wide free runner)
         cfg = replace(
             cfg,
             block_counter_15m=5.0,
             block_counter_30m=8.0,
+            block_counter_60m=12.0 if engine_version == "v5" else 0.0,
+            block_counter_120m=16.0 if engine_version == "v5" else 0.0,
             partial_arm_price=2.60,
             partial_take_frac=0.50,
             partial_runner_sl_offset=0.60,
@@ -83,8 +100,8 @@ def _build_fast_shock6_cfg(
     return cfg
 
 
-def _build_zscore_mr_24h_cfg(*, leg_lot: float = 0.01, engine_version: str = "v4") -> TickRobustZScoreConfig:
-    if engine_version == "v4":
+def _build_zscore_mr_24h_cfg(*, leg_lot: float = 0.01, engine_version: str = "v5") -> TickRobustZScoreConfig:
+    if engine_version in ("v4", "v5"):
         # Bug #4 + Risk-Parity Sizing: tight SL ($3.20..$4.80), causal 30m/60m breakout guard,
         # and ~$4.80/trade SL risk parity with SHOCK10 ($4.50), MACRO_WAVE ($4.50), and VSNAP6 ($5.60).
         return TickRobustZScoreConfig(
@@ -161,7 +178,7 @@ ENGINE_LABELS: dict[str, str] = {
 
 @dataclass
 class AllWeatherPaperSuite:
-    """Unified MetaTrader-style paper account driving COMBO_AW_V4_24H (ORDERS=0)."""
+    """Unified MetaTrader-style paper account driving COMBO_AW_V5_24H (ORDERS=0)."""
 
     initial_capital_usd: float = 1000.0
     news_leg_lot: float = 0.01
@@ -172,7 +189,11 @@ class AllWeatherPaperSuite:
     fast_shock_24h: bool = True
     fast_shock_varlot: bool = False
     risk_multiplier: float = 1.0
-    engine_version: str = "v4"  # "v4" (bug-fixed 10x R/DD default) | "v3" (legacy baseline)
+    engine_version: str = "v5"  # "v5" (default) | "v4" (prior prod) | "v3" (legacy)
+    stale_freeze_sec: float | None = None  # None -> 300.0 for v5, 0.0 for v4/v3
+    reopen_warmup_sec: float = 120.0
+    max_single_tick_jump_price: float | None = None  # None -> 4.50 for v5, 0.0 for v4/v3
+    teleport_cooldown_sec: float = 90.0
 
     shock_engine: S1VelocitySurferEngine = field(init=False)
     fast_shock_engine: FastSnapEngine | None = field(init=False)
@@ -188,15 +209,38 @@ class AllWeatherPaperSuite:
     max_dd_usd: float = 0.0
     trades_closed: list[dict[str, Any]] = field(default_factory=list)
     seeded_m1_bars: int = 0
+    frozen_ticks_skipped: int = 0
+    reopen_resets: int = 0
+    teleport_blocks: int = 0
     _multiplier: float = 100.0
+    _eff_stale_freeze_sec: float = field(default=0.0, init=False, repr=False)
+    _eff_teleport_jump: float = field(default=0.0, init=False, repr=False)
+    _last_quote: tuple[float, float] | None = field(default=None, init=False, repr=False)
+    _last_change_ts: float = field(default=0.0, init=False, repr=False)
+    _prev_mid: float = field(default=0.0, init=False, repr=False)
+    _is_frozen: bool = field(default=False, init=False, repr=False)
+    _reopen_block_until: float = field(default=0.0, init=False, repr=False)
+    _teleport_block_until: float = field(default=0.0, init=False, repr=False)
 
     def __post_init__(self) -> None:
         rm = float(self.risk_multiplier)
         if not math.isfinite(rm) or rm < 0.25 or rm > 5.0:
             raise ValueError(f"risk_multiplier must be in [0.25, 5.0], got {self.risk_multiplier!r}")
-        if self.engine_version not in ("v4", "v3"):
-            raise ValueError(f"engine_version must be 'v4' or 'v3', got {self.engine_version!r}")
+        if self.engine_version not in ("v5", "v4", "v3"):
+            raise ValueError(f"engine_version must be 'v5', 'v4', or 'v3', got {self.engine_version!r}")
         self.risk_multiplier = rm
+        self._eff_stale_freeze_sec = (
+            float(self.stale_freeze_sec)
+            if self.stale_freeze_sec is not None
+            else (300.0 if self.engine_version == "v5" else 0.0)
+        )
+        self._eff_teleport_jump = (
+            float(self.max_single_tick_jump_price)
+            if self.max_single_tick_jump_price is not None
+            else (4.50 if self.engine_version == "v5" else 0.0)
+        )
+        self.stale_freeze_sec = self._eff_stale_freeze_sec
+        self.max_single_tick_jump_price = self._eff_teleport_jump
         self.peak_balance_usd = float(self.initial_capital_usd)
         self.peak_equity_usd = float(self.initial_capital_usd)
         self._fast_name = (
@@ -236,11 +280,18 @@ class AllWeatherPaperSuite:
             else None
         )
         self.macro_engine = PullbackDipEngine(
-            cfg=_scale_cfg_lots(_build_macro_wave_cfg(leg_lot=self.news_leg_lot, max_legs=self.max_legs), rm),
+            cfg=_scale_cfg_lots(
+                _build_macro_wave_cfg(
+                    leg_lot=self.news_leg_lot,
+                    max_legs=self.max_legs,
+                    engine_version=self.engine_version,
+                ),
+                rm,
+            ),
             initial_capital_usd=self.initial_capital_usd,
         )
         if self.calm_profile == "ZSCORE_MR_24H":
-            z_base_lot = self.news_leg_lot if self.engine_version == "v4" else max(0.03, self.calm_leg_lot)
+            z_base_lot = self.news_leg_lot if self.engine_version in ("v4", "v5") else max(0.03, self.calm_leg_lot)
             self.calm_engine = TickRobustZScoreEngine(
                 cfg=_scale_cfg_lots(
                     _build_zscore_mr_24h_cfg(
@@ -273,6 +324,12 @@ class AllWeatherPaperSuite:
     def reset_file_state(self) -> None:
         """Reset per-engine tick buffers between separate offline replay files while keeping account history."""
         self._init_engines()
+        self._last_quote = None
+        self._last_change_ts = 0.0
+        self._prev_mid = 0.0
+        self._is_frozen = False
+        self._reopen_block_until = 0.0
+        self._teleport_block_until = 0.0
 
     def set_multiplier(self, multiplier: float) -> None:
         self._multiplier = float(multiplier)
@@ -339,6 +396,19 @@ class AllWeatherPaperSuite:
         self.trades_closed.append(rec)
         return rec
 
+    def _has_open_position(self) -> bool:
+        return any(eng.basket is not None for eng in self.engines.values())
+
+    def _suppress_entries_until(self, block_until: float) -> None:
+        for eng in self.engines.values():
+            if hasattr(eng, "cooldown_until"):
+                eng.cooldown_until = max(float(eng.cooldown_until), block_until)
+            if eng.basket is None:
+                if hasattr(eng, "pending") and eng.pending is not None:
+                    eng.pending = None
+                if hasattr(eng, "pending_order") and eng.pending_order is not None:
+                    eng.pending_order = None
+
     def on_tick(
         self,
         *,
@@ -347,8 +417,54 @@ class AllWeatherPaperSuite:
         ask: float,
         m1_context: dict[str, Any],
     ) -> list[dict[str, Any]]:
+        if bid <= 0.0 or ask <= 0.0 or ask < bid:
+            return []
         out_events: list[dict[str, Any]] = []
-        coord_v4 = self.engine_version == "v4" and self.fast_shock_engine is not None
+
+        # V5 Bug Fix #2: Suite-level stale-quote / market-close freeze & reopen-gap guard
+        if self._eff_stale_freeze_sec > 0.0:
+            q_now = (bid, ask)
+            if self._last_quote is None:
+                self._last_quote = q_now
+                self._last_change_ts = ts
+            elif q_now == self._last_quote:
+                if (ts - self._last_change_ts) >= self._eff_stale_freeze_sec:
+                    if not self._is_frozen:
+                        if self._has_open_position():
+                            out_events.extend(self.close_all_open(ts=ts, bid=bid, ask=ask, reason="market_freeze_halt"))
+                        self._is_frozen = True
+                    self.frozen_ticks_skipped += 1
+                    return out_events
+            else:
+                was_frozen = self._is_frozen
+                self._last_quote = q_now
+                self._last_change_ts = ts
+                if was_frozen:
+                    self._is_frozen = False
+                    self.reset_file_state()
+                    self._last_quote = q_now
+                    self._last_change_ts = ts
+                    self.reopen_resets += 1
+                    self._reopen_block_until = ts + float(self.reopen_warmup_sec)
+
+        # V5 Bug Fix #3: Cross-engine single-tick anti-teleport guard (shields ALL 4 sub-engines)
+        mid_now = 0.5 * (bid + ask)
+        if self._eff_teleport_jump > 0.0:
+            if self._prev_mid > 0.0 and abs(mid_now - self._prev_mid) >= self._eff_teleport_jump:
+                self.teleport_blocks += 1
+                self._teleport_block_until = max(self._teleport_block_until, ts + float(self.teleport_cooldown_sec))
+                self._prev_mid = mid_now
+                self._suppress_entries_until(self._teleport_block_until)
+                if not self._has_open_position():
+                    return out_events
+            else:
+                self._prev_mid = mid_now
+
+        block_until = max(self._reopen_block_until, self._teleport_block_until)
+        if block_until > 0.0 and ts < block_until:
+            self._suppress_entries_until(block_until)
+
+        coord_v4 = self.engine_version in ("v4", "v5") and self.fast_shock_engine is not None
         tick_order = (
             [n for n in self.engine_order if n != "SHOCK10_DYN_RUN"] + ["SHOCK10_DYN_RUN"]
             if coord_v4
@@ -444,7 +560,7 @@ class AllWeatherPaperSuite:
         gl = abs(sum(float(t["net_pnl_usd"]) for t in losses))
         pf = round(gw / gl, 2) if gl > 0 else (99.0 if gw > 0 else None)
         if self.calm_profile == "ZSCORE_MR_24H" and self.enable_fast_shock6 and self.fast_shock_24h:
-            ver_tag = "V4" if self.engine_version == "v4" else "V3"
+            ver_tag = self.engine_version.upper()
             port_name = f"COMBO_AW_{ver_tag}_24H_VARLOT" if self.fast_shock_varlot else f"COMBO_AW_{ver_tag}_24H"
         elif self.enable_fast_shock6:
             port_name = "COMBO_AW_V2"
@@ -555,5 +671,8 @@ class AllWeatherPaperSuite:
                 "ticks_recorded": ticks_recorded,
                 "reconnect_count": reconnect_count,
                 "consecutive_errors": consecutive_errors,
+                "frozen_ticks_skipped": self.frozen_ticks_skipped,
+                "reopen_resets": self.reopen_resets,
+                "teleport_blocks": self.teleport_blocks,
             },
         }
