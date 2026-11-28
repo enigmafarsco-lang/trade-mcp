@@ -369,6 +369,21 @@ def test_ab_structural_risk_variants_and_mock_cli(capsys) -> None:
     assert suite.macro_engine.cfg.block_counter_30m == 8.0
     assert suite.macro_engine.cfg.block_counter_60m == 10.0
 
+    # Check B7 (1.5x L1 cap) and B6 (unchanged dynamic L1)
+    suite_b7 = AllWeatherPaperSuite(engine_version="v4", risk_multiplier=2.0)
+    b7 = next(v for v in ab_sr.VARIANTS if v.name == "B7_HTF120_CAP15")
+    ab_sr.apply_structural_variant(suite_b7, b7)
+    assert suite_b7.fast_shock_engine is not None
+    assert suite_b7.fast_shock_engine.cfg.dyn_max_l1_lot == 0.06
+    assert suite_b7.fast_shock_engine.cfg.block_counter_120m == 16.0
+
+    # Check trailing weekend frozen quote trimmer (keeps first tick of closing quote, strips 39 frozen duplicates)
+    dummy_seg = [(1000.0 + i, round(3600.0 + i * 0.1, 2), round(3600.3 + i * 0.1, 2), {}) for i in range(5)]
+    dummy_seg += [(1005.0 + i * 10.0, 3600.4, 3600.7, {}) for i in range(40)]  # 390s frozen tail
+    trimmed, n_rem = ab_sr._trim_frozen_segment_tails([dummy_seg], freeze_tail_sec=300.0)
+    assert n_rem == 40
+    assert len(trimmed[0]) == 5
+
     # End-to-end --mock CLI run
     prev_allow = os.environ.get("TRADE_MCP_ALLOW_TRADING")
     prev_paper = os.environ.get("TRADE_MCP_PAPER_TRADING")
@@ -380,5 +395,7 @@ def test_ab_structural_risk_variants_and_mock_cli(capsys) -> None:
     assert rc == 0
     assert "A0_PROD_V4" in out
     assert "B3_FIX_L1+HTF60" in out
+    assert "B6_HTF120_DYN_L1" in out
+    assert "B7_HTF120_CAP15" in out
     assert "SCIENTIFIC ANTI-OVERFIT VERDICT" in out
 
